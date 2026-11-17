@@ -6,9 +6,20 @@ in [`yungibly/homebrew-tap`](https://github.com/yungibly/homebrew-tap).
 The source uses the MIT license. Theme and dependency licenses accompany every
 binary archive and are installed by the formula under pica's shared data directory.
 
+`v0.3.0`, the first release named pica, is
+[published](https://github.com/yungibly/pica/releases/tag/v0.3.0). Its
+[CI](https://github.com/yungibly/pica/actions/runs/44004997979),
+[native release builds](https://github.com/yungibly/pica/actions/runs/44005000648),
+and [three-platform Homebrew installation checks](https://github.com/yungibly/pica/actions/runs/44005835517)
+all passed before the tap update; `Formula/eymi.rb` was then removed from the
+tap. Its draft assets were also checked by hand on Linux: checksums,
+`package.py verify`, the extracted binary's version, themes, and an unchanged
+source after a snapshot. An isolated Linux Homebrew replaced an installed
+`eymi` 0.2.1 with `pica` 0.3.0 from the published tap, and `brew test` passed.
+
 Releases through `v0.2.1` shipped as **Eymi** from `yungibly/eymi`; GitHub
 redirects those URLs to this repository, and their archives keep the `eymi-`
-prefix. `v0.3.0` is the first release named pica.
+prefix.
 
 ## CI and supported packages
 
