@@ -49,9 +49,13 @@ def find_cells(cells, word, casefold=False):
 
 
 def selection_visible(before, after):
-    """A selection is visible when text cells gain a background of their own."""
-    old = {(c["x"], c["y"]): c["bg"] for c in before}
-    return any(c["y"] > 0 and c["char"].strip() and old.get((c["x"], c["y"])) != c["bg"]
+    """A selection is visible when document text cells gain a background or
+    reverse video of their own. A lone document starts on the first row; the
+    status row is excluded."""
+    footer = max(c["y"] for c in after)
+    old = {(c["x"], c["y"]): (c["bg"], c.get("inverse")) for c in before}
+    return any(c["y"] < footer and c["char"].strip()
+               and old.get((c["x"], c["y"])) != (c["bg"], c.get("inverse"))
                for c in after)
 
 
@@ -253,9 +257,16 @@ def unicode_and_edits(session):
 def workspace(session):
     """Exercise the new workspace and editing controls through the real PTY."""
     source = session.original_source
+    state, cells = session.capture("01a-writing-160x45")
+    session.check(not outline_labels(cells) and state["text"].splitlines()[0].strip(),
+                  "A lone document opens without tabs or an outline; text starts on the first row")
+    session.key("Ctrl+e")
+    session.call("type", "sidebar")
+    session.settle()
+    session.key("Enter")
     state, cells = session.capture("01-writing-160x45")
     session.check("DOCUMENTS" not in state["text"] and bool(outline_labels(cells)),
-                  "Wide workspace exposes a heading-only outline")
+                  "The opt-in outline lists headings only")
     help_sheet(session, "01b-help-160x45")
     heading = "Later, with confidence"
     target = outline_target(session, heading, cells)[1]
@@ -332,15 +343,15 @@ def workspace(session):
     save_expected(source, "Pasted text remains one undo transaction")
 
     command("New tab")
-    session.check("Untitled 2.md" in session.state()["text"], "Palette creates an independent document tab")
+    session.check("untitled 2" in session.state()["text"], "Palette creates an independent document tab")
     session.key("Alt+,")
     session.key("Ctrl+Home")
     session.capture("07-document-tabs")
     for width, height in [(120, 36), (80, 24), (42, 16), (20, 10)]:
         session.call("resize", width, height)
         session.capture(f"08-workspace-{width}x{height}")
-        session.check(bool(outline_labels(session.cells())) == (width >= 110),
-                      f"Sidebar adapts to {width}x{height}")
+        session.check(bool(outline_labels(session.cells())) == (width >= 60 and height >= 8),
+                      f"The chosen outline yields only to small windows at {width}x{height}")
 
     session.key("Ctrl+e")
     session.call("resize", 20, 4)
@@ -415,57 +426,72 @@ def chrome(session):
 
     def idle(label, expect_outline=None, first_line=False):
         state, cells = session.capture(label)
-        filenames = list(find_cells(cells, name))
-        wordmarks = list(find_cells(cells, "milli", casefold=True))
-        session.check(len(filenames) == 1, "Idle filename appears exactly once: " + label,
-                      filename=name, occurrences=len(filenames))
-        header_y = filenames[0][0]["y"]
-        session.check(not wordmarks, "No wordmark competes with the document for header space: " + label)
+        footer_y = max(c["y"] for c in cells)
+        footer_cells = sorted((c for c in cells if c["y"] == footer_y), key=lambda c: c["x"])
+        footer = "".join(c["char"] for c in footer_cells)
+        body_text = "\n".join(state["text"].splitlines()[:footer_y])
         labels = outline_labels(cells)
+        # One document has no tab row; the outline brings a shared header row.
+        header = bool(labels)
+        filenames = list(find_cells(cells, name))
+        in_footer = [chunk for chunk in filenames if chunk[0]["y"] == footer_y]
+        in_header = [chunk for chunk in filenames if chunk[0]["y"] == 0 and header]
+        session.check(len(in_footer) == 1 and len(filenames) == 1 + len(in_header) and len(in_header) == int(header),
+                      "The status line names the document once; tabs repeat it only beside the outline: " + label,
+                      filename=name, occurrences=len(filenames))
+        wordmarks = list(find_cells(cells, "milli", casefold=True))
+        session.check(not wordmarks, "No wordmark competes with the document: " + label)
         if labels:
-            session.check(labels[0][0]["y"] == header_y and labels[0][-1]["x"] < filenames[0][0]["x"],
+            session.check(labels[0][0]["y"] == 0 and (not in_header or labels[0][-1]["x"] < in_header[0][0]["x"]),
                           "Outline header shares the tab row, left of the tabs: " + label)
-        session.check(not re.search(r"\b(?:DOCUMENTS|Live|F1|F2|F9|Ctrl[+-][A-Za-z])\b", state["text"]),
-                      "Idle chrome has no document list, Live label, or persistent shortcut labels: " + label)
+        session.check(not re.search(r"\b(?:DOCUMENTS|Live|F1|F2|F9)\b", state["text"]),
+                      "Idle chrome has no document list, Live label, or function-key labels: " + label)
+        session.check(not re.search(r"\bCtrl[+-][A-Za-z]|\^[A-Z]\b", body_text),
+                      "Key hints stay in the status line: " + label)
         if expect_outline is not None:
-            session.check(bool(outline_labels(cells)) == expect_outline,
-                          "Outline visibility follows available width: " + label)
+            session.check(bool(labels) == expect_outline,
+                          "Outline visibility follows the explicit choice and available room: " + label)
         if first_line:
             headings = list(find_cells(cells, title))
             session.check(bool(headings), "First document heading is visible: " + label)
             body = max(headings, key=lambda chunk: chunk[0]["x"])
-            session.check(body[0]["y"] == header_y + 1,
-                          "Document begins immediately below the single header: " + label,
-                          header_row=header_y, body_row=body[0]["y"])
+            session.check(body[0]["y"] == int(header),
+                          "Document begins on the first row, or just below a shared header: " + label,
+                          header=header, body_row=body[0]["y"])
         session.check(any(private_use(c["char"]) for c in cells) == nerd,
                       "Nerd icons are opt-in and plain mode emits no private-use glyphs: " + label,
                       expected_icons="nerd" if nerd else "plain")
-        color_samples = [("active filename", filenames[0])]
+        color_samples = [("status filename", in_footer[0])]
         if labels:
             color_samples.append(("outline header", labels[0]))
         for part, chunk in color_samples:
             ratios = [contrast_ratio(c["fg"], c["bg"]) for c in chunk]
-            session.check(min(ratios) >= 3, f"Readable explicit {part} colors: {label}", minimum_contrast=min(ratios))
-        header_backgrounds = {c["bg"] for c in cells if c["y"] == header_y and c["char"].strip()}
+            if all(ratio > 0 for ratio in ratios):
+                session.check(min(ratios) >= 3, f"Readable explicit {part} colors: {label}", minimum_contrast=min(ratios))
         if state["cols"] >= 80:
-            session.check(len(header_backgrounds) >= 2, "Header segments use distinct backgrounds: " + label)
             positions = list(find_cells(cells, "Ln "))
-            session.check(len(positions) == 1, "Cursor position remains visible in statusline: " + label)
-            position = positions[0]
-            footer = "".join(c["char"] for c in sorted(
-                (c for c in cells if c["y"] == position[0]["y"]), key=lambda c: c["x"]))
-            session.check(footer.count("MARKDOWN") == 1 and len(re.findall(r"\b\d+ words\b", footer)) == 1,
+            session.check(len(positions) == 1 and positions[0][0]["y"] == footer_y,
+                          "Cursor position remains visible in the status line: " + label)
+            session.check(footer.count("markdown") == 1 and len(re.findall(r"\b\d+ words\b", footer)) == 1,
                           "Footer file type and word count each appear only once: " + label, footer=footer)
-            session.check(position[0]["y"] > header_y, "Position belongs to the footer: " + label)
-            backgrounds = {c["bg"] for c in cells if c["y"] == position[0]["y"]}
-            session.check(len(backgrounds) >= 2, "Statusline segments use distinct backgrounds: " + label)
+            session.check("help" in footer, "The status line names its way to help: " + label, footer=footer)
+            backgrounds = {(c["bg"], c.get("inverse")) for c in footer_cells}
+            session.check(len(backgrounds) == 1, "The status line is one flat bar: " + label)
         return state, cells
 
     session.key("Ctrl+Home")
+    for width, height in [(160, 45), (80, 24), (42, 16)]:
+        session.call("resize", width, height)
+        idle(f"00-lone-document-{width}x{height}", expect_outline=False, first_line=True)
+    session.call("resize", 160, 45)
+    session.key("Ctrl+e")
+    session.call("type", "sidebar")
+    session.settle()
+    session.key("Enter")
     idle("01-single-header-160x45", expect_outline=True, first_line=True)
     for width, height in [(120, 36), (80, 24), (42, 16)]:
         session.call("resize", width, height)
-        idle(f"02-single-header-{width}x{height}", expect_outline=width >= 110, first_line=True)
+        idle(f"02-single-header-{width}x{height}", expect_outline=width >= 60, first_line=True)
     session.call("resize", 160, 45)
     session.key("F9")
     session.key("Home")
@@ -521,11 +547,11 @@ def chrome(session):
     for number in range(2, 10):
         session.key("Ctrl+t")
         session.call("type", f"Tab{number}")
-    active_name = "Untitled 9.md"
+    active_name = "untitled 9"
     for width, height in [(160, 45), (120, 36), (80, 24), (42, 16)]:
         session.call("resize", width, height)
         state, cells = session.capture(f"05-tab-overflow-{width}x{height}")
-        labels = list(find_cells(cells, active_name))
+        labels = [chunk for chunk in find_cells(cells, active_name) if chunk[0]["y"] == 0]
         session.check(len(labels) == 1 and "Tab9" in state["text"],
                       f"Active document remains visible once during tab overflow at {width} columns")
         active = labels[0]
@@ -535,7 +561,7 @@ def chrome(session):
         session.check(not re.search(r"\b(?:DOCUMENTS|Live|F1|F2|F9)\b", state["text"]),
                       f"Tab overflow does not introduce repeated chrome hints at {width} columns")
     session.key("Alt+,")
-    session.check("Untitled 8.md" in session.state()["text"] and "Tab8" in session.state()["text"],
+    session.check("untitled 8" in session.state()["text"] and "Tab8" in session.state()["text"],
                   "Previous tab remains independently editable during overflow")
     session.key("Alt+.")
     session.call("resize", 20, 10)
@@ -684,23 +710,25 @@ def workflows(session):
         session.key("Ctrl+z")
         save(source, "One undo restores exact source after the selection check")
 
-    # The CLI click emits down and release. A count of two catches double activation.
+    # A lone document has no tab row, so no plus button; Ctrl+T opens a tab,
+    # and the tab row then offers exactly one plus.
     state, cells = session.capture("01-workflows-160x45")
-    header_y = min(c["y"] for c in cells)
-    plus = [c for c in cells if c["y"] == header_y and c["char"] == "+"]
+    session.check(not any(c["y"] == 0 and c["char"] == "+" for c in cells),
+                  "A lone document shows no tab row or plus button")
+    session.key("Ctrl+t")
+    state, cells = session.capture("01b-second-tab-160x45")
+    plus = [c for c in cells if c["y"] == 0 and c["char"] == "+"]
     session.check(len(plus) == 1, "Exactly one plain plus button is visible in the tab row")
-    session.call("mouse", "click", plus[0]["x"], plus[0]["y"])
-    session.settle()
     chooser("F10")
     count("Open documents", 2)
     session.key("Escape")
-    session.check("Untitled 2.md" in session.state()["text"], "Plus activates one new untitled document")
+    session.check("untitled 2" in session.state()["text"], "Ctrl+T activates one new untitled document")
     draft = "Unsaved workflow draft"
     session.paste(draft)
     chooser("F10")
     count("Open documents", 2)
     text = session.state()["text"]
-    session.check("● Untitled 2.md" in text and "Unsaved document" in text and name in text,
+    session.check("● untitled 2" in text and "Unsaved document" in text and name in text,
                   "Document picker includes dirty unsaved and file-backed tabs")
     session.capture("02-documents-dirty-unsaved")
     session.key("Escape")
@@ -794,7 +822,7 @@ def workflows(session):
 
     # Source mode gives line selection an unambiguous physical-row boundary.
     session.key("Ctrl+r")
-    session.check("SOURCE" in session.state()["text"], "Line workflows run in source mode")
+    session.check("markdown source" in session.state()["text"], "Line workflows run in source mode")
 
     def edited_lines(operation, selected):
         start, end = 3, 5 if selected else 4  # Bravo; optionally Charlie, excluding Delta.
@@ -912,7 +940,7 @@ def rendering(session):
     session.check("# Rendering acceptance" in text and "```rust" in text, "Source view shows exact Markdown")
     session.check(any(row.strip().startswith("1 # Rendering") for row in document_rows(cells)),
                   "Source view numbers its lines")
-    session.check("SOURCE" in text, "Status line names source view")
+    session.check("markdown source" in text, "Status line names source view")
     session.key("Ctrl+r")
     session.call("resize", 80, 24)
     session.key("Ctrl+End")
