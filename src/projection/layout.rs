@@ -2,8 +2,8 @@
 //! concealment, word or column wrapping, hanging indents, and row surfaces.
 //! Rendered tables become grids whose borders and padding carry no source.
 use super::{
-    Fill, FillKind, Glyph, GlyphText, Positions, Projection, TABLE_ROW_LIMIT, VisualRow, Window,
-    overlaps,
+    Fill, FillKind, Glyph, GlyphText, Positions, Projection, Resume, TABLE_ROW_LIMIT, VisualRow,
+    Window, overlaps,
     parse::{Decoration, Parsed, RAIL, Table, line_end, next_line},
     safe_text, unsafe_char,
 };
@@ -57,7 +57,16 @@ pub(super) fn build(
         window,
         through_row: None,
     };
-    let end = layout.run(start);
+    layout.begin_line(start);
+    let mut first_row = 0;
+    let mut from = start;
+    if let Some(resume) = window.resume.filter(|resume| resume.row > 0 && !live)
+        && layout.prime(start, resume)
+    {
+        first_row = resume.row;
+        from = resume.offset;
+    }
+    let end = layout.run(from);
     let complete = end >= source.len();
     if complete && !layout.positions.contains(source.len()) {
         let end = layout.here();
@@ -70,6 +79,7 @@ pub(super) fn build(
         start,
         end,
         complete,
+        first_row,
     }
 }
 
@@ -216,7 +226,6 @@ impl<'a> Layout<'a> {
     /// layout stopped.
     fn run(&mut self, mut offset: usize) -> usize {
         let source = self.source;
-        self.begin_line(offset);
         while offset < source.len() {
             if let Some(end) = self.overflow(offset) {
                 return end;
@@ -261,6 +270,73 @@ impl<'a> Layout<'a> {
         }
         self.anchor_fill(source.len());
         source.len()
+    }
+
+    /// Lay out a literal line's first row, which fixes its hanging indent,
+    /// then continue at `resume` as on a later row of the same line. Returns
+    /// false, having laid out nothing, when the line cannot resume there.
+    fn prime(&mut self, start: usize, resume: Resume) -> bool {
+        if !self.context.literal || resume.offset >= line_end(self.source, start) {
+            return false;
+        }
+        let mut offset = start;
+        while self.rows.len() == 1 {
+            if offset >= resume.offset {
+                break;
+            }
+            let atom = self.atom(offset);
+            let begin = offset;
+            offset = atom.source.end;
+            if matches!(atom.text, "\n" | "\r\n" | "\r") {
+                break;
+            }
+            if atom.text.is_empty() || (begin == 0 && atom.text == "\u{feff}") {
+                continue;
+            }
+            self.place(atom);
+        }
+        if self.rows.len() < 2 {
+            // Too short to wrap before `resume`: start over normally.
+            self.rows.truncate(1);
+            self.rows[0].glyphs.clear();
+            self.rows[0].fill = None;
+            self.rows[0].end = start;
+            self.positions = Positions::default();
+            self.column = 0;
+            self.row_text = false;
+            self.word_start = true;
+            self.next_decoration = self.decorations.partition_point(|d| d.range.start < start);
+            self.sweep = Sweep::at(&self.parsed.styles, &self.parsed.reach, start);
+            self.next_code = self.code.partition_point(|(span, _)| span.end <= start);
+            self.begin_line(start);
+            return false;
+        }
+        // As `wrap` begins a row: the line's hang, then text.
+        let width = self.hang_width();
+        let mut row = VisualRow::new(resume.offset, None);
+        if let Some((glyphs, _)) = &self.context.hang {
+            row.glyphs = glyphs
+                .iter()
+                .map(|glyph| Glyph {
+                    source: resume.offset..resume.offset,
+                    ..glyph.clone()
+                })
+                .collect();
+        }
+        self.rows = vec![row];
+        self.positions = Positions::default();
+        self.column = width;
+        self.row_text = false;
+        // No later row is the line's first.
+        self.context.first_row = usize::MAX;
+        self.next_decoration = self
+            .decorations
+            .partition_point(|d| d.range.start < resume.offset);
+        self.sweep = Sweep::at(&self.parsed.styles, &self.parsed.reach, resume.offset);
+        self.next_code = self
+            .code
+            .partition_point(|(span, _)| span.end <= resume.offset);
+        true
     }
 
     /// Note the row holding `window.through` once layout passes it.

@@ -893,6 +893,74 @@ fn same_row(window: &VisualRow, whole: &VisualRow) -> bool {
         })
 }
 
+/// A window resumed at a later row of a literal line lays out exactly as
+/// the whole document does from that row; other lines start over.
+#[allow(clippy::too_many_arguments)]
+fn check_resumes(
+    text: &str,
+    parsed: &Parsed,
+    disclosed: &[Range<usize>],
+    width: usize,
+    live: bool,
+    whole: &Projection,
+    window: Window,
+    first: usize,
+) {
+    let continued = whole.rows[first + 1..]
+        .iter()
+        .take_while(|row| !row.restart)
+        .count();
+    for row in [1, continued / 2, continued]
+        .into_iter()
+        .filter(|row| (1..=continued).contains(row))
+    {
+        let resume = Resume {
+            row,
+            offset: whole.rows[first + row].start,
+        };
+        let code = parsed.code_styles(text, window.start..text.len());
+        let p = Projection::window(
+            text,
+            parsed,
+            &code,
+            disclosed,
+            width,
+            live,
+            Window {
+                resume: Some(resume),
+                ..window
+            },
+        );
+        let skipped = p.first_row();
+        assert!(skipped == 0 || (skipped == row && !live), "{text:?}");
+        let from = first + skipped;
+        assert_eq!(
+            p.rows.len(),
+            whole.rows.len() - from,
+            "{text:?} resumed at {resume:?}"
+        );
+        for (row, expected) in p.rows.iter().zip(&whole.rows[from..]) {
+            assert!(
+                same_row(row, expected),
+                "{text:?} resumed at {resume:?}:\n{row:?}\n{expected:?}"
+            );
+        }
+        let begin = whole.rows[from].start;
+        for offset in begin..=text.len() {
+            if text.is_char_boundary(offset) && whole.positions.contains(offset) {
+                let (row, column) = whole.cursor(offset);
+                if row >= from {
+                    assert_eq!(
+                        p.cursor(offset),
+                        (row - from, column),
+                        "{text:?} at {offset}"
+                    );
+                }
+            }
+        }
+    }
+}
+
 /// Every line where `Parsed::restarts_at` allows a window to begin lays out
 /// exactly as the whole document does from that row, and a short window
 /// stops where a later line begins.
@@ -918,7 +986,9 @@ fn check_windows(
             line: index + 1,
             through: start,
             after: usize::MAX,
+            resume: None,
         };
+        check_resumes(text, parsed, disclosed, width, live, whole, window, first);
         let code = parsed.code_styles(text, start..text.len());
         let p = Projection::window(text, parsed, &code, disclosed, width, live, window);
         assert!(p.complete());
@@ -1073,4 +1143,36 @@ fn generated_tables_keep_rectangular_grids_and_source_order() {
         }
         check_layouts(&text, &parsed, &mut noise);
     }
+}
+
+#[test]
+fn long_literal_lines_resume_at_a_later_row() {
+    let text = format!("short\n    {}\nnext\n", "token(arg)\t".repeat(200));
+    let rust = crate::syntax::Language::for_fence("rust");
+    let parsed = Parsed::new(&text, Document::new(&text).markdown(), false, rust);
+    let whole = Projection::build(&text, &parsed, Selection::caret(0), 24, false);
+    let first = whole
+        .rows
+        .iter()
+        .position(|row| row.line == Some(2))
+        .unwrap();
+    let row = 37;
+    let window = Window {
+        start: whole.rows[first].start,
+        line: 2,
+        through: whole.rows[first + row].start,
+        after: 5,
+        resume: Some(Resume {
+            row,
+            offset: whole.rows[first + row].start,
+        }),
+    };
+    let p = Projection::window(&text, &parsed, &[], &[], 24, false, window);
+    assert_eq!(p.first_row(), row);
+    assert_eq!(p.rows.len(), 6);
+    for (resumed, expected) in p.rows.iter().zip(&whole.rows[first + row..]) {
+        assert!(same_row(resumed, expected));
+    }
+    // The hanging indent continues on resumed rows.
+    assert_eq!(p.rows[0].glyphs[0].source, p.rows[0].start..p.rows[0].start);
 }

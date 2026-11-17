@@ -2,7 +2,7 @@ use crate::syntax::{Highlighter, Language};
 use crate::{
     clipboard::{self, Clipboard},
     file_io::{ExternalChange, FileState},
-    projection::{Affinity, Fill, FillKind, Parsed, Projection, Window, safe_text},
+    projection::{Affinity, Fill, FillKind, Parsed, Projection, Resume, Window, safe_text},
     search::{
         Action as SearchAction, Button as SearchButton, FieldDrag, FieldGlyph, FieldMap, Focus,
         Geometry as SearchGeometry, Search, contains,
@@ -151,6 +151,21 @@ const LARGE_FENCE: usize = 8 * 1024;
 /// when typing pauses.
 const EAGER_WORD_COUNT: usize = 8 * 1024;
 
+/// Windows skip at least this many rows of a long line when they resume
+/// inside it; nearer rows are cheaper to lay out than to look up.
+const LONG_LINE_ROWS: usize = 32;
+
+/// Where the rows of one long source line begin, from earlier layouts of a
+/// source view, so a window inside the line can resume near it.
+struct Wraps {
+    document: u64,
+    revision: u64,
+    width: usize,
+    /// The line's start, which is its first row's.
+    start: usize,
+    rows: Vec<usize>,
+}
+
 /// The first visible row: `row` rows into the layout of zero-based source
 /// line `line`. A line, unlike a row number, survives relayout.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -195,6 +210,7 @@ pub struct App {
     /// Saved lexer states for large Markdown code blocks, by block start.
     fences: Vec<(usize, Highlighter)>,
     fence_document: u64,
+    wraps: Option<Wraps>,
     /// Laid out for the rows around the viewport only.
     pub projection: Projection,
     pub viewport: Rect,
@@ -564,6 +580,7 @@ impl App {
             highlighted: u64::MAX,
             fences: Vec::new(),
             fence_document: u64::MAX,
+            wraps: None,
             projection: Projection::default(),
             viewport: Rect::default(),
             scroll: 0,
@@ -733,10 +750,14 @@ impl App {
 
     /// Lay out the window from zero-based `line` (or the restart point
     /// before it) through the row holding `through` and `after` more rows.
-    fn lay_out(&mut self, line: usize, through: usize, after: usize) {
+    fn lay_out(&mut self, line: usize, through: usize, before: usize, after: usize) {
         let Some(key) = self.layout_key.clone() else {
             return;
         };
+        // Inside a long source line, begin `before` rows above `through`'s
+        // row rather than at the line's start.
+        let resume = self.resume_point(through, before);
+        let line = resume.map_or(line, |_| self.document.line_index(through));
         let document = &self.document;
         let text = document.text();
         let live = key.3;
@@ -774,8 +795,132 @@ impl App {
                 line: line + 1,
                 through: through.max(start),
                 after,
+                resume,
             },
         );
+        self.record_wraps();
+    }
+
+    /// Bring the long-line row starts to this revision: starts at or before
+    /// an edit hold, unless it changed the first row, which sets the
+    /// hanging indent; a change before the line drops them.
+    fn update_wraps(&mut self) {
+        let (id, revision, width) = (
+            self.document.id(),
+            self.document.revision(),
+            self.layout_width(),
+        );
+        let changed = self.wraps.as_ref().and_then(|wraps| {
+            (wraps.revision != revision).then(|| self.document.first_change_since(wraps.revision))
+        });
+        let live = self.live_view();
+        let Some(wraps) = &mut self.wraps else {
+            return;
+        };
+        if wraps.document != id || wraps.width != width || live {
+            self.wraps = None;
+            return;
+        }
+        if let Some(changed) = changed {
+            match changed {
+                Some(at) if at < wraps.start => {
+                    self.wraps = None;
+                    return;
+                }
+                Some(at) => {
+                    let kept = if wraps.rows.get(1).is_some_and(|second| at >= *second) {
+                        wraps.rows.partition_point(|row| *row <= at)
+                    } else {
+                        1
+                    };
+                    wraps.rows.truncate(kept);
+                }
+                None => {}
+            }
+            wraps.revision = revision;
+        }
+    }
+
+    /// A known row of a long line to begin a window at, `before` rows above
+    /// the row holding `offset`.
+    fn resume_point(&mut self, offset: usize, before: usize) -> Option<Resume> {
+        self.update_wraps();
+        let wraps = self.wraps.as_ref()?;
+        let line = self.document.line_index(wraps.start);
+        if self.document.line_start(line) != wraps.start
+            || offset < wraps.start
+            || offset > self.document.line_content(line).end
+        {
+            return None;
+        }
+        let row = wraps.rows.partition_point(|start| *start <= offset) - 1;
+        let row = row
+            .checked_sub(before)
+            .filter(|row| *row >= LONG_LINE_ROWS)?;
+        Some(Resume {
+            row,
+            offset: wraps.rows[row],
+        })
+    }
+
+    /// Remember where the rows of the first long line in the window begin,
+    /// extending what is known of it.
+    fn record_wraps(&mut self) {
+        if self.live_view() {
+            return;
+        }
+        let projection = &self.projection;
+        let rows = projection.rows(0..projection.row_count());
+        let mut index = 0;
+        let (skipped, count) = loop {
+            if index >= rows.len() {
+                return;
+            }
+            let count = 1 + rows[index + 1..]
+                .iter()
+                .take_while(|row| !row.restart)
+                .count();
+            let skipped = if index == 0 {
+                projection.first_row()
+            } else {
+                0
+            };
+            if skipped + count >= LONG_LINE_ROWS * 2 {
+                break (skipped, count);
+            }
+            index += count;
+        };
+        let first = rows[index].start;
+        let start = self.document.line_start(self.document.line_index(first));
+        let starts = rows[index..index + count].iter().map(|row| row.start);
+        let (id, revision, width) = (
+            self.document.id(),
+            self.document.revision(),
+            self.layout_width(),
+        );
+        match &mut self.wraps {
+            Some(wraps)
+                if wraps.document == id
+                    && wraps.revision == revision
+                    && wraps.width == width
+                    && wraps.start == start
+                    && wraps.rows.len() >= skipped
+                    && wraps.rows.get(skipped).is_none_or(|row| *row == first) =>
+            {
+                wraps.rows.truncate(skipped);
+                wraps.rows.extend(starts);
+            }
+            _ if skipped == 0 && first == start => {
+                self.wraps = Some(Wraps {
+                    document: id,
+                    revision,
+                    width,
+                    start,
+                    rows: starts.collect(),
+                });
+            }
+            _ => {}
+        }
     }
 
     /// Highlighting for `start..end`: of a code file, from the nearest saved
@@ -854,15 +999,33 @@ impl App {
         let height = self.page_height();
         let line = self.top.line.min(self.document.line_count() - 1);
         let start = self.document.line_start(line);
+        // The top row's start, when a long line's rows are known.
+        self.update_wraps();
+        let top = self
+            .wraps
+            .as_ref()
+            .filter(|wraps| wraps.start == start)
+            .filter(|_| self.top.row >= LONG_LINE_ROWS + above + OVERSCAN)
+            .and_then(|wraps| wraps.rows.get(self.top.row))
+            .copied();
         let mut back = above + OVERSCAN;
         loop {
-            self.lay_out(
-                line.saturating_sub(back),
-                start,
-                self.top.row + height + below + OVERSCAN,
-            );
-            self.scroll = (self.projection.first_row_at(start) + self.top.row)
-                .min(self.projection.row_count() - 1);
+            match top {
+                Some(top) => self.lay_out(line, top, above + OVERSCAN, height + below + OVERSCAN),
+                None => self.lay_out(
+                    line.saturating_sub(back),
+                    start,
+                    0,
+                    self.top.row + height + below + OVERSCAN,
+                ),
+            }
+            let skipped = self.projection.first_row();
+            self.scroll = if skipped > 0 {
+                self.top.row - skipped
+            } else {
+                self.projection.first_row_at(start) + self.top.row
+            }
+            .min(self.projection.row_count() - 1);
             // Each line is at least one row, so this rarely repeats.
             if self.scroll >= above || self.projection.start() == 0 || back > line {
                 break;
@@ -895,6 +1058,13 @@ impl App {
     /// The top anchor for window row `row`.
     fn anchor_at(&self, row: usize) -> Anchor {
         let restart = self.projection.restart_row(row);
+        if !self.projection.row(restart).restart {
+            // The window resumed inside a long line.
+            return Anchor {
+                line: self.document.line_index(self.projection.row(0).start),
+                row: self.projection.first_row() + row,
+            };
+        }
         Anchor {
             line: self.document.line_index(self.projection.row(restart).start),
             row: row - restart,
@@ -940,7 +1110,9 @@ impl App {
         let mut back = above + OVERSCAN;
         loop {
             let below = height.saturating_sub(above) + OVERSCAN;
-            self.lay_out(line.saturating_sub(back), head, below);
+            // Filling the last page may want up to a screen above the caret.
+            let before = if fill { height } else { above } + OVERSCAN;
+            self.lay_out(line.saturating_sub(back), head, before, below);
             let row = self.caret_cell().map_or(0, |cell| cell.0);
             let mut wanted = above;
             if fill && self.projection.complete() {
@@ -1903,18 +2075,22 @@ impl App {
         };
         let colors = palette();
         let rows = self.projection.rows(0..self.projection.row_count());
+        // A window resumed inside a long line begins on that line.
+        let resumed = (self.projection.first_row() > 0)
+            .then(|| self.document.line_index(self.projection.start()) + 1);
         let line_of = |row: usize| {
             rows[..=row.min(rows.len() - 1)]
                 .iter()
                 .rev()
                 .find_map(|r| r.line)
+                .or(resumed)
         };
         // Source views number every line, so rows agree with the document.
         let caret_line = Some(self.document.line_index(self.document.selection().head) + 1);
         let mut line = if self.scroll > 0 {
             line_of(self.scroll - 1)
         } else {
-            None
+            resumed
         };
         let guides = if digits > 0 {
             self.indent_guides(height)
@@ -2092,12 +2268,16 @@ impl App {
             self.document.line_index(self.projection.end())
         };
         let beyond = (after..self.line_count()).map(|line| self.line_indent(line));
+        let resumed = (self.projection.first_row() > 0)
+            .then(|| self.line_indent(self.document.line_index(self.projection.start())))
+            .flatten();
         Some(indent_guides(
             self.projection.rows(0..self.projection.row_count()),
             self.scroll,
             height,
             unit,
             beyond,
+            resumed,
         ))
     }
 
@@ -2478,8 +2658,14 @@ impl App {
         let text = self.document.text();
         let head = self.document.selection().head;
         let line = self.document.line_index(head);
-        let line_start = self.document.line_start(line);
-        (line + 1, text[line_start..head].graphemes(true).count() + 1)
+        let before = &text[self.document.line_start(line)..head];
+        // Within a line, each ASCII byte is a grapheme of its own.
+        let column = if before.is_ascii() {
+            before.len()
+        } else {
+            before.graphemes(true).count()
+        };
+        (line + 1, column + 1)
     }
 
     /// Document length, in lines for code and words for prose, and how much
@@ -2805,13 +2991,15 @@ fn source_indent(line: &str) -> Option<usize> {
 /// Wrapped rows share their line's indent; blank lines take the indent of
 /// the code that follows, so a block's guides run through its blank lines
 /// and stop where it closes. `beyond` continues the search for that code
-/// past the last laid-out row, a line at a time.
+/// past the last laid-out row, a line at a time; `resumed` is the indent of
+/// a line whose first row precedes the window.
 fn indent_guides(
     rows: &[crate::projection::VisualRow],
     scroll: usize,
     height: usize,
     unit: usize,
     beyond: impl Iterator<Item = Option<usize>>,
+    resumed: Option<usize>,
 ) -> (usize, Vec<usize>) {
     let leading = |row: &crate::projection::VisualRow| {
         row.glyphs
@@ -2821,8 +3009,10 @@ fn indent_guides(
     };
     // Resolve each row's indent, carrying a line's indent onto its wrapped rows.
     let resolve = |index: usize| -> Option<usize> {
-        let first = rows[..=index].iter().rposition(|row| row.line.is_some())?;
-        leading(&rows[first])
+        match rows[..=index].iter().rposition(|row| row.line.is_some()) {
+            Some(first) => leading(&rows[first]),
+            None => resumed,
+        }
     };
     let end = (scroll + height).min(rows.len());
     let mut indents: Vec<Option<usize>> = (scroll..end).map(resolve).collect();

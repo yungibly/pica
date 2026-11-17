@@ -68,6 +68,18 @@ fn whole_document_moves(
     delta: isize,
     steps: usize,
 ) -> Vec<usize> {
+    whole_document_moves_from(0, text, markdown, live, width, delta, steps)
+}
+
+fn whole_document_moves_from(
+    from: usize,
+    text: &str,
+    markdown: bool,
+    live: bool,
+    width: usize,
+    delta: isize,
+    steps: usize,
+) -> Vec<usize> {
     let document = Document::new(text);
     let snapshot = if markdown {
         document.markdown()
@@ -75,7 +87,7 @@ fn whole_document_moves(
         MarkdownSnapshot::default()
     };
     let parsed = Parsed::new(text, snapshot, markdown, None);
-    let (mut head, mut affinity, mut preferred) = (0, Affinity::Downstream, None);
+    let (mut head, mut affinity, mut preferred) = (from, Affinity::Downstream, None);
     let mut moves = Vec::new();
     for _ in 0..steps {
         let projection = Projection::build(text, &parsed, Selection::caret(head), width, live);
@@ -388,14 +400,46 @@ fn a_very_long_line_lays_out_only_the_rows_shown_from_its_start() {
         draw(&mut app, 80, 24);
         assert!(caret_on_screen(&app) && bounded(&app));
     }
-    // Reaching the end of the line lays out the line up to the caret.
-    press(&mut app, KeyCode::End, KeyModifiers::CONTROL);
+    // Reaching the end of the line lays it out once; its row starts let
+    // later windows resume near the caret.
+    let line_end = text.len() - "\nafter\n".len() + 20;
+    app.document.set_caret(line_end).unwrap();
+    app.jump_to_source(line_end);
     draw(&mut app, 80, 24);
     assert!(caret_on_screen(&app));
-    press(&mut app, KeyCode::Up, KeyModifiers::NONE);
+    for c in "tail".chars() {
+        press(&mut app, KeyCode::Char(c), KeyModifiers::NONE);
+        draw(&mut app, 80, 24);
+        assert!(caret_on_screen(&app) && bounded(&app));
+        assert!(app.projection.first_row() > 0);
+    }
+    // Moving through the line agrees with laying out the whole document.
+    let text = app.document.text().to_owned();
+    let from = app.document.selection().head;
+    let columns = usize::from(app.viewport.width);
+    let height = usize::from(app.viewport.height) as isize;
+    let paged = windowed_moves(&mut app, KeyCode::PageUp, 12);
+    assert_eq!(
+        paged,
+        whole_document_moves_from(from, &text, false, false, columns, -height, 12)
+    );
+    let from = app.document.selection().head;
+    let down = windowed_moves(&mut app, KeyCode::Down, 30);
+    assert_eq!(
+        down,
+        whole_document_moves_from(from, &text, false, false, columns, 1, 30)
+    );
+    // Typing in the middle of the line keeps the rows above it.
+    press(&mut app, KeyCode::Char('y'), KeyModifiers::NONE);
     draw(&mut app, 80, 24);
-    assert!(caret_on_screen(&app));
-    assert!(app.document.selection().head > text.len() / 2);
+    assert!(caret_on_screen(&app) && bounded(&app));
+    // The view and the line number gutter stay on the long line.
+    assert_eq!(app.anchor_at(app.scroll).line, 1);
+    assert_eq!(
+        app.document.text().len(),
+        text.len() + 1,
+        "only the typed character changed"
+    );
 }
 
 #[test]

@@ -100,8 +100,21 @@ pub struct Window {
     pub line: usize,
     /// The window holds the row containing this offset…
     pub through: usize,
-    /// …and at least this many rows after it, ending where a line ends.
+    /// …and at least this many rows after it, ending where a row begins.
     pub after: usize,
+    /// Begin at a later row of the line at `start` instead of its first,
+    /// in literal (source) layout only. See `Resume`.
+    pub resume: Option<Resume>,
+}
+
+/// A row inside one long line where a window may begin: the row's number
+/// within the line and its source offset, from an earlier layout of the same
+/// line. Literal rows break by width alone, so the rows before an edit keep
+/// their starts and layout can skip them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Resume {
+    pub row: usize,
+    pub offset: usize,
 }
 
 impl Window {
@@ -112,6 +125,7 @@ impl Window {
         line: 1,
         through: usize::MAX,
         after: usize::MAX,
+        resume: None,
     };
 }
 
@@ -187,6 +201,9 @@ pub struct Projection {
     start: usize,
     end: usize,
     complete: bool,
+    /// The row number within its line of the first row, when a window
+    /// resumed inside a long line.
+    first_row: usize,
 }
 
 impl Default for Projection {
@@ -201,6 +218,7 @@ impl Default for Projection {
             start: 0,
             end: 0,
             complete: false,
+            first_row: 0,
         }
     }
 }
@@ -308,6 +326,12 @@ impl Projection {
     /// Whether the rows reach the end of the source.
     pub fn complete(&self) -> bool {
         self.complete
+    }
+
+    /// The first row's number within its source line: zero unless the
+    /// window resumed inside a long line.
+    pub fn first_row(&self) -> usize {
+        self.first_row
     }
 
     /// The caret cell for `offset`, when this window lays it out.
