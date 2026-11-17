@@ -1956,3 +1956,61 @@ fn a_megabyte_of_rust_highlights() {
     assert!(spans.len() > source.len() / 20);
     assert!(spans.iter().any(|(_, token)| *token == Token::Label));
 }
+
+/// Offsets where lines begin after the BOM, as `Highlighter` splits them.
+fn line_starts(source: &str, skip: usize) -> Vec<usize> {
+    let bytes = source.as_bytes();
+    let mut starts = vec![skip];
+    for at in skip + 1..source.len() {
+        if bytes[at - 1] == b'\n' || (bytes[at - 1] == b'\r' && bytes[at] != b'\n') {
+            starts.push(at);
+        }
+    }
+    starts
+}
+
+#[test]
+fn windows_match_whole_file_highlighting_across_edits() {
+    let mut rng = Rng(0x2545_f491_4f6c_dd1d);
+    for language in Language::all() {
+        let mut highlighter = Highlighter::new(language);
+        highlighter.spacing = 24;
+        let mut source = random_source(&mut rng, 400);
+        let mut unchanged = usize::MAX;
+        for revision in 0..10u64 {
+            let skip = if source.starts_with('\u{feff}') { 3 } else { 0 };
+            let full = run(
+                language,
+                &source,
+                std::slice::from_ref(&(skip..source.len())),
+            )
+            .spans;
+            let starts = line_starts(&source, skip);
+            let line_of = |at: usize| starts[starts.partition_point(|&s| s <= at) - 1];
+            for _ in 0..4 {
+                let a = starts[rng.below(starts.len())];
+                let b = starts[rng.below(starts.len())];
+                let (start, end) = (a.min(b), a.max(b) + 1);
+                let expected: Vec<_> = full
+                    .iter()
+                    .filter(|(range, _)| range.start >= start && line_of(range.start) < end)
+                    .cloned()
+                    .collect();
+                let spans = highlighter.window(&source, skip, revision, unchanged, start, end);
+                assert_eq!(spans, expected, "{language:?} {start}..{end} in {source:?}");
+            }
+            // Replace a random span; states saved before it stay usable.
+            let mut cut = || {
+                let at = rng.below(source.len() + 1);
+                (0..=at)
+                    .rev()
+                    .find(|&at| source.is_char_boundary(at))
+                    .unwrap()
+            };
+            let (x, y) = (cut(), cut());
+            let (from, to) = (x.min(y), x.max(y));
+            source.replace_range(from..to, &random_source(&mut rng, 6));
+            unchanged = from;
+        }
+    }
+}

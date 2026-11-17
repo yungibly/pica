@@ -11,7 +11,7 @@ use super::{
 /// POSIX/Bash-style shell. Keywords and builtins count only in command position.
 pub(super) struct Shell<'a> {
     src: &'a str,
-    mode: Mode<'a>,
+    mode: Mode,
     /// The next word is a command name.
     command: bool,
     /// Arguments may be assignments (`export`, `local`, Dockerfile `ENV`).
@@ -26,7 +26,7 @@ pub(super) struct Shell<'a> {
     backtick: bool,
     /// The line ends with a backslash.
     continued: bool,
-    pending: Option<Heredoc<'a>>,
+    pending: Option<Heredoc>,
     /// Makefile recipe: `$$` escapes `$`, and `$(VAR)`, `$<`, `$^` are make variables.
     make: bool,
     /// Dockerfile arguments that are not commands.
@@ -35,8 +35,9 @@ pub(super) struct Shell<'a> {
 }
 
 #[derive(Clone, Copy)]
-struct Heredoc<'a> {
-    delimiter: &'a str,
+struct Heredoc {
+    /// Where the delimiter word sits in the source.
+    delimiter: (usize, usize),
     /// `<<-` strips leading tabs.
     tabs: bool,
     /// Unquoted delimiters expand `$` references in the body.
@@ -44,14 +45,30 @@ struct Heredoc<'a> {
 }
 
 #[derive(Clone, Copy)]
-enum Mode<'a> {
+enum Mode {
     Normal,
     Single,
     Double,
     /// `$'...'` with backslash escapes.
     Ansi,
-    Heredoc(Heredoc<'a>),
+    Heredoc(Heredoc),
 }
+
+rebind!(Shell {
+    mode,
+    command,
+    declaring,
+    expect_in,
+    function,
+    parens,
+    depth,
+    backtick,
+    continued,
+    pending,
+    make,
+    arguments,
+    start
+});
 
 impl<'a> Shell<'a> {
     pub(super) fn new(src: &'a str) -> Self {
@@ -287,7 +304,7 @@ impl<'a> Shell<'a> {
         out.push(k, stop, Token::Label);
         if self.pending.is_none() {
             self.pending = Some(Heredoc {
-                delimiter: &self.src[name..name_end],
+                delimiter: (name, name_end),
                 tabs,
                 expand: quote.is_none() && !escaped,
             });
@@ -301,7 +318,7 @@ impl<'a> Shell<'a> {
         while heredoc.tabs && k < end && b[k] == b'\t' {
             k += 1;
         }
-        if &self.src[k..end] == heredoc.delimiter {
+        if self.src[k..end] == self.src[heredoc.delimiter.0..heredoc.delimiter.1] {
             out.push(k, end, Token::Label);
             self.mode = Mode::Normal;
             return end;
@@ -641,6 +658,8 @@ pub(super) struct Make<'a> {
     depth: u32,
 }
 
+rebind!(Make { recipe, continued, define, depth }, nested shell);
+
 impl<'a> Make<'a> {
     pub(super) fn new(src: &'a str) -> Self {
         let mut shell = Shell::new(src);
@@ -893,6 +912,8 @@ pub(super) struct Docker<'a> {
     /// The current instruction continues on the next line.
     continued: bool,
 }
+
+rebind!(Docker { continued }, nested shell);
 
 impl<'a> Docker<'a> {
     pub(super) fn new(src: &'a str) -> Self {

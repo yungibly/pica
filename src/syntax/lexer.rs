@@ -163,7 +163,7 @@ impl Grammar {
 pub(super) struct Code<'a> {
     g: &'static Grammar,
     src: &'a str,
-    mode: Mode<'a>,
+    mode: Mode,
     /// Open brackets of a `#[...]` attribute.
     attribute: u32,
     /// Token for the next identifier after `fn`, `class`, ...
@@ -171,7 +171,7 @@ pub(super) struct Code<'a> {
     /// A single-line string escaped its line break.
     continued: bool,
     /// Heredoc delimiter (and whether it may be indented) for the next line.
-    pending: Option<(&'a str, bool)>,
+    pending: Option<(usize, usize, bool)>,
     /// PHP text outside `<?php ... ?>`.
     html: bool,
     /// Start of the current line; whether only whitespace precedes the cursor.
@@ -180,7 +180,7 @@ pub(super) struct Code<'a> {
 }
 
 #[derive(Clone, Copy)]
-enum Mode<'a> {
+enum Mode {
     Code,
     Comment(u32),
     /// Ruby `=begin` or Perl POD block.
@@ -192,11 +192,23 @@ enum Mode<'a> {
     /// Rust `r#"..."#` and Swift `#"..."#`: `"` followed by this many `#`.
     Raw(usize),
     /// C++ `R"delim(...)delim"`.
-    Delimited(&'a str),
+    Delimited(usize, usize),
     /// SQL `$tag$ ... $tag$`.
-    Dollar(&'a str),
-    Heredoc(&'a str, bool),
+    Dollar(usize, usize),
+    Heredoc(usize, usize, bool),
 }
+
+rebind!(Code {
+    g,
+    mode,
+    attribute,
+    define,
+    continued,
+    pending,
+    html,
+    start,
+    first
+});
 
 impl<'a> Code<'a> {
     pub(super) fn new(g: &'static Grammar, src: &'a str, segments: &[Range<usize>]) -> Self {
@@ -443,7 +455,7 @@ impl<'a> Code<'a> {
                 return None;
             }
             out.push(i, paren + 1, Token::String);
-            self.mode = Mode::Delimited(&self.src[open..paren]);
+            self.mode = Mode::Delimited(open, paren);
             return Some(paren + 1);
         }
         if b[j] == b'\'' && g.char_literals {
@@ -870,7 +882,7 @@ impl<'a> Code<'a> {
             if tag < end && b[tag] == b'$' && tag - k <= 64 && !b[k].is_ascii_digit() {
                 let stop = tag + 1;
                 out.push(i, stop, Token::String);
-                self.mode = Mode::Dollar(&src[i..stop]);
+                self.mode = Mode::Dollar(i, stop);
                 return Some(stop);
             }
         }
@@ -946,7 +958,7 @@ impl<'a> Code<'a> {
         out.push(i, operator, Token::Operator);
         out.push(operator, stop, Token::Label);
         if self.pending.is_none() {
-            self.pending = Some((&src[name..name_end], indented));
+            self.pending = Some((name, name_end, indented));
         }
         Some(stop)
     }
@@ -1096,10 +1108,10 @@ impl<'a> Code<'a> {
             self.mode = Mode::Code;
         }
         self.continued = false;
-        if let Some((delimiter, indented)) = self.pending.take()
+        if let Some((from, to, indented)) = self.pending.take()
             && matches!(self.mode, Mode::Code)
         {
-            self.mode = Mode::Heredoc(delimiter, indented);
+            self.mode = Mode::Heredoc(from, to, indented);
         }
         self.define = None;
     }
@@ -1109,11 +1121,12 @@ impl Lex for Code<'_> {
     fn line(&mut self, start: usize, end: usize, out: &mut Out) {
         self.start = start;
         self.first = true;
-        let b = self.src.as_bytes();
+        let src = self.src;
+        let b = src.as_bytes();
         let mut i = match self.mode {
             Mode::Block => self.block_line(start, end, out),
-            Mode::Heredoc(delimiter, indented) => {
-                self.heredoc_line(start, end, delimiter, indented, out)
+            Mode::Heredoc(from, to, indented) => {
+                self.heredoc_line(start, end, &src[from..to], indented, out)
             }
             _ => start,
         };
@@ -1126,8 +1139,8 @@ impl Lex for Code<'_> {
                 Mode::Long(level, comment) => self.long(i, end, level, comment, out),
                 Mode::Str(quote, raw) => self.string(i, end, quote, raw, out),
                 Mode::Raw(hashes) => self.raw(i, end, hashes, out),
-                Mode::Delimited(delimiter) => self.delimited(i, end, delimiter, out),
-                Mode::Dollar(tag) => self.dollar_quoted(i, end, tag, out),
+                Mode::Delimited(from, to) => self.delimited(i, end, &src[from..to], out),
+                Mode::Dollar(from, to) => self.dollar_quoted(i, end, &src[from..to], out),
                 Mode::Block | Mode::Heredoc(..) => end,
             };
             if !is_ws(b[i]) {
