@@ -247,3 +247,47 @@ fn palette_runs_the_new_editing_commands() {
     assert!(app.editor().workspace_commands_allowed());
     assert!(!app.editor().has_modal());
 }
+
+#[test]
+fn launch_opens_arguments_in_order_and_shares_duplicate_paths() {
+    let dir = tempfile::tempdir().unwrap();
+    let first = dir.path().join("first.md");
+    let second = dir.path().join("second.txt");
+    std::fs::write(&first, "a\nb\nc\n").unwrap();
+    std::fs::write(&second, "x\r\ny\r\n").unwrap();
+    let app = Workspace::launch(vec![
+        Launch::Path(first.clone(), None),
+        Launch::Piped("piped # text\n".into(), Some((1, 3))),
+        Launch::Path(second.clone(), Some((2, 2))),
+        Launch::Path(dir.path().join("./first.md"), Some((3, 1))),
+        Launch::Piped(String::new(), None),
+    ])
+    .unwrap();
+    assert_eq!(app.tabs.len(), 4);
+    assert_eq!(app.active, 0);
+    assert_eq!(app.tabs[0].editor.document.selection().head, 4);
+    assert_eq!(app.tabs[1].editor.document.selection().head, 2);
+    assert!(!app.tabs[1].editor.is_markdown());
+    assert!(app.tabs[1].editor.document.is_dirty());
+    assert!(app.tabs[1].editor.path().is_none());
+    assert_eq!(app.name(1), "Untitled 2");
+    assert_eq!(app.tabs[2].editor.document.selection().head, 4);
+    assert!(!app.tabs[3].editor.document.is_dirty());
+    assert!(app.browser.is_none());
+    for tab in &app.tabs {
+        assert_eq!(tab.editor.document.revision(), 0);
+    }
+    let app = Workspace::launch(vec![Launch::Path(dir.path().to_owned(), None)]).unwrap();
+    assert!(app.browser.is_some());
+    assert_eq!(app.tabs.len(), 1);
+    assert!(app.editor().is_markdown());
+    let bad = dir.path().join("bad.md");
+    std::fs::write(&bad, b"\xff").unwrap();
+    let error = Workspace::launch(vec![
+        Launch::Path(dir.path().join("x.md"), None),
+        Launch::Path(bad, None),
+    ])
+    .err()
+    .unwrap();
+    assert!(error.to_string().contains("bad.md: "), "{error}");
+}

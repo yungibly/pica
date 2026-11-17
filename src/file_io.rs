@@ -257,6 +257,39 @@ impl FileState {
     }
 }
 
+/// Read piped input, such as standard input, as UTF-8 text of at most
+/// `max_bytes` without NUL bytes. It never becomes a file's baseline.
+pub fn read_input(reader: impl Read, max_bytes: usize) -> io::Result<String> {
+    let bytes = read_limited(reader, max_bytes).map_err(|error| {
+        if error.kind() == io::ErrorKind::InvalidData {
+            let limit = if max_bytes.is_multiple_of(1024 * 1024) {
+                format!("{} MiB", max_bytes / (1024 * 1024))
+            } else {
+                format!("{max_bytes}-byte")
+            };
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Standard input exceeds the {limit} limit"),
+            )
+        } else {
+            error
+        }
+    })?;
+    let text = String::from_utf8(bytes).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Standard input is not valid UTF-8 text",
+        )
+    })?;
+    if text.contains('\0') {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Standard input contains binary NUL bytes; pipe UTF-8 text",
+        ));
+    }
+    Ok(text)
+}
+
 fn matches_baseline(mut reader: impl Read, baseline: &[u8]) -> io::Result<bool> {
     let mut buffer = [0; 8192];
     for expected in baseline.chunks(buffer.len()) {
@@ -599,6 +632,29 @@ mod tests {
         assert!(!matches_baseline(Cursor::new(b"different"), b"original!").unwrap());
         assert!(matches_baseline(io::empty(), b"").unwrap());
         assert!(!matches_baseline(Cursor::new(b"x"), b"").unwrap());
+    }
+
+    #[test]
+    fn piped_input_is_bounded_utf8_text_without_nul() {
+        use std::io::Cursor;
+        assert_eq!(
+            read_input(Cursor::new("é\r\nlog\n"), 8).unwrap(),
+            "é\r\nlog\n"
+        );
+        assert_eq!(read_input(io::empty(), 0).unwrap(), "");
+        let error = read_input(Cursor::new(vec![b'x'; 9]), 8).unwrap_err();
+        assert!(error.to_string().contains("8-byte limit"), "{error}");
+        let error = read_input(
+            Cursor::new(vec![b'x'; 2 * 1024 * 1024 + 1]),
+            2 * 1024 * 1024,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("2 MiB limit"), "{error}");
+        let error = read_input(Cursor::new(vec![0xff, b'a']), 8).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("UTF-8"), "{error}");
+        let error = read_input(Cursor::new("a\0b"), 8).unwrap_err();
+        assert!(error.to_string().contains("NUL"), "{error}");
     }
 
     #[test]

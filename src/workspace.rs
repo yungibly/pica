@@ -57,6 +57,12 @@ impl Tab {
     }
 }
 
+/// One command-line argument to open, with an optional line and column.
+pub enum Launch {
+    Path(PathBuf, Option<(usize, usize)>),
+    Piped(String, Option<(usize, usize)>),
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Intent {
     Close,
@@ -132,6 +138,78 @@ impl Workspace {
             layout_valid: false,
             should_exit: false,
         })
+    }
+
+    /// Open command-line arguments in order, the first one active. Files at
+    /// the same path share one tab; a folder opens the browser there; piped
+    /// text becomes an unsaved buffer. Positions are 1-based line and column.
+    pub fn launch(items: Vec<Launch>) -> io::Result<Self> {
+        let mut workspace = Self::open(None)?;
+        workspace.tabs.clear();
+        workspace.next_number = 1;
+        let mut directory = None;
+        for item in items {
+            let (editor, identity, position) = match item {
+                Launch::Path(path, _) if path.is_dir() => {
+                    directory = Some(path);
+                    continue;
+                }
+                Launch::Path(path, position) => {
+                    let context = |error: io::Error| {
+                        io::Error::new(
+                            error.kind(),
+                            format!("{}: {error}", safe_text(&path.display().to_string())),
+                        )
+                    };
+                    let identity = path_identity(&path).map_err(context)?;
+                    if let Some(tab) = workspace
+                        .tabs
+                        .iter_mut()
+                        .find(|tab| tab.identity.as_ref() == Some(&identity))
+                    {
+                        if let Some((line, column)) = position {
+                            tab.editor.go_to(line, column);
+                        }
+                        continue;
+                    }
+                    let editor =
+                        App::open_bounded(path.clone(), 8 * 1024 * 1024).map_err(context)?;
+                    (editor, Some(identity), position)
+                }
+                Launch::Piped(text, position) => (App::piped(text), None, position),
+            };
+            let mut tab = Tab {
+                editor,
+                number: workspace.next_number,
+                identity,
+                recovered: None,
+            };
+            if let Some((line, column)) = position {
+                tab.editor.go_to(line, column);
+            }
+            workspace.next_number += 1;
+            workspace.tabs.push(tab);
+        }
+        if workspace.tabs.is_empty() {
+            workspace.tabs.push(Tab {
+                editor: App::open(None)?,
+                number: workspace.next_number,
+                identity: None,
+                recovered: None,
+            });
+            workspace.next_number += 1;
+        }
+        if let Some(directory) = directory {
+            workspace.browser = Some(Browser::new(directory)?);
+        }
+        Ok(workspace)
+    }
+
+    /// `--source`: every Markdown tab starts with its source visible.
+    pub fn show_source(&mut self) {
+        for tab in &mut self.tabs {
+            tab.editor.live = false;
+        }
     }
 
     pub fn editor(&self) -> &App {

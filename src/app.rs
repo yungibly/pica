@@ -424,6 +424,16 @@ impl App {
         }
     }
 
+    /// Piped input opens untitled and unsaved, as plain text: logs and diffs
+    /// must not render as Markdown. Empty input is an ordinary empty buffer.
+    pub(crate) fn piped(text: String) -> Self {
+        let mut app = Self::new(text, None, false);
+        if !app.document.text().is_empty() {
+            app.document = Document::unsaved(app.document.text());
+        }
+        app
+    }
+
     pub(crate) fn is_markdown(&self) -> bool {
         self.markdown
     }
