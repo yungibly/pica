@@ -506,11 +506,17 @@ impl App {
         } else {
             length > LARGE_FILE
         };
-        if large && !self.large {
-            self.inform(format!(
-                "Large file ({} KiB): plain source view, without Markdown rendering or highlighting",
-                length / 1024
-            ));
+        // Plain text loses nothing, so only files that render say so.
+        let lost = if self.markdown {
+            Some("plain source view without Markdown rendering")
+        } else {
+            self.language.map(|_| "no syntax highlighting")
+        };
+        if large
+            && !self.large
+            && let Some(lost) = lost
+        {
+            self.inform(format!("Large file ({} KiB): {lost}", length / 1024));
         }
         self.large = large;
         self.highlighter = match (self.language, self.highlighter.take()) {
