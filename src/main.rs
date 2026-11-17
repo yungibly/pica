@@ -36,7 +36,7 @@ fn run() -> io::Result<()> {
             return Ok(());
         }
         cli::Action::ListThemes => {
-            for theme in theme::Theme::all() {
+            for theme in theme::Theme::choices() {
                 println!("{}\t{}", theme.id(), theme.name());
             }
             return Ok(());

@@ -375,7 +375,7 @@ fn snapshot(tab: &Tab) -> Snapshot {
                 .path()
                 .map(|path| path.to_string_lossy().into_owned())
                 .or_else(|| tab.recovered.as_ref().map(|(label, _)| label.clone()))
-                .unwrap_or_else(|| format!("Untitled {}.md", tab.number)),
+                .unwrap_or_else(|| super::untitled(tab.number)),
         )
         .chars()
         .take(1024)

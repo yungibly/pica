@@ -71,12 +71,10 @@ pub(super) struct Sidebar {
 }
 
 impl Sidebar {
-    /// Automatic visibility outlines only Markdown; an explicit choice holds
-    /// for every document.
-    pub fn visible(&self, area: Rect, markdown: bool) -> bool {
-        area.width >= 60
-            && area.height >= 8
-            && self.preference.unwrap_or(markdown && area.width >= 110)
+    /// The outline is opt-in, like any panel in micro; an explicit choice
+    /// holds for every document and is remembered.
+    pub fn visible(&self, area: Rect, _markdown: bool) -> bool {
+        area.width >= 60 && area.height >= 8 && self.preference.unwrap_or(false)
     }
 
     pub fn invalidate(&mut self) {

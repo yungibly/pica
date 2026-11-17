@@ -907,7 +907,7 @@ def main():
     parser.add_argument("--keyboard", choices=["baseline", "enhanced"], default="enhanced")
     parser.add_argument("--suite", choices=["all", "captures", "protocol", "unicode", "workspace", "themes", "reliability", "chrome", "workflows", "rendering"], default="all")
     parser.add_argument("--palette", choices=["dark", "light"], default="dark")
-    parser.add_argument("--theme", choices=["dark", "light"],
+    parser.add_argument("--theme", choices=["dark", "light", "terminal"],
                         help="Editor theme; omitted for compatibility with older binaries")
     parser.add_argument("--icons", choices=["plain", "nerd"], help="Editor icon mode; omitted for older binaries")
     parser.add_argument("--font", default="JetBrains Mono", help="Preferred tui-test recording font family")

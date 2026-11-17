@@ -28,18 +28,57 @@ pub struct ChromePalette {
 static PALETTES: OnceLock<Vec<ChromePalette>> = OnceLock::new();
 
 pub(super) fn for_theme(theme: Theme) -> ChromePalette {
+    if !theme.is_rgb() {
+        return terminal();
+    }
     let palettes =
         PALETTES.get_or_init(|| Theme::all().map(|theme| derive(theme.palette())).collect());
     let index = match theme {
-        Theme::Dark => 0,
+        Theme::Terminal | Theme::Dark => 0,
         Theme::Light => 1,
         Theme::Builtin(index) => usize::from(index) + 2,
     };
     palettes.get(index).copied().unwrap_or(palettes[0])
 }
 
+/// Fixed terminal-color chrome. Bars and the active tab are drawn in
+/// reverse video by their consumers (`theme::highlight`), so every pair
+/// keeps the terminal's own colors and no RGB math is involved.
+fn terminal() -> ChromePalette {
+    let plain = ColorPair {
+        foreground: Color::Reset,
+        background: Color::Reset,
+        reverse: false,
+    };
+    let reversed = ColorPair {
+        reverse: true,
+        ..plain
+    };
+    ChromePalette {
+        sidebar: plain,
+        sidebar_muted: Color::DarkGray,
+        separator: Color::DarkGray,
+        tab_inactive: ColorPair {
+            foreground: Color::DarkGray,
+            ..plain
+        },
+        tab_active: reversed,
+        tab_indicator: Color::Cyan,
+        status: reversed,
+        status_accent: reversed,
+        status_alternate: reversed,
+        status_secondary: reversed,
+        status_warning: ColorPair {
+            foreground: Color::Black,
+            background: Color::Red,
+            reverse: false,
+        },
+    }
+}
+
 fn pair(foreground: Color, background: Color) -> ColorPair {
     ColorPair {
+        reverse: false,
         foreground: readable(foreground, &[background], ink(background)),
         background,
     }

@@ -11,7 +11,10 @@ pub use chrome::ChromePalette;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Theme {
+    /// The terminal's own foreground, background, and ANSI colors, with
+    /// reverse video for selections and bars, as nano draws them.
     #[default]
+    Terminal,
     Dark,
     Light,
     /// Catalog index is process-local; persist `id()` instead.
@@ -19,7 +22,7 @@ pub enum Theme {
 }
 
 thread_local! {
-    static THEME: Cell<Theme> = const { Cell::new(Theme::Dark) };
+    static THEME: Cell<Theme> = const { Cell::new(Theme::Terminal) };
 }
 
 /// Select the palette on the UI thread. Existing editors refresh on next draw.
@@ -41,11 +44,18 @@ pub fn current_theme() -> Theme {
 pub struct ColorPair {
     pub foreground: Color,
     pub background: Color,
+    /// Drawn in reverse video: the terminal theme's highlighted surfaces.
+    pub reverse: bool,
 }
 
 impl ColorPair {
     pub fn style(self) -> Style {
-        Style::default().fg(self.foreground).bg(self.background)
+        let style = Style::default().fg(self.foreground).bg(self.background);
+        if self.reverse {
+            style.add_modifier(ratatui::style::Modifier::REVERSED)
+        } else {
+            style
+        }
     }
 }
 
@@ -131,6 +141,62 @@ fn fade(page: Color, inks: [Color; 6], amount: u16) -> [Color; 6] {
         *band = mix(page, *band, amount * HEADING_STRENGTH[level] / 100);
     }
     bands
+}
+
+/// The terminal's default colors plus its ANSI palette. Surfaces stay the
+/// terminal background (`Reset`), so the editor looks like the terminal it
+/// runs in, light or dark. Ink avoids blue and yellow, which common default
+/// palettes render unreadably on dark and light backgrounds; bars,
+/// selections, and highlighted rows use reverse video (see `highlight`).
+fn terminal_palette() -> Palette {
+    use Color::{Cyan, DarkGray, Green, Magenta, Red, Reset, Yellow};
+    Palette {
+        background: Reset,
+        foreground: Reset,
+        muted: DarkGray,
+        chrome: Reset,
+        chrome_text: Reset,
+        chrome_muted: DarkGray,
+        active: Reset,
+        field: Reset,
+        accent: Cyan,
+        heading: Magenta,
+        link: Cyan,
+        code: Green,
+        code_background: Reset,
+        quote: DarkGray,
+        border: DarkGray,
+        warning: Red,
+        search: Yellow,
+        search_text: Color::Black,
+        search_active: Cyan,
+        search_active_text: Color::Black,
+        selection: Reset,
+        selection_text: Reset,
+        cursorline: Reset,
+        faint: DarkGray,
+        list_marker: Cyan,
+        headings: [Magenta, Cyan, Green, Reset, Reset, DarkGray],
+        heading_bands: [Reset; 6],
+        callouts: [Cyan, Green, Magenta, Red, Red],
+        syntax: Syntax {
+            comment: DarkGray,
+            keyword: Magenta,
+            types: Cyan,
+            function: Reset,
+            string: Green,
+            escape: Cyan,
+            constant: Red,
+            operator: Reset,
+            punctuation: Reset,
+            special: Cyan,
+            property: Reset,
+            tag: Magenta,
+            variable: Reset,
+            inserted: Green,
+            deleted: Red,
+        },
+    }
 }
 
 /// The original hand-tuned pair; only surfaces behind headings are mixed.
@@ -264,7 +330,19 @@ fn sage_palettes() -> [Palette; 2] {
 }
 
 impl Theme {
-    /// Sage aliases first, followed by the upstream names in stable name order.
+    /// Every selectable theme: Terminal first, then the explicit-color catalog.
+    pub fn choices() -> impl Iterator<Item = Self> {
+        std::iter::once(Self::Terminal).chain(Self::all())
+    }
+
+    /// Whether this theme paints explicit RGB colors, rather than deferring
+    /// to the terminal's own palette.
+    pub fn is_rgb(self) -> bool {
+        self != Self::Terminal
+    }
+
+    /// The explicit-color catalog: Sage first, then the upstream names in
+    /// stable name order. Terminal is listed separately by `choices`.
     pub fn all() -> impl ExactSizeIterator<Item = Self> + DoubleEndedIterator {
         (0..BUILTINS.len() + 2).map(|index| match index {
             0 => Self::Dark,
@@ -275,6 +353,7 @@ impl Theme {
 
     pub fn name(self) -> &'static str {
         match self {
+            Self::Terminal => "Terminal",
             Self::Dark => "Sage Dark",
             Self::Light => "Sage Light",
             Self::Builtin(index) => BUILTINS
@@ -286,6 +365,7 @@ impl Theme {
     /// Stable identifier for configuration; numeric Builtin indices may change.
     pub fn id(self) -> &'static str {
         match self {
+            Self::Terminal => "terminal",
             Self::Dark => "sage-dark",
             Self::Light => "sage-light",
             Self::Builtin(index) => BUILTINS
@@ -297,6 +377,7 @@ impl Theme {
     pub fn from_name(name: &str) -> Option<Self> {
         let normalized: Vec<_> = normalized_bytes(name).collect();
         let lookup: &[u8] = match normalized.as_slice() {
+            b"terminal" | b"default" | b"ansi" => return Some(Self::Terminal),
             b"dark" | b"sagedark" => return Some(Self::Dark),
             b"light" | b"sagelight" => return Some(Self::Light),
             b"catppuccin" => b"catppuccinmocha",
@@ -320,6 +401,8 @@ impl Theme {
     /// original background, rather than trusting inconsistent theme names.
     pub fn is_dark(self) -> bool {
         let background = match self {
+            // Unknown without querying the terminal; nothing depends on it.
+            Self::Terminal => return true,
             Self::Dark => return true,
             Self::Light => return false,
             Self::Builtin(index) => match BUILTINS.get(usize::from(index)) {
@@ -342,6 +425,7 @@ impl Theme {
                 .get(usize::from(index))
                 .copied()
                 .unwrap_or_else(|| Self::Dark.palette()),
+            Self::Terminal => terminal_palette(),
             Self::Dark => SAGE_PALETTES.get_or_init(sage_palettes)[0],
             Self::Light => SAGE_PALETTES.get_or_init(sage_palettes)[1],
         }
@@ -609,6 +693,9 @@ pub fn palette() -> Palette {
 /// that stays readable, as token and heading colors usually do.
 pub fn selected(style: Style) -> Style {
     let colors = palette();
+    if !current_theme().is_rgb() {
+        return reversed(style);
+    }
     let ink = style
         .fg
         .filter(|ink| matches!(ink, Color::Rgb(..)) && contrast(*ink, colors.selection) >= 3.0)
@@ -617,6 +704,25 @@ pub fn selected(style: Style) -> Style {
         .fg(ink)
         .bg(colors.selection)
         .remove_modifier(ratatui::style::Modifier::REVERSED)
+}
+
+/// Reverse video over the terminal's own colors: the one highlight every
+/// terminal draws legibly whatever its palette, light or dark.
+pub fn reversed(style: Style) -> Style {
+    style
+        .fg(Color::Reset)
+        .bg(Color::Reset)
+        .add_modifier(ratatui::style::Modifier::REVERSED)
+}
+
+/// A highlighted surface: `color` on explicit-color themes, reverse video
+/// on the terminal theme, whose surfaces are the terminal's own background.
+pub fn highlight(style: Style, color: Color) -> Style {
+    if current_theme().is_rgb() {
+        style.bg(color)
+    } else {
+        reversed(style)
+    }
 }
 
 pub fn document_style() -> Style {
@@ -845,12 +951,54 @@ mod tests {
         set_theme(chosen);
         assert_eq!(palette(), chosen.palette());
         std::thread::spawn(|| {
-            assert_eq!(current_theme(), Theme::Dark);
+            assert_eq!(current_theme(), Theme::Terminal);
             set_theme(Theme::Light);
         })
         .join()
         .unwrap();
         assert_eq!(current_theme(), chosen);
         set_theme(Theme::Dark);
+    }
+
+    #[test]
+    fn terminal_theme_defers_to_the_terminal_and_reverses_highlights() {
+        assert_eq!(Theme::default(), Theme::Terminal);
+        assert_eq!(Theme::from_name("terminal"), Some(Theme::Terminal));
+        assert_eq!(
+            Theme::from_name("Terminal").map(Theme::id),
+            Some("terminal")
+        );
+        assert_eq!(Theme::choices().next(), Some(Theme::Terminal));
+        assert!(Theme::all().all(Theme::is_rgb));
+        let p = Theme::Terminal.palette();
+        assert_eq!((p.foreground, p.background), (Color::Reset, Color::Reset));
+        assert!(p.heading_bands.iter().all(|band| *band == Color::Reset));
+        set_theme(Theme::Terminal);
+        let selected = selected(Style::default().fg(Color::Blue));
+        assert!(
+            selected
+                .add_modifier
+                .contains(ratatui::style::Modifier::REVERSED)
+        );
+        let chrome = chrome_palette();
+        assert!(chrome.status.reverse && chrome.tab_active.reverse);
+        assert!(
+            chrome
+                .status
+                .style()
+                .add_modifier
+                .contains(ratatui::style::Modifier::REVERSED)
+        );
+        set_theme(Theme::Dark);
+        assert!(!chrome_palette().status.reverse);
+        assert!(
+            !selected_on_dark()
+                .add_modifier
+                .contains(ratatui::style::Modifier::REVERSED)
+        );
+    }
+
+    fn selected_on_dark() -> Style {
+        selected(Style::default())
     }
 }

@@ -112,7 +112,7 @@ pub fn prompt(frame: &mut Frame, row: Rect, query: &Document, placeholder: &str)
             }
             let offset = start + index;
             let style = if offset < selection.end && selection.start < offset + grapheme.len() {
-                surface().bg(colors.selection).fg(colors.selection_text)
+                crate::theme::highlight(surface().fg(colors.selection_text), colors.selection)
             } else {
                 surface()
             };

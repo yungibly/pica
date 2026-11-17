@@ -433,7 +433,7 @@ impl Workspace {
 
     fn open_themes(&mut self) {
         self.editor_mut().deactivate();
-        let themes: Vec<_> = Theme::all().collect();
+        let themes: Vec<_> = Theme::choices().collect();
         let original = current_theme();
         let selected = themes
             .iter()
@@ -444,7 +444,14 @@ impl Workspace {
             .map(|theme| {
                 (
                     theme.name().to_owned(),
-                    if theme.is_dark() { "Dark" } else { "Light" }.to_owned(),
+                    if !theme.is_rgb() {
+                        "Your colors"
+                    } else if theme.is_dark() {
+                        "Dark"
+                    } else {
+                        "Light"
+                    }
+                    .to_owned(),
                 )
             })
             .collect();
@@ -873,7 +880,7 @@ impl Workspace {
                             label.rsplit(['/', '\\']).next().unwrap_or(label)
                         )
                     })
-                    .unwrap_or_else(|| format!("Untitled {}.md", tab.number))
+                    .unwrap_or_else(|| untitled(tab.number))
             });
         safe_text(&filename)
     }
@@ -903,6 +910,12 @@ impl Workspace {
             area.width.saturating_sub(sidebar_width),
             area.height,
         );
+        // Like micro, a lone document has no tab row; the status line names it.
+        let header = self.tabs.len() > 1 || sidebar_visible;
+        let label = self.name(self.active);
+        let editor = self.editor_mut();
+        editor.header = header;
+        editor.label = Some(label);
         self.editor_mut().draw_in(frame, editor_area, show_cursor);
         self.tab_hits.clear();
         self.sidebar.invalidate();
@@ -918,7 +931,9 @@ impl Workspace {
                 dirty: self.tabs[index].editor.document.is_dirty(),
             })
             .collect();
-        self.tab_hits = tabs::draw(frame, area, sidebar_width, &labels, self.active);
+        if header {
+            self.tab_hits = tabs::draw(frame, area, sidebar_width, &labels, self.active);
+        }
         if sidebar_visible {
             // The sidebar's header shares the tab row.
             let sidebar_area =
@@ -976,6 +991,15 @@ impl Workspace {
         if let Some(choice) = &mut self.choice {
             choice.picker.draw(frame);
         }
+    }
+}
+
+/// Unsaved buffers are "untitled", numbered from the second.
+pub(crate) fn untitled(number: usize) -> String {
+    if number <= 1 {
+        "untitled".into()
+    } else {
+        format!("untitled {number}")
     }
 }
 
@@ -1278,7 +1302,7 @@ mod tests {
             assert!(!app.editor().document.is_dirty());
             assert!(app.editor().is_markdown());
             assert!(app.editor().path().is_none());
-            assert_eq!(app.label(1).trim(), "Untitled 2.md");
+            assert_eq!(app.label(1).trim(), "untitled 2");
             assert_eq!(app.tabs[0].editor.document.text(), "ab");
             assert!(app.tab_hits.is_empty());
             draw(&mut app, 120, 24);
@@ -1310,29 +1334,34 @@ mod tests {
             (KeyCode::Char('q'), KeyModifiers::CONTROL),
         ] {
             let mut app = Workspace::open(None).unwrap();
+            // A lone document has no tab row; a second tab brings it back.
+            draw(&mut app, 80, 24);
+            assert!(new_document_button(&app).is_none());
+            app.new_tab();
             plain(&mut app, 'a');
             draw(&mut app, 80, 24);
             let rect = new_document_button(&app).unwrap();
             key(&mut app, code, modifiers);
             draw(&mut app, 80, 24);
             click_rect(&mut app, rect);
-            assert_eq!(app.tabs.len(), 1, "{code:?}");
+            assert_eq!(app.tabs.len(), 2, "{code:?}");
             assert_eq!(app.editor().document.text(), "a");
         }
         let mut app = Workspace::open(None).unwrap();
+        app.new_tab();
         draw(&mut app, 80, 24);
         let stale = new_document_button(&app).unwrap();
         app.handle_event(Event::Resize(8, 3));
         click_rect(&mut app, stale);
-        assert_eq!(app.tabs.len(), 1);
+        assert_eq!(app.tabs.len(), 2);
         draw(&mut app, 8, 3);
         assert!(new_document_button(&app).is_none());
         click_rect(&mut app, stale);
-        assert_eq!(app.tabs.len(), 1);
+        assert_eq!(app.tabs.len(), 2);
         draw(&mut app, 80, 24);
         let rect = new_document_button(&app).unwrap();
         click_rect(&mut app, rect);
-        assert_eq!(app.tabs.len(), 2);
+        assert_eq!(app.tabs.len(), 3);
     }
 
     #[test]
@@ -1352,9 +1381,10 @@ mod tests {
 
     #[test]
     fn single_header_keeps_identity_in_tabs_and_metadata_in_footer() {
+        crate::theme::set_theme(crate::theme::Theme::Dark);
         let mut app = Workspace::open(None).unwrap();
         app.handle_event(Event::Paste("draft".into()));
-        ctrl(&mut app, 'n');
+        app.new_tab();
         key(&mut app, KeyCode::F(7), KeyModifiers::NONE);
         let terminal = draw(&mut app, 80, 24);
         let active = app
@@ -1387,19 +1417,28 @@ mod tests {
             );
         }
         let snapshot = crate::simulation::snapshot(&mut app, 80, 24).unwrap();
-        assert!(snapshot.lines().next().unwrap().contains("Untitled 1.md ●"));
-        assert_eq!(snapshot.matches("Untitled 1.md").count(), 1);
+        assert!(snapshot.lines().next().unwrap().contains("untitled ●"));
         assert!(snapshot.lines().nth(1).unwrap().contains("draft"));
-        assert!(snapshot.contains("MARKDOWN"));
+        assert!(snapshot.contains("markdown"));
         assert!(snapshot.contains("Ln 1, Col 6"));
         for redundant in ["Live", "F1 Help", "F2 Commands", "F9", "DOCUMENTS"] {
             assert!(!snapshot.contains(redundant), "{redundant}");
         }
         assert!(!snapshot.contains("clipboard"));
-        ctrl(&mut app, 'e');
+        key(&mut app, KeyCode::F(6), KeyModifiers::NONE);
         let snapshot = crate::simulation::snapshot(&mut app, 80, 24).unwrap();
-        assert!(snapshot.contains("SOURCE"));
-        assert!(!snapshot.lines().next().unwrap().contains("SOURCE"));
+        assert!(snapshot.contains("markdown source"));
+        assert!(!snapshot.lines().next().unwrap().contains("source"));
+        // A lone document has no tab row: its first line is the first row,
+        // and the status line names it.
+        app.switch(1);
+        app.close_active();
+        let snapshot = crate::simulation::snapshot(&mut app, 80, 24).unwrap();
+        assert!(
+            snapshot.lines().next().unwrap().contains("draft"),
+            "{snapshot}"
+        );
+        assert!(snapshot.lines().nth(23).unwrap().starts_with(" untitled ●"));
     }
 
     #[test]
@@ -1446,6 +1485,9 @@ mod tests {
                 .join("very-long-filename-repeated-repeated-repeated.md"),
         ))
         .unwrap();
+        // Tabs are drawn once there are two documents.
+        app.new_tab();
+        app.switch(0);
         app.handle_event(Event::Paste("dirty".into()));
         let old_icons = crate::icons::current();
         for icons in [crate::icons::IconSet::Plain, crate::icons::IconSet::Nerd] {
@@ -1483,10 +1525,10 @@ mod tests {
             );
             assert!(!snapshot.contains(&dir.path().display().to_string()));
             let footer = snapshot.lines().nth(35).unwrap();
-            for segment in ["MARKDOWN", " words", "Ln 1, Col 1"] {
+            for segment in ["a-unique-note.md", "markdown", " words", "Ln 1, Col 1"] {
                 assert_eq!(footer.matches(segment).count(), 1, "{footer}");
             }
-            assert!(snapshot.lines().nth(1).unwrap().contains("A title"));
+            assert!(snapshot.lines().next().unwrap().contains("A title"));
         }
     }
 
@@ -1711,9 +1753,15 @@ mod tests {
     fn sidebar_defaults_are_responsive_without_stealing_editor_input() {
         let mut app = Workspace::open(None).unwrap();
         app.editor_mut().document = milli::Document::new("# First\n\n## Second\n");
+        // The outline is opt-in at every size.
+        for (width, height) in [(42, 16), (80, 24), (120, 36), (160, 45)] {
+            draw(&mut app, width, height);
+            assert_eq!(app.sidebar.area.width, 0);
+        }
+        app.sidebar.preference = Some(true);
         for (width, height) in [(42, 16), (80, 24), (120, 36), (160, 45), (60, 7), (1, 1)] {
             draw(&mut app, width, height);
-            assert_eq!(app.sidebar.area.width > 0, width >= 110 && height >= 8);
+            assert_eq!(app.sidebar.area.width > 0, width >= 60 && height >= 8);
             assert!(!app.sidebar.focused);
             assert!(
                 app.sidebar
@@ -1780,6 +1828,7 @@ mod tests {
         let filler = "a paragraph\n\n".repeat(40);
         let source = format!("# One\n\n{filler}## Two\n\n{filler}");
         app.editor_mut().document = milli::Document::new(source.clone());
+        app.sidebar.preference = Some(true);
         draw(&mut app, 120, 36);
         let two = app
             .sidebar
@@ -2014,7 +2063,7 @@ mod tests {
         assert_ne!(rendered.backend().buffer()[(0, 0)].bg, before);
         assert_eq!(
             rendered.backend().buffer()[(0, 2)].bg,
-            crate::theme::chrome_palette().sidebar.background
+            crate::theme::palette().background
         );
         assert_eq!(app.editor().document.text(), "# Theme\n");
         assert!(!app.editor().document.can_undo());
@@ -2052,6 +2101,7 @@ mod tests {
     fn modal_draws_over_sidebar_and_blocks_hidden_targets() {
         let mut app = Workspace::open(None).unwrap();
         app.editor_mut().document = milli::Document::new("# One\n\n## Two\n");
+        app.sidebar.preference = Some(true);
         draw(&mut app, 120, 36);
         let target = app
             .sidebar

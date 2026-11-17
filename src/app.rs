@@ -37,9 +37,7 @@ pub(crate) fn chrome_muted() -> Style {
 }
 
 pub(crate) fn chrome_active() -> Style {
-    chrome_style()
-        .fg(palette().accent)
-        .bg(palette().active)
+    theme::highlight(chrome_style().fg(palette().accent), palette().active)
         .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
 }
 
@@ -186,6 +184,11 @@ pub struct App {
     editor_area: Rect,
     terminal_height: u16,
     terminal_width: u16,
+    /// Whether the top row is reserved for a header (tabs or a title).
+    /// The workspace clears it for a lone document, as micro does.
+    pub(crate) header: bool,
+    /// The workspace's name for this tab, shown in the status line.
+    pub(crate) label: Option<String>,
 }
 
 impl App {
@@ -469,6 +472,8 @@ impl App {
             editor_area: Rect::new(0, 0, 80, 24),
             terminal_height: 24,
             terminal_width: 80,
+            header: true,
+            label: None,
         }
     }
 
@@ -1381,7 +1386,7 @@ impl App {
             self.search_too_short();
         }
         let search_height = self.search_height(area.height);
-        let body_top = body_top(area.height);
+        let body_top = body_top(self.header, area.height);
         // Source and code views number their lines; live prose is a column.
         let digits = self.gutter_digits(area.width);
         let (margin, prose_width) = if self.live {
@@ -1468,10 +1473,12 @@ impl App {
             filename,
             if self.document.is_dirty() { " *" } else { "" }
         );
-        frame.render_widget(
-            Paragraph::new(title).style(chrome_active()),
-            Rect::new(area.x, area.y, area.width, area.height.min(1)),
-        );
+        if self.header {
+            frame.render_widget(
+                Paragraph::new(title).style(chrome_active()),
+                Rect::new(area.x, area.y, area.width, area.height.min(1)),
+            );
+        }
         let selection = self.document.selection().range();
         let search_open = matches!(self.overlay, Overlay::Search { .. });
         let matches = if search_open {
@@ -1590,7 +1597,11 @@ impl App {
             // Only an empty page offers a way in; written pages stay quiet.
             if height > 2 {
                 let mut x = self.viewport.x;
-                for (key, action) in [("F2", "commands"), ("Ctrl+O", "open"), ("F1", "help")] {
+                for (key, action) in [
+                    ("Ctrl+O", "open"),
+                    ("Ctrl+E", "commands"),
+                    ("Ctrl+G", "help"),
+                ] {
                     let room = usize::from(self.viewport.right().saturating_sub(x));
                     let label = format!("{key} {action}   ");
                     if UnicodeWidthStr::width(label.as_str()) > room {
@@ -1726,13 +1737,14 @@ impl App {
 
     fn search_height(&self, height: u16) -> u16 {
         self.search_rows()
-            .min(height.saturating_sub(body_top(height) + 1))
+            .min(height.saturating_sub(body_top(self.header, height) + 1))
     }
 
     fn search_ready(&self) -> bool {
         !matches!(self.overlay, Overlay::Search { .. })
             || (self.terminal_width >= 11
-                && self.terminal_height >= body_top(self.terminal_height) + self.search_rows() + 2)
+                && self.terminal_height
+                    >= body_top(self.header, self.terminal_height) + self.search_rows() + 2)
     }
 
     fn search_too_short(&mut self) {
@@ -1959,21 +1971,6 @@ impl App {
         })
     }
 
-    /// The badge naming what is being edited: Markdown's view, or the language.
-    fn format_badge(&self) -> (String, &'static str) {
-        let icons = crate::icons::current();
-        let nerd = icons == crate::icons::IconSet::Nerd;
-        match (self.markdown, self.language) {
-            (true, _) if self.live => ("MARKDOWN".into(), icons.file(true)),
-            (true, _) => ("SOURCE".into(), icons.file(true)),
-            (false, Some(language)) => (
-                language.name().to_uppercase(),
-                if nerd { language.icon() } else { "" },
-            ),
-            (false, None) => ("TEXT".into(), icons.file(false)),
-        }
-    }
-
     fn caret_line_column(&self) -> (usize, usize) {
         let text = self.document.text();
         let head = self.document.selection().head;
@@ -2014,8 +2011,49 @@ impl App {
         }
     }
 
-    /// Render one segmented status line. The caller may pass the full frame
-    /// after painting other panes; this does not alter editor or search geometry.
+    /// The name the status line shows: the workspace's label when it set
+    /// one, else the file's name, else "untitled".
+    fn status_name(&self) -> String {
+        if let Some(label) = &self.label {
+            return label.clone();
+        }
+        self.file.as_ref().map_or_else(
+            || "untitled".into(),
+            |file| {
+                safe_text(
+                    &file
+                        .path
+                        .file_name()
+                        .unwrap_or(file.path.as_os_str())
+                        .to_string_lossy(),
+                )
+            },
+        )
+    }
+
+    /// What is being edited, lowercase as micro shows it.
+    fn status_kind(&self) -> String {
+        let icons = crate::icons::current();
+        let nerd = icons == crate::icons::IconSet::Nerd;
+        let (name, icon) = match (self.markdown, self.language) {
+            (true, _) if self.live => ("markdown".to_owned(), icons.file(true)),
+            (true, _) => ("markdown source".to_owned(), icons.file(true)),
+            (false, Some(language)) => (
+                language.name().to_lowercase(),
+                if nerd { language.icon() } else { "" },
+            ),
+            (false, None) => ("text".to_owned(), icons.file(false)),
+        };
+        if icon.is_empty() {
+            name
+        } else {
+            format!("{icon} {name}")
+        }
+    }
+
+    /// One flat status row, as nano and micro draw it: the document and
+    /// position on the left; its kind, size, and format, then the two keys
+    /// that lead everywhere else, on the right. Messages take the left side.
     pub(crate) fn draw_footer(&self, frame: &mut Frame, area: Rect) {
         let area = area.intersection(frame.area());
         if area.height < 2 || area.width == 0 {
@@ -2023,25 +2061,26 @@ impl App {
         }
         let footer = Rect::new(area.x, area.bottom() - 1, area.width, 1);
         let colors = theme::chrome_palette();
+        let base = colors.status.style();
         frame.render_widget(Clear, footer);
-        frame.render_widget(Block::default().style(colors.status.style()), footer);
+        frame.render_widget(Block::default().style(base), footer);
         let (line, col) = self.caret_line_column();
         let location = format!("Ln {line}, Col {col}");
-        let mut bar = StatusBar::new(footer, colors.status.style());
+        let mut bar = StatusBar::new(footer, base);
         if let Some(context) = self.footer_context(area.width) {
             let style = if self.message_is_error {
                 colors.status_warning.style()
             } else {
-                colors.status.style()
+                base
             };
             let text = format!(" {context}");
             // Position yields to the whole message; errors take the full row.
             if self.message_is_error {
                 frame.render_widget(Block::default().style(style), footer);
-            } else if UnicodeWidthStr::width(text.as_str()) + bar.cells(&location, true)
+            } else if UnicodeWidthStr::width(text.as_str()) + bar.cells(&location, false)
                 < usize::from(footer.width)
             {
-                bar.push(Side::Right, &location, colors.status_accent.style(), true);
+                bar.push(Side::Right, &location, base, false);
             }
             bar.draw(frame);
             let width = bar.left_edge().saturating_sub(footer.x);
@@ -2051,23 +2090,29 @@ impl App {
             );
             return;
         }
-        let (label, icon) = self.format_badge();
-        let label = label.as_str();
-        let badge = if icon.is_empty() {
-            label.to_owned()
-        } else {
-            format!("{icon} {label}")
-        };
-        let badge_style = if label == "SOURCE" {
-            colors.status_alternate.style()
-        } else {
-            colors.status_accent.style()
+        let dirty = if self.document.is_dirty() { " ●" } else { "" };
+        let name = format!("{}{dirty}", self.status_name());
+        // Segments claim space in priority order; each side keeps its order.
+        if !bar.push(Side::Left, &name, base.add_modifier(Modifier::BOLD), false) {
+            let mut clipped = String::new();
+            for grapheme in name.graphemes(true) {
+                if UnicodeWidthStr::width(clipped.as_str()) + UnicodeWidthStr::width(grapheme) + 3
+                    > usize::from(footer.width)
+                {
+                    break;
+                }
+                clipped.push_str(grapheme);
+            }
+            bar.push(
+                Side::Left,
+                &clipped,
+                base.add_modifier(Modifier::BOLD),
+                false,
+            );
         }
-        .add_modifier(Modifier::BOLD);
-        let secondary = colors.status_secondary.style();
-        let length = self.document.text().len();
-        let head = self.document.selection().head;
-        let percent = head.saturating_mul(100).checked_div(length).unwrap_or(100);
+        if !bar.push(Side::Left, &location, base, false) {
+            bar.push(Side::Left, &format!("{line}:{col}"), base, false);
+        }
         let newline = match milli::editing::preferred_newline(self.document.text(), 0) {
             "\r\n" => "CRLF",
             "\r" => "CR",
@@ -2075,26 +2120,30 @@ impl App {
         };
         let bom = self.document.text().starts_with('\u{feff}');
         let encoding = format!("UTF-8{} · {newline}", if bom { " BOM" } else { "" });
-        // Higher priority segments claim space first; each side keeps its order.
-        let fits_badge = bar.fits(&badge, true) && {
-            let pill = bar.cells(&badge, true) + bar.cells(&location, true);
-            pill <= usize::from(footer.width)
-        };
-        if fits_badge {
-            bar.push(Side::Left, &badge, badge_style, true);
-        }
-        if !bar.push(Side::Right, &location, colors.status_accent.style(), true) {
-            bar.push(
-                Side::Right,
-                &format!("{line}:{col}"),
-                colors.status_accent.style(),
-                false,
-            );
-        }
-        if fits_badge {
-            bar.push(Side::Left, &self.extent(), secondary, false);
-            bar.push(Side::Right, &format!("{percent}%"), secondary, false);
-            bar.push(Side::Right, &encoding, secondary, false);
+        let kind = self.status_kind();
+        let extent = self.extent();
+        let full = format!("{kind} · {extent} · {encoding}");
+        let sized = format!("{kind} · {extent}");
+        const LONG: &str = "Ctrl+E commands · Ctrl+G help";
+        const SHORT: &str = "^E commands · ^G help";
+        // Shorten the key hints before dropping what the document is; one
+        // details segment shortens from its end so it keeps reading order.
+        for (hint, details) in [
+            (LONG, Some(&full)),
+            (LONG, Some(&sized)),
+            (SHORT, Some(&sized)),
+            (SHORT, Some(&kind)),
+            ("^G help", Some(&kind)),
+            (SHORT, None),
+            ("^G help", None),
+        ] {
+            let mut trial = bar.clone();
+            if trial.push(Side::Right, hint, base, false)
+                && details.is_none_or(|details| trial.push(Side::Right, details, base, false))
+            {
+                bar = trial;
+                break;
+            }
         }
         bar.draw(frame);
     }
@@ -2292,8 +2341,8 @@ fn draw_help_cell(frame: &mut Frame, area: Rect, cell: &HelpCell) {
     }
 }
 
-fn body_top(height: u16) -> u16 {
-    u16::from(height > 0)
+fn body_top(header: bool, height: u16) -> u16 {
+    u16::from(header && height > 0)
 }
 
 /// Indentation for guides on each visible row, with the document's smallest
@@ -2367,6 +2416,7 @@ enum Side {
 
 /// Status segments packed from both edges. Badges gain rounded caps when a
 /// Nerd Font is in use; plain segments are padded blocks.
+#[derive(Clone)]
 struct StatusBar {
     area: Rect,
     base: Style,
@@ -2590,9 +2640,10 @@ pub(crate) fn draw_field(
             break;
         }
         let style = if *start < selected.end && selected.start < *end {
-            Style::default()
-                .bg(palette().selection)
-                .fg(palette().selection_text)
+            theme::highlight(
+                Style::default().fg(palette().selection_text),
+                palette().selection,
+            )
         } else {
             Style::default()
         };
@@ -2715,31 +2766,14 @@ mod tests {
             let colors = theme.chrome_palette();
             let terminal = draw(&mut app, 100, 24);
             let buffer = terminal.backend().buffer();
-            assert_eq!(
-                (buffer[(1, 23)].fg, buffer[(1, 23)].bg),
-                (
-                    colors.status_accent.foreground,
-                    colors.status_accent.background
-                )
-            );
-            assert_eq!(
-                (buffer[(50, 23)].fg, buffer[(50, 23)].bg),
-                (colors.status.foreground, colors.status.background)
-            );
-            assert_eq!(
-                (buffer[(98, 23)].fg, buffer[(98, 23)].bg),
-                (
-                    colors.status_accent.foreground,
-                    colors.status_accent.background
-                )
-            );
-            assert_eq!(
-                (buffer[(80, 23)].fg, buffer[(80, 23)].bg),
-                (
-                    colors.status_secondary.foreground,
-                    colors.status_secondary.background
-                )
-            );
+            // One flat bar: every cell, text or gap, shares the status pair.
+            for x in [0, 1, 50, 80, 98, 99] {
+                assert_eq!(
+                    (buffer[(x, 23)].fg, buffer[(x, 23)].bg),
+                    (colors.status.foreground, colors.status.background)
+                );
+            }
+            assert!(buffer[(1, 23)].modifier.contains(Modifier::BOLD));
             assert_eq!(buffer[(50, 22)].bg, theme.palette().background);
             app.set_message("Disk conflict; your edits are intact");
             let terminal = draw(&mut app, 100, 24);
@@ -2754,6 +2788,18 @@ mod tests {
                 );
             }
         }
+        theme::set_theme(Theme::Terminal);
+        let mut app = App::new("one two three".into(), None, true);
+        let terminal = draw(&mut app, 100, 24);
+        let buffer = terminal.backend().buffer();
+        for x in [0, 50, 99] {
+            assert!(buffer[(x, 23)].modifier.contains(Modifier::REVERSED));
+            assert_eq!(
+                (buffer[(x, 23)].fg, buffer[(x, 23)].bg),
+                (Color::Reset, Color::Reset)
+            );
+        }
+        assert!(!buffer[(50, 22)].modifier.contains(Modifier::REVERSED));
         theme::set_theme(Theme::Dark);
     }
 
@@ -2762,21 +2808,21 @@ mod tests {
         let source = "one two";
         let mut app = App::new(source.into(), None, true);
         crate::icons::set(crate::icons::IconSet::Plain);
-        let plain = status_text(&draw(&mut app, 80, 24), 23);
+        let plain = status_text(&draw(&mut app, 100, 24), 23);
         crate::icons::set(crate::icons::IconSet::Nerd);
-        let nerd = status_text(&draw(&mut app, 80, 24), 23);
+        let nerd = status_text(&draw(&mut app, 100, 24), 23);
         for width in 0..=40 {
             draw(&mut app, width, 4);
         }
         crate::icons::set(crate::icons::IconSet::Plain);
-        assert!(plain.starts_with(" MARKDOWN "));
+        assert!(plain.contains(" markdown · "), "{plain}");
         assert!(
             !plain
                 .chars()
                 .any(|c| ('\u{e000}'..='\u{f8ff}').contains(&c))
         );
         assert!(nerd.contains(crate::icons::IconSet::Nerd.file(true)));
-        assert!(nerd.contains("MARKDOWN"));
+        assert!(nerd.contains("markdown"));
         assert!(nerd.contains("Ln 1, Col 1"));
         assert_eq!(app.document.text(), source);
         assert!(!app.document.is_dirty());
@@ -2801,24 +2847,31 @@ mod tests {
         app.document.set_caret(app.document.text().len()).unwrap();
         let terminal = draw(&mut app, 100, 24);
         let footer = status_text(&terminal, 23);
-        assert!(footer.starts_with(" MARKDOWN "));
-        assert!(footer.contains("3 words"));
+        assert!(footer.starts_with(" untitled "), "{footer}");
+        assert!(
+            footer.contains("markdown · 3 words · UTF-8 · CRLF"),
+            "{footer}"
+        );
         assert!(footer.contains("Ln 2, Col 3"));
-        assert!(footer.contains("100%"));
-        assert!(footer.contains("UTF-8"));
-        for redundant in [
-            "Live", "Source", "Untitled", "milli", "F1", "^S", "Commands",
-        ] {
+        assert!(footer.trim_end().ends_with("Ctrl+E commands · Ctrl+G help"));
+        for redundant in ["Live", "MARKDOWN", "milli", "F1", "F2", "^S", "%"] {
             assert!(!footer.contains(redundant), "{footer}");
         }
         key(&mut app, KeyCode::F(6), KeyModifiers::NONE);
-        let footer = status_text(&draw(&mut app, 80, 24), 23);
-        assert!(footer.starts_with(" SOURCE "));
-        assert!(!footer.contains("MARKDOWN"));
+        let footer = status_text(&draw(&mut app, 100, 24), 23);
+        assert!(footer.contains("markdown source · "), "{footer}");
         let mut plain = App::new("plain text".into(), None, false);
-        let footer = status_text(&draw(&mut plain, 80, 24), 23);
-        assert!(footer.starts_with(" TEXT "));
-        assert!(!footer.contains("SOURCE"));
+        let footer = status_text(&draw(&mut plain, 100, 24), 23);
+        assert!(footer.contains(" text · "), "{footer}");
+        assert!(!footer.contains("markdown"));
+        // Narrow windows shorten the key hints before dropping the document's kind.
+        let footer = status_text(&draw(&mut plain, 60, 24), 23);
+        assert!(
+            footer.contains("^G help") && footer.contains("text"),
+            "{footer}"
+        );
+        let footer = status_text(&draw(&mut plain, 24, 24), 23);
+        assert!(footer.starts_with(" untitled "), "{footer}");
     }
 
     #[test]
@@ -2845,19 +2898,19 @@ mod tests {
         let footer = status_text(&draw(&mut app, 80, 24), 23);
         assert!(footer.contains("Saved note.md"));
         assert!(footer.contains("Ln 1, Col 1"));
-        assert!(!footer.contains("MARKDOWN"));
+        assert!(!footer.contains("markdown"));
         app.set_message(
             "Disk file changed; your local text is intact. Reload or Save As to continue.",
         );
         let footer = status_text(&draw(&mut app, 80, 24), 23);
         assert!(footer.contains("Reload or Save As to continue."));
-        for optional in ["MARKDOWN", "words", "Ln 1", "UTF-8", "%"] {
+        for optional in ["markdown", "words", "Ln 1", "UTF-8", "help"] {
             assert!(!footer.contains(optional), "{footer}");
         }
         key(&mut app, KeyCode::Char('a'), KeyModifiers::NONE);
         assert!(status_text(&draw(&mut app, 80, 24), 23).contains("Disk file changed"));
         key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
-        assert!(status_text(&draw(&mut app, 80, 24), 23).starts_with(" MARKDOWN "));
+        assert!(status_text(&draw(&mut app, 80, 24), 23).contains(" markdown"));
     }
 
     #[test]
@@ -2944,7 +2997,7 @@ mod tests {
                 .draw(|frame| app.draw_footer(frame, frame.area()))
                 .unwrap();
             let footer = status_text(&terminal, 23);
-            assert!(footer.starts_with(" MARKDOWN "));
+            assert!(footer.starts_with(" untitled "), "{footer}");
             for duplicate in ["Esc", "Enter", "Reload", "Discard", "Scroll", "Save"] {
                 assert!(!footer.contains(duplicate), "{footer}");
             }
@@ -3303,8 +3356,8 @@ mod tests {
         std::fs::write(&path, "def run():\n    return 1\n").unwrap();
         let mut app = App::open(Some(path)).unwrap();
         let footer = status_text(&draw(&mut app, 80, 24), 23);
-        assert!(footer.starts_with(" PYTHON "), "{footer}");
-        assert!(footer.contains("3 lines"), "{footer}");
+        assert!(footer.starts_with(" tool.py "), "{footer}");
+        assert!(footer.contains("python · 3 lines"), "{footer}");
         app.document
             .set_selection(Selection { anchor: 0, head: 5 })
             .unwrap();
@@ -3313,10 +3366,7 @@ mod tests {
         std::fs::write(&plain, "just words here\n").unwrap();
         let mut app = App::open(Some(plain)).unwrap();
         let footer = status_text(&draw(&mut app, 80, 24), 23);
-        assert!(
-            footer.starts_with(" TEXT ") && footer.contains("3 words"),
-            "{footer}"
-        );
+        assert!(footer.contains("text · 3 words"), "{footer}");
     }
 
     #[test]
@@ -3947,6 +3997,7 @@ mod tests {
 
     #[test]
     fn file_errors_survive_editing_search_and_redraw_until_dismissed() {
+        crate::theme::set_theme(crate::theme::Theme::Dark);
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("draft.md");
         std::fs::write(&path, "cat cat").unwrap();
@@ -3971,6 +4022,7 @@ mod tests {
 
     #[test]
     fn chrome_backgrounds_fill_bars_and_pair_field_colors_without_body_bleed() {
+        crate::theme::set_theme(crate::theme::Theme::Dark);
         for width in [42, 80] {
             let mut app = App::new("cat cat".into(), None, true);
             search(&mut app, "cat", true);

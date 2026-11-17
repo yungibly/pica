@@ -446,6 +446,7 @@ fn code_spans_wrap_with_their_padding_and_punctuation() {
 
 #[test]
 fn stripped_code_span_spaces_join_the_padding() {
+    crate::theme::set_theme(crate::theme::Theme::Dark);
     let text = "x\n\nwrite `` `tick` `` or ` a ` but not `  `";
     let p = project(text, 0, 80, true);
     let background = crate::theme::palette().code_background;

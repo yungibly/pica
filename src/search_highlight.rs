@@ -88,6 +88,7 @@ mod tests {
 
     #[test]
     fn active_result_is_distinct_in_both_color_and_text_attributes() {
+        crate::theme::set_theme(crate::theme::Theme::Dark);
         let matches = [2..5, 9..12];
         let base = Style::default().add_modifier(Modifier::DIM);
         let inactive = style_match(base, &(2..5), false, &matches, Some(&matches[1]));
@@ -234,6 +235,7 @@ mod tests {
 
     #[test]
     fn cached_selection_reversal_is_recomputed_for_each_visible_span() {
+        crate::theme::set_theme(crate::theme::Theme::Dark);
         let base = Style::default().add_modifier(Modifier::REVERSED | Modifier::ITALIC);
         let matches = [2..5, 9..12];
         for (source, active) in [
