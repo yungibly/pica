@@ -210,20 +210,20 @@ def unicode_and_edits(session):
     click_word(session, "□")
     session.key("Ctrl+s")
     toggled = session.original_bytes.replace(b"- [ ] Toggle", b"- [x] Toggle")
-    session.check(session.fixture.read_bytes() == toggled, "Checkbox click changes only intended source marker")
+    session.check(session.saved(toggled), "Checkbox click changes only intended source marker")
     session.capture("02-checkbox-toggled")
     session.key("Ctrl+z")
     session.key("Ctrl+s")
-    session.check(session.fixture.read_bytes() == session.original_bytes, "Checkbox undo restores exact Unicode source")
+    session.check(session.saved(session.original_bytes), "Checkbox undo restores exact Unicode source")
     session.key("Ctrl+End")
     session.paste("\nPASTE α\nsecond line 界\n")
     session.key("Ctrl+s")
-    session.check(session.fixture.read_bytes() == session.original_bytes + "\nPASTE α\nsecond line 界\n".encode("utf-8"),
+    session.check(session.saved(session.original_bytes + "\nPASTE α\nsecond line 界\n".encode("utf-8")),
                   "Mode-aware multiline paste preserves exact bytes in saved scratch source")
     session.capture("03-multiline-paste")
     session.key("Ctrl+z")
     session.key("Ctrl+s")
-    session.check(session.fixture.read_bytes() == session.original_bytes, "One undo restores source before paste")
+    session.check(session.saved(session.original_bytes), "One undo restores source before paste")
     session.key("Ctrl+Home")
     before = session.state()["text"]
     session.wheel(10, 8, "down", 2)
@@ -264,7 +264,7 @@ def workspace(session):
 
     def save_expected(expected, message):
         session.key("Ctrl+s")
-        session.check(session.fixture.read_text() == expected, message)
+        session.check(session.saved(expected.encode()), message)
 
     session.key("F2")
     session.call("type", "theme")
@@ -388,7 +388,7 @@ def chrome(session):
 
     def saved_exact(message):
         session.key("Ctrl+s")
-        session.check(session.fixture.read_bytes() == session.original_bytes, message)
+        session.check(session.saved(session.original_bytes), message)
         # Save feedback intentionally includes its path; dismiss it before any
         # idle-chrome uniqueness checks, preserving the document selection.
         session.key("Escape")
@@ -493,7 +493,7 @@ def chrome(session):
         session.check(highlighted(cells, "Keep", background), f"{theme} preserves the existing source selection")
     session.paste("REPLACED")
     session.key("Ctrl+s")
-    session.check(session.fixture.read_bytes() == source.replace("Keep", "REPLACED", 1).encode(),
+    session.check(session.saved(source.replace("Keep", "REPLACED", 1).encode()),
                   "Theme selection preserves the exact selected source range")
     session.key("Ctrl+z")
     saved_exact("One undo after theme changes restores the original source bytes")
@@ -561,12 +561,12 @@ def reliability(session):
     session.key("y")
     session.key("Ctrl+z")
     session.key("Ctrl+s")
-    session.check(session.fixture.read_text() == local, "Undo after confirmed reload restores the exact local draft against the new baseline")
+    session.check(session.saved(local.encode()), "Undo after confirmed reload restores the exact local draft against the new baseline")
     # Return the scratch fixture to its initial bytes using an intentional edit.
     session.key("Ctrl+a")
     session.paste(source)
     session.key("Ctrl+s")
-    session.check(session.fixture.read_bytes() == session.original_bytes, "Reload checks finish with the original scratch source")
+    session.check(session.saved(session.original_bytes), "Reload checks finish with the original scratch source")
     session.check(not any(c["png_error"] for c in session.captures), "All reload-dialog captures export as native PNG")
 
 
@@ -599,7 +599,7 @@ def themes(session):
         session.key("Enter")
         session.check(background().lower() == expected, f"{name} remains applied after accepting")
         session.capture(f"{index+1:02d}-" + palettes[name]["id"])
-    session.check(session.fixture.read_bytes() == session.original_bytes, "Theme previews and acceptance never change the source")
+    session.check(session.saved(session.original_bytes), "Theme previews and acceptance never change the source")
     session.key("F2")
     session.call("type", "theme")
     session.key("Enter")
@@ -645,8 +645,9 @@ def workflows(session):
 
     def save(expected, message):
         session.key("Ctrl+s")
+        matched = session.saved(expected)
         actual = session.fixture.read_bytes()
-        session.check(actual == expected, message, expected=expected.decode(), actual=actual.decode())
+        session.check(matched, message, expected=expected.decode(), actual=actual.decode())
         session.key("Escape")
 
     def select_alpha():
@@ -837,7 +838,7 @@ def rendering(session):
     """Rendered Markdown in a real terminal: grids, surfaces, marks, and exact source."""
     def saved_exact(message):
         session.key("Ctrl+s")
-        session.check(session.fixture.read_bytes() == session.original_bytes, message)
+        session.check(session.saved(session.original_bytes), message)
         session.key("Escape")
 
     def row_of(cells, y):

@@ -5,6 +5,7 @@ native screenshots use its own renderer, not Ghostty desktop pixels. Keep the
 owning Python process alive until close: detached daemons may be reaped by CI.
 """
 
+import time
 import hashlib
 import json
 import os
@@ -180,6 +181,16 @@ class Session:
         self.captures.append(capture)
         write_json(self.output / "captures.json", self.captures)
         return state, cells
+
+    def saved(self, expected, timeout=3.0):
+        """Whether the fixture reaches `expected`; a save can land after the screen settles."""
+        deadline = time.monotonic() + timeout
+        while True:
+            if self.fixture.read_bytes() == expected:
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.05)
 
     def check(self, condition, message, **evidence):
         self.assertions.append({"passed": bool(condition), "message": message, **evidence})
