@@ -189,6 +189,8 @@ pub struct App {
     pub(crate) header: bool,
     /// The workspace's name for this tab, shown in the status line.
     pub(crate) label: Option<String>,
+    /// Set when the user switches live/source; the workspace remembers it.
+    pub(crate) view_toggled: bool,
 }
 
 impl App {
@@ -474,6 +476,7 @@ impl App {
             terminal_width: 80,
             header: true,
             label: None,
+            view_toggled: false,
         }
     }
 
@@ -882,6 +885,7 @@ impl App {
     fn toggle_view(&mut self) {
         if self.markdown {
             self.live = !self.live;
+            self.view_toggled = true;
         }
     }
 

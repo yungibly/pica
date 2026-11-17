@@ -34,6 +34,14 @@ impl Workspace {
         let settings = match Settings::load(config) {
             Ok(settings) => {
                 self.sidebar.preference = settings.sidebar();
+                if settings.markdown_live() == Some(false) {
+                    self.markdown_live = false;
+                    for tab in &mut self.tabs {
+                        if tab.editor.is_markdown() {
+                            tab.editor.live = false;
+                        }
+                    }
+                }
                 if let Some(icons) = settings.icons() {
                     crate::icons::set(icons);
                 }
@@ -122,6 +130,20 @@ impl Workspace {
         if let Some(Err(error)) = result {
             self.editor_mut().set_message(format!(
                 "Icons changed for this session; could not save preferences: {error}"
+            ));
+        }
+    }
+    /// Remember an explicit live/source switch for Markdown opened later.
+    pub(super) fn persist_markdown_view(&mut self, live: bool) {
+        self.markdown_live = live;
+        let result = self
+            .persistence
+            .as_mut()
+            .and_then(|state| state.settings.as_mut())
+            .map(|settings| settings.save_markdown_live(live));
+        if let Some(Err(error)) = result {
+            self.editor_mut().set_message(format!(
+                "View changed for this session; could not save preferences: {error}"
             ));
         }
     }

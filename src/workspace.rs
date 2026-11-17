@@ -103,6 +103,8 @@ pub struct Workspace {
     last_tick: Instant,
     area: Rect,
     layout_valid: bool,
+    /// Whether Markdown opens live; an explicit switch is remembered.
+    markdown_live: bool,
     pub should_exit: bool,
 }
 
@@ -129,8 +131,18 @@ impl Workspace {
             last_tick: Instant::now(),
             area: Rect::new(0, 0, 80, 24),
             layout_valid: false,
+            markdown_live: true,
             should_exit: false,
         })
+    }
+
+    /// Open Markdown in the view the user last chose.
+    fn adopt_view(&mut self) {
+        let live = self.markdown_live;
+        let editor = self.editor_mut();
+        if editor.is_markdown() && !live {
+            editor.live = false;
+        }
     }
 
     pub fn editor(&self) -> &App {
@@ -167,6 +179,7 @@ impl Workspace {
         });
         self.next_number += 1;
         self.active = self.tabs.len() - 1;
+        self.adopt_view();
         self.sidebar.selected = 0;
         self.tab_hits.clear();
         self.sidebar.invalidate();
@@ -205,6 +218,7 @@ impl Workspace {
         });
         self.next_number += 1;
         self.active = self.tabs.len() - 1;
+        self.adopt_view();
         self.sidebar.selected = 0;
         self.tab_hits.clear();
         self.sidebar.invalidate();
@@ -886,6 +900,10 @@ impl Workspace {
     }
 
     pub fn draw(&mut self, frame: &mut Frame) {
+        if std::mem::take(&mut self.editor_mut().view_toggled) {
+            let live = self.editor().live;
+            self.persist_markdown_view(live);
+        }
         let area = frame.area();
         self.area = area;
         self.layout_valid = true;
@@ -1123,11 +1141,11 @@ mod tests {
         app.handle_event(Event::Paste(
             (0..60).map(|i| format!("line {i}\n")).collect(),
         ));
-        ctrl(&mut app, 'e');
+        key(&mut app, KeyCode::F(6), KeyModifiers::NONE);
         draw(&mut app, 60, 16);
         let selection = app.editor().document.selection();
         let scroll = app.editor().scroll;
-        ctrl(&mut app, 'n');
+        app.new_tab();
         app.handle_event(Event::Paste("second 👩🏽‍💻".into()));
         key(&mut app, KeyCode::F(7), KeyModifiers::NONE);
         assert_eq!(app.editor().document.selection(), selection);
@@ -1137,7 +1155,8 @@ mod tests {
         assert_eq!(app.editor().document.text(), "");
         key(&mut app, KeyCode::PageDown, KeyModifiers::CONTROL);
         assert_eq!(app.editor().document.text(), "second 👩🏽‍💻");
-        assert!(app.editor().live);
+        // New Markdown follows the view last chosen, here source.
+        assert!(!app.editor().live);
     }
 
     #[test]

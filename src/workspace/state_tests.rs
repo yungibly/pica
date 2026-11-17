@@ -292,3 +292,39 @@ fn save_via_cancelled_quit_removes_its_recovery_copy_immediately() {
     assert!(app.choice.is_none());
     app.finish_state().unwrap();
 }
+
+#[test]
+fn markdown_view_choice_is_remembered_without_forcing_other_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = Workspace::open(None).unwrap();
+    configure(&mut app, dir.path());
+    assert!(app.editor().live);
+    // F6 stays a silent alias for the view switch whatever the primary key.
+    key(&mut app, KeyCode::F(6), KeyModifiers::NONE);
+    draw(&mut app, 80, 24);
+    assert!(!app.editor().live);
+    let saved = fs::read_to_string(dir.path().join("config/settings.conf")).unwrap();
+    assert!(saved.contains("markdown-view=source"), "{saved}");
+    app.new_tab();
+    assert!(
+        !app.editor().live,
+        "new Markdown opens in the remembered view"
+    );
+    let mut restarted = Workspace::open(None).unwrap();
+    configure(&mut restarted, dir.path());
+    assert!(!restarted.editor().live);
+    key(&mut restarted, KeyCode::F(6), KeyModifiers::NONE);
+    draw(&mut restarted, 80, 24);
+    let saved = fs::read_to_string(dir.path().join("config/settings.conf")).unwrap();
+    assert!(saved.contains("markdown-view=live"), "{saved}");
+    // Opening without a choice saved never rewrites settings.
+    let other = tempfile::tempdir().unwrap();
+    let mut fresh = Workspace::open(None).unwrap();
+    configure(&mut fresh, other.path());
+    draw(&mut fresh, 80, 24);
+    assert!(fresh.editor().live);
+    assert!(!other.path().join("config/settings.conf").exists());
+    app.finish_state().unwrap();
+    restarted.finish_state().unwrap();
+    fresh.finish_state().unwrap();
+}

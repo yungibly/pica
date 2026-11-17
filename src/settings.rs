@@ -147,6 +147,17 @@ impl Settings {
             _ => None,
         }
     }
+    /// The remembered Markdown view: `Some(false)` opens Markdown as source.
+    pub fn markdown_live(&self) -> Option<bool> {
+        match self.values.get("markdown-view").map(String::as_str) {
+            Some("live") => Some(true),
+            Some("source") => Some(false),
+            _ => None,
+        }
+    }
+    pub fn save_markdown_live(&mut self, live: bool) -> io::Result<()> {
+        self.save("markdown-view", if live { "live" } else { "source" })
+    }
     pub fn icons(&self) -> Option<IconSet> {
         self.values
             .get("icons")
@@ -409,10 +420,13 @@ mod tests {
         let mut settings = Settings::load(dir.path()).unwrap();
         settings.save_theme(Theme::Light).unwrap();
         settings.save_sidebar(Some(false)).unwrap();
+        assert_eq!(settings.markdown_live(), None);
+        settings.save_markdown_live(false).unwrap();
         settings.save_icons(IconSet::Nerd).unwrap();
         let loaded = Settings::load(dir.path()).unwrap();
         assert_eq!(loaded.theme(), Some(Theme::Light));
         assert_eq!(loaded.sidebar(), Some(false));
+        assert_eq!(loaded.markdown_live(), Some(false));
         assert_eq!(loaded.icons(), Some(IconSet::Nerd));
         assert!(fs::read_to_string(path).unwrap().contains("future=keep"));
     }
