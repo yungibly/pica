@@ -1,8 +1,67 @@
 use std::{collections::VecDeque, fmt, ops::Range};
 
-use unicode_segmentation::UnicodeSegmentation;
+use unicode_segmentation::{GraphemeCursor, UnicodeSegmentation};
 
 use crate::markdown::{self, MarkdownSnapshot, Task};
+
+/// Revisions whose first changed offset stays known to `first_change_since`.
+const EDIT_LOG: usize = 64;
+
+/// Byte offsets where source lines begin. A line ends after LF, after CRLF,
+/// or after a lone CR, so CRLF never splits and every start is a grapheme
+/// boundary. Kept current through each replacement.
+#[derive(Clone, Debug)]
+struct LineIndex {
+    starts: Vec<usize>,
+}
+
+impl LineIndex {
+    fn new(text: &str) -> Self {
+        let mut starts = vec![0];
+        Self::scan(text.as_bytes(), 1, text.len(), &mut starts);
+        Self { starts }
+    }
+
+    fn starts_line(bytes: &[u8], at: usize) -> bool {
+        at > 0
+            && match bytes[at - 1] {
+                b'\n' => true,
+                b'\r' => bytes.get(at) != Some(&b'\n'),
+                _ => false,
+            }
+    }
+
+    /// Append the line starts in `from..=to`.
+    fn scan(bytes: &[u8], from: usize, to: usize, out: &mut Vec<usize>) {
+        let from = from.max(1);
+        if from > to {
+            return;
+        }
+        for (index, byte) in bytes[from - 1..to].iter().enumerate() {
+            if matches!(byte, b'\n' | b'\r') && Self::starts_line(bytes, from + index) {
+                out.push(from + index);
+            }
+        }
+    }
+
+    /// Account for `start..old_end` having become `start..new_end` in `text`.
+    fn edit(&mut self, text: &str, start: usize, old_end: usize, new_end: usize) {
+        // Only starts whose preceding or following byte changed can differ.
+        let first = self.starts.partition_point(|&at| at < start.max(1));
+        let last = self.starts.partition_point(|&at| at <= old_end);
+        let mut fresh = Vec::new();
+        Self::scan(text.as_bytes(), start, new_end, &mut fresh);
+        for at in &mut self.starts[last..] {
+            *at = *at - old_end + new_end;
+        }
+        self.starts.splice(first..last, fresh);
+    }
+
+    /// The zero-based line containing `offset`.
+    fn line(&self, offset: usize) -> usize {
+        self.starts.partition_point(|&at| at <= offset) - 1
+    }
+}
 
 /// Source byte offsets, always at extended grapheme boundaries in a Document.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -535,6 +594,105 @@ mod tests {
         }
     }
 
+    /// Deterministic edits mixing line endings, combining marks, and flags.
+    fn scrambled_edits(mut check: impl FnMut(&Document)) {
+        let pieces = [
+            "", "a", "\n", "\r", "\r\n", "e\u{301}", "\u{301}", "🇺", "🇸", "界", "x\ny", "\r\r\n\n",
+        ];
+        let mut seed = 0x9e37_79b9_7f4a_7c15_u64;
+        let mut next = |bound: usize| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % bound as u64) as usize
+        };
+        let mut doc = Document::new("one\r\ntwo\rthree\n\nfour");
+        for step in 0..600 {
+            let len = doc.text().len();
+            let a = doc.floor_grapheme_boundary(next(len + 1));
+            let b = doc.floor_grapheme_boundary(next(len + 1));
+            let (start, end) = (a.min(b), a.max(b));
+            match step % 7 {
+                5 => {
+                    doc.undo();
+                }
+                6 => {
+                    doc.redo();
+                }
+                _ => {
+                    let _ = doc.replace_range(start..end, pieces[next(pieces.len())]);
+                }
+            }
+            check(&doc);
+        }
+    }
+
+    #[test]
+    fn line_index_follows_every_edit_undo_and_redo() {
+        scrambled_edits(|doc| {
+            let fresh = LineIndex::new(doc.text());
+            assert_eq!(doc.lines.starts, fresh.starts, "{:?}", doc.text());
+            let text = doc.text();
+            for line in 0..doc.line_count() {
+                let range = doc.line_content(line);
+                assert!(!text[range.clone()].contains(['\n', '\r']));
+                assert_eq!(doc.line_index(range.start), line);
+                assert_eq!(doc.line_range(range.end), range);
+            }
+            let lines = text
+                .split("\r\n")
+                .flat_map(|l| l.split(['\n', '\r']))
+                .count();
+            assert_eq!(doc.line_count(), lines);
+        });
+    }
+
+    #[test]
+    fn local_grapheme_boundaries_match_whole_text_segmentation() {
+        scrambled_edits(|doc| {
+            let text = doc.text();
+            let boundaries: Vec<_> = text
+                .grapheme_indices(true)
+                .map(|(i, _)| i)
+                .chain([text.len()])
+                .collect();
+            for offset in 0..=text.len() + 1 {
+                let floor = *boundaries.iter().rfind(|&&b| b <= offset).unwrap();
+                assert_eq!(
+                    doc.is_grapheme_boundary(offset),
+                    boundaries.contains(&offset)
+                );
+                assert_eq!(doc.floor_grapheme_boundary(offset), floor);
+                let ceil = boundaries
+                    .iter()
+                    .copied()
+                    .find(|&b| b >= offset)
+                    .unwrap_or(text.len());
+                assert_eq!(doc.ceil_grapheme_boundary(offset), ceil);
+            }
+        });
+    }
+
+    #[test]
+    fn edit_log_reports_the_first_changed_offset() {
+        let mut doc = Document::new("alpha\nbeta\ngamma\n");
+        let start = doc.revision();
+        assert_eq!(doc.first_change_since(start), None);
+        doc.set_caret(11).unwrap();
+        doc.type_text("G");
+        doc.set_caret(6).unwrap();
+        doc.type_text("B");
+        assert_eq!(doc.first_change_since(start), Some(6));
+        assert_eq!(doc.first_change_since(start + 1), Some(6));
+        let after = doc.revision();
+        doc.undo();
+        assert_eq!(doc.first_change_since(after), Some(6));
+        for _ in 0..EDIT_LOG {
+            doc.insert("z");
+        }
+        assert_eq!(doc.first_change_since(start), Some(0));
+    }
+
     #[test]
     fn edit_commands_round_trip_at_every_grapheme_boundary_in_corpus() {
         let sources = [
@@ -674,6 +832,9 @@ pub struct Document {
     redo: VecDeque<State>,
     history_limits: HistoryLimits,
     typing_end: Option<usize>,
+    lines: LineIndex,
+    /// The first changed byte of each recent revision, oldest first.
+    edits: VecDeque<(u64, usize)>,
 }
 
 impl Document {
@@ -691,7 +852,15 @@ impl Document {
             redo: VecDeque::new(),
             history_limits: HistoryLimits::default(),
             typing_end: None,
+            lines: LineIndex::new(""),
+            edits: VecDeque::new(),
         }
+        .with_lines()
+    }
+
+    fn with_lines(mut self) -> Self {
+        self.lines = LineIndex::new(&self.state.text);
+        self
     }
 
     /// Create file-detached content with no accepted saved baseline, including
@@ -719,14 +888,7 @@ impl Document {
             {
                 return Err(EditError::HistoryUnavailable);
             }
-            let clamp = |offset: usize| {
-                text.grapheme_indices(true)
-                    .map(|(i, _)| i)
-                    .chain(std::iter::once(text.len()))
-                    .take_while(|&i| i <= offset.min(text.len()))
-                    .last()
-                    .unwrap_or(0)
-            };
+            let clamp = |offset: usize| floor_boundary(&text, offset);
             let selection = Selection {
                 anchor: clamp(self.selection().anchor),
                 head: clamp(self.selection().head),
@@ -734,8 +896,11 @@ impl Document {
             self.undo.push_back(previous);
             self.state = State { text, selection };
             self.redo.clear();
-            self.trim_history();
             self.revision += 1;
+            let (start, old_end, new_end) = delta(&self.undo.back().unwrap().text, self.text());
+            self.lines.edit(&self.state.text, start, old_end, new_end);
+            self.log_edit(start);
+            self.trim_history();
         }
         self.mark_saved();
         Ok(changed)
@@ -771,17 +936,66 @@ impl Document {
     /// The source line containing `offset`, without its line ending. CRLF,
     /// LF, and a lone CR each end a line.
     pub fn line_range(&self, offset: usize) -> Range<usize> {
-        let bytes = self.text().as_bytes();
-        let offset = offset.min(bytes.len());
-        let start = bytes[..offset]
-            .iter()
-            .rposition(|b| matches!(b, b'\r' | b'\n'))
-            .map_or(0, |i| i + 1);
-        let end = bytes[offset..]
-            .iter()
-            .position(|b| matches!(b, b'\r' | b'\n'))
-            .map_or(bytes.len(), |i| offset + i);
+        self.line_content(self.line_index(offset))
+    }
+
+    /// Source lines, counting an empty line after a final line ending.
+    pub fn line_count(&self) -> usize {
+        self.lines.starts.len()
+    }
+
+    /// The zero-based line containing `offset`, clamped to the text.
+    pub fn line_index(&self, offset: usize) -> usize {
+        self.lines.line(offset.min(self.text().len()))
+    }
+
+    /// Where zero-based `line` begins, clamped to the last line.
+    pub fn line_start(&self, line: usize) -> usize {
+        self.lines.starts[line.min(self.lines.starts.len() - 1)]
+    }
+
+    /// Zero-based `line` without its ending, clamped to the last line.
+    pub fn line_content(&self, line: usize) -> Range<usize> {
+        let line = line.min(self.lines.starts.len() - 1);
+        let start = self.lines.starts[line];
+        let next = self
+            .lines
+            .starts
+            .get(line + 1)
+            .copied()
+            .unwrap_or(self.text().len());
+        let ending = &self.text().as_bytes()[start..next];
+        let end = next
+            - if ending.ends_with(b"\r\n") {
+                2
+            } else {
+                usize::from(ending.ends_with(b"\n") || ending.ends_with(b"\r"))
+            };
         start..end
+    }
+
+    /// The lowest byte offset that edits since `revision` may have changed:
+    /// `None` when nothing changed, and zero when the edits are not recorded.
+    pub fn first_change_since(&self, revision: u64) -> Option<usize> {
+        if revision >= self.revision {
+            return None;
+        }
+        match self.edits.front() {
+            Some((oldest, _)) if *oldest <= revision + 1 => self
+                .edits
+                .iter()
+                .filter(|(at, _)| *at > revision)
+                .map(|(_, start)| *start)
+                .min(),
+            _ => Some(0),
+        }
+    }
+
+    fn log_edit(&mut self, start: usize) {
+        if self.edits.len() == EDIT_LOG {
+            self.edits.pop_front();
+        }
+        self.edits.push_back((self.revision, start));
     }
 
     /// Find case-sensitive, nonoverlapping literal source matches. A match
@@ -791,18 +1005,12 @@ impl Document {
         if query.is_empty() {
             return Vec::new();
         }
-        let boundaries: Vec<_> = self
-            .text()
-            .grapheme_indices(true)
-            .map(|(i, _)| i)
-            .chain(std::iter::once(self.text().len()))
-            .collect();
         let mut matches = Vec::new();
         let mut cursor = 0;
         while let Some(relative) = self.text()[cursor..].find(query) {
             let start = cursor + relative;
             let end = start + query.len();
-            if boundaries.binary_search(&start).is_ok() && boundaries.binary_search(&end).is_ok() {
+            if self.is_grapheme_boundary(start) && self.is_grapheme_boundary(end) {
                 matches.push(start..end);
                 cursor = end;
             } else {
@@ -897,27 +1105,23 @@ impl Document {
     }
 
     pub fn is_grapheme_boundary(&self, offset: usize) -> bool {
-        offset == self.text().len() || self.text().grapheme_indices(true).any(|(i, _)| i == offset)
+        is_boundary(self.text(), offset)
     }
 
+    /// The nearest grapheme boundary at or before `offset`.
     pub fn floor_grapheme_boundary(&self, offset: usize) -> usize {
-        if offset >= self.text().len() {
-            return self.text().len();
-        }
-        self.text()
-            .grapheme_indices(true)
-            .map(|(i, _)| i)
-            .take_while(|&i| i <= offset)
-            .last()
-            .unwrap_or(0)
+        floor_boundary(self.text(), offset)
     }
 
     fn ceil_grapheme_boundary(&self, offset: usize) -> usize {
-        self.text()
-            .grapheme_indices(true)
-            .map(|(i, _)| i)
-            .find(|&i| i >= offset)
-            .unwrap_or(self.text().len())
+        let text = self.text();
+        if offset >= text.len() {
+            return text.len();
+        }
+        if is_boundary(text, offset) {
+            return offset;
+        }
+        next_boundary(text, floor_boundary(text, offset))
     }
 
     fn validate_boundary(&self, offset: usize) -> Result<(), EditError> {
@@ -934,12 +1138,7 @@ impl Document {
         let head = if !extend && !selection.is_empty() {
             selection.range().start
         } else {
-            self.text()
-                .grapheme_indices(true)
-                .map(|(i, _)| i)
-                .take_while(|&i| i < selection.head)
-                .last()
-                .unwrap_or(0)
+            previous_boundary(self.text(), selection.head)
         };
         self.state.selection = Selection {
             anchor: if extend { selection.anchor } else { head },
@@ -953,11 +1152,7 @@ impl Document {
         let head = if !extend && !selection.is_empty() {
             selection.range().end
         } else {
-            self.text()
-                .grapheme_indices(true)
-                .map(|(i, _)| i)
-                .find(|&i| i > selection.head)
-                .unwrap_or(self.text().len())
+            next_boundary(self.text(), selection.head)
         };
         self.state.selection = Selection {
             anchor: if extend { selection.anchor } else { head },
@@ -1004,10 +1199,14 @@ impl Document {
             if !coalesce {
                 self.undo.push_back(self.state.clone());
             }
-            self.state.text.replace_range(range, text);
+            self.state.text.replace_range(range.clone(), text);
             self.redo.clear();
             self.trim_history();
             self.revision += 1;
+            let new_end = range.start + text.len();
+            self.lines
+                .edit(&self.state.text, range.start, range.end, new_end);
+            self.log_edit(range.start);
         }
         // Inserting/deleting a combining sequence can merge adjacent graphemes.
         // The resulting caret must not remain inside that newly formed grapheme.
@@ -1032,13 +1231,7 @@ impl Document {
         if !selection.is_empty() {
             return self.insert("");
         }
-        let start = self
-            .text()
-            .grapheme_indices(true)
-            .map(|(i, _)| i)
-            .take_while(|&i| i < selection.head)
-            .last()
-            .unwrap_or(0);
+        let start = previous_boundary(self.text(), selection.head);
         self.replace_range(start..selection.head, "")
             .expect("grapheme boundary")
     }
@@ -1048,12 +1241,7 @@ impl Document {
         if !selection.is_empty() {
             return self.insert("");
         }
-        let end = self
-            .text()
-            .grapheme_indices(true)
-            .map(|(i, _)| i)
-            .find(|&i| i > selection.head)
-            .unwrap_or(self.text().len());
+        let end = next_boundary(self.text(), selection.head);
         self.replace_range(selection.head..end, "")
             .expect("grapheme boundary")
     }
@@ -1075,8 +1263,11 @@ impl Document {
         };
         self.redo
             .push_back(std::mem::replace(&mut self.state, previous));
+        let (start, old_end, new_end) = delta(&self.redo.back().unwrap().text, self.text());
         self.trim_history();
         self.revision += 1;
+        self.lines.edit(&self.state.text, start, old_end, new_end);
+        self.log_edit(start);
         true
     }
 
@@ -1087,8 +1278,11 @@ impl Document {
         };
         self.undo
             .push_back(std::mem::replace(&mut self.state, next));
+        let (start, old_end, new_end) = delta(&self.undo.back().unwrap().text, self.text());
         self.trim_history();
         self.revision += 1;
+        self.lines.edit(&self.state.text, start, old_end, new_end);
+        self.log_edit(start);
         true
     }
 
@@ -1295,6 +1489,89 @@ impl Document {
             .min_by_key(|task| task.item_range.len());
         task.is_some_and(|task| self.toggle_task(&task).unwrap_or(false))
     }
+}
+
+/// The changed span between two texts, as `(start, old_end, new_end)`.
+fn delta(old: &str, new: &str) -> (usize, usize, usize) {
+    const BLOCK: usize = 4096;
+    let (old, new) = (old.as_bytes(), new.as_bytes());
+    let shortest = old.len().min(new.len());
+    // Equal blocks compare at memcmp speed; the last block byte by byte.
+    let mut prefix = 0;
+    while prefix + BLOCK <= shortest && old[prefix..prefix + BLOCK] == new[prefix..prefix + BLOCK] {
+        prefix += BLOCK;
+    }
+    prefix += old[prefix..shortest]
+        .iter()
+        .zip(&new[prefix..shortest])
+        .take_while(|(a, b)| a == b)
+        .count();
+    let room = shortest - prefix;
+    let mut suffix = 0;
+    while suffix + BLOCK <= room
+        && old[old.len() - suffix - BLOCK..old.len() - suffix]
+            == new[new.len() - suffix - BLOCK..new.len() - suffix]
+    {
+        suffix += BLOCK;
+    }
+    suffix += old[..old.len() - suffix]
+        .iter()
+        .rev()
+        .zip(new[..new.len() - suffix].iter().rev())
+        .take(room - suffix)
+        .take_while(|(a, b)| a == b)
+        .count();
+    (prefix, old.len() - suffix, new.len() - suffix)
+}
+
+/// Grapheme boundaries come from local context, so finding one costs the
+/// same anywhere in a document.
+fn is_boundary(text: &str, offset: usize) -> bool {
+    offset == text.len()
+        || (offset < text.len()
+            && text.is_char_boundary(offset)
+            && GraphemeCursor::new(offset, text.len(), true)
+                .is_boundary(text, 0)
+                .unwrap_or(false))
+}
+
+fn floor_boundary(text: &str, offset: usize) -> usize {
+    if offset >= text.len() {
+        return text.len();
+    }
+    let mut at = offset;
+    while !text.is_char_boundary(at) {
+        at -= 1;
+    }
+    if is_boundary(text, at) {
+        at
+    } else {
+        previous_boundary(text, at)
+    }
+}
+
+/// The last grapheme boundary before `offset`, or zero.
+fn previous_boundary(text: &str, offset: usize) -> usize {
+    if offset == 0 {
+        return 0;
+    }
+    GraphemeCursor::new(offset.min(text.len()), text.len(), true)
+        .prev_boundary(text, 0)
+        .ok()
+        .flatten()
+        .unwrap_or(0)
+}
+
+/// The first grapheme boundary after `offset`, or the end of the text.
+fn next_boundary(text: &str, offset: usize) -> usize {
+    if offset >= text.len() {
+        return text.len();
+    }
+    GraphemeCursor::new(offset, text.len(), true)
+        .next_boundary(text, 0)
+        .ok()
+        .flatten()
+        .unwrap_or(text.len())
 }
 
 #[cfg(test)]
