@@ -271,6 +271,74 @@ fn a_fence_spanning_the_file_lays_out_only_the_window() {
     }
 }
 
+/// Every visible glyph has the style whole-document layout gives it.
+fn styles_match_whole_layout(app: &App) {
+    let text = app.document.text();
+    let parsed = Parsed::markdown(text, app.document.revision());
+    let whole = Projection::build(
+        text,
+        &parsed,
+        app.document.selection(),
+        usize::from(app.viewport.width),
+        app.live_view(),
+    );
+    let expected: std::collections::HashMap<_, _> = whole
+        .rows(0..whole.row_count())
+        .iter()
+        .flat_map(|row| &row.glyphs)
+        .filter(|glyph| !glyph.source.is_empty())
+        .map(|glyph| (glyph.source.start, glyph.style))
+        .collect();
+    let height = usize::from(app.viewport.height);
+    for row in app.projection.rows(app.scroll..app.scroll + height) {
+        for glyph in row.glyphs.iter().filter(|glyph| !glyph.source.is_empty()) {
+            assert_eq!(
+                Some(&glyph.style),
+                expected.get(&glyph.source.start),
+                "{:?} at {}",
+                glyph.text,
+                glyph.source.start
+            );
+        }
+    }
+}
+
+#[test]
+fn code_blocks_highlight_by_window_as_whole_documents_do() {
+    let small = "```python\ndef f(x):\n    return \"s\" # note\n```\n\n";
+    let large: String = (0..1200)
+        .map(|n| format!("    let value_{n} = \"text {n}\"; // note\n"))
+        .collect();
+    let text = format!(
+        "# Title\n\n{small}> ```rust\n> /* open\n> still */ fn f() {{}}\n> ```\n\n\
+         ```rust\n{large}```\n\n{small}after\n"
+    );
+    assert!(text.len() > LARGE_FENCE * 4);
+    let mut app = App::new(text.clone(), None, true);
+    draw(&mut app, 80, 24);
+    styles_match_whole_layout(&app);
+    for fraction in [1, 2, 3, 5, 8, 9] {
+        let offset = app
+            .document
+            .floor_grapheme_boundary(text.len() * fraction / 10);
+        app.jump_to_source(offset);
+        draw(&mut app, 80, 24);
+        styles_match_whole_layout(&app);
+        // Edits inside the block keep earlier saved lexer states.
+        for c in "/* x".chars() {
+            press(&mut app, KeyCode::Char(c), KeyModifiers::NONE);
+            draw(&mut app, 80, 24);
+            styles_match_whole_layout(&app);
+        }
+        for _ in 0..4 {
+            press(&mut app, KeyCode::Backspace, KeyModifiers::NONE);
+        }
+        draw(&mut app, 80, 24);
+        styles_match_whole_layout(&app);
+    }
+    assert_eq!(app.document.text(), text);
+}
+
 #[test]
 fn a_table_over_the_row_limit_stays_source_and_bounded() {
     let rows: String = (0..TABLE_ROW_LIMIT + 50)

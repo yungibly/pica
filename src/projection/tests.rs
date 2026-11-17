@@ -919,7 +919,8 @@ fn check_windows(
             through: start,
             after: usize::MAX,
         };
-        let p = Projection::window(text, parsed, disclosed, width, live, window);
+        let code = parsed.code_styles(text, start..text.len());
+        let p = Projection::window(text, parsed, &code, disclosed, width, live, window);
         assert!(p.complete());
         assert_eq!(
             p.rows.len(),
@@ -948,6 +949,7 @@ fn check_windows(
             let short = Projection::window(
                 text,
                 parsed,
+                &code,
                 disclosed,
                 width,
                 live,

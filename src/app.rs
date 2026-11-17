@@ -144,6 +144,9 @@ const LARGE_FILE_EXIT: usize = 192 * 1024;
 /// Rows laid out past the viewport beyond the screen of overscan, so small
 /// scrolls reuse the window.
 const OVERSCAN: usize = 4;
+/// Markdown code blocks larger than this keep saved lexer states; smaller
+/// ones are lexed from their start for each window.
+const LARGE_FENCE: usize = 8 * 1024;
 /// Documents up to this size count words on every edit; larger ones count
 /// when typing pauses.
 const EAGER_WORD_COUNT: usize = 8 * 1024;
@@ -189,6 +192,9 @@ pub struct App {
     highlighter: Option<Highlighter>,
     /// The document whose lexer states `highlighter` holds.
     highlighted: u64,
+    /// Saved lexer states for large Markdown code blocks, by block start.
+    fences: Vec<(usize, Highlighter)>,
+    fence_document: u64,
     /// Laid out for the rows around the viewport only.
     pub projection: Projection,
     pub viewport: Rect,
@@ -550,6 +556,8 @@ impl App {
             analyzed: (u64::MAX, u64::MAX),
             highlighter: None,
             highlighted: u64::MAX,
+            fences: Vec::new(),
+            fence_document: u64::MAX,
             projection: Projection::default(),
             viewport: Rect::default(),
             scroll: 0,
@@ -735,33 +743,23 @@ impl App {
             line -= 1;
         }
         let start = document.line_start(line);
-        if let Some(highlighter) = &mut self.highlighter {
-            if self.highlighted != document.id() {
-                // Saved lexer states belong to another document.
-                *highlighter = Highlighter::new(highlighter.language());
-                self.highlighted = document.id();
-            }
-            // Every source line is at least one row in code views.
-            let last = document
-                .line_index(through.min(text.len()))
-                .saturating_add(after)
-                .saturating_add(2);
-            let end = if last >= document.line_count() {
-                text.len()
-            } else {
-                document.line_start(last)
-            };
-            let unchanged = highlighter
-                .revision()
-                .and_then(|revision| document.first_change_since(revision))
-                .unwrap_or(usize::MAX);
-            let skip = milli::markdown::bom_len(text);
-            let spans = highlighter.window(text, skip, key.0.1, unchanged, start, end);
-            self.parsed.set_code_spans(spans);
-        }
+        // Lines are at least a row each, except two joined by concealed
+        // syntax, so code highlighting reaches past any row the window holds.
+        let last = document
+            .line_index(through.min(text.len()))
+            .saturating_add(after.saturating_mul(2))
+            .saturating_add(4);
+        let end = if last >= document.line_count() {
+            text.len()
+        } else {
+            document.line_start(last)
+        };
+        let code = self.code_styles(start, end);
+        let text = self.document.text();
         self.projection = Projection::window(
             text,
             &self.parsed,
+            &code,
             &key.1,
             key.2,
             live,
@@ -772,6 +770,76 @@ impl App {
                 after,
             },
         );
+    }
+
+    /// Highlighting for `start..end`: of a code file, from the nearest saved
+    /// lexer state; of Markdown, each code block the range reaches. Large
+    /// blocks keep saved states too, so neither costs more for its length.
+    fn code_styles(&mut self, start: usize, end: usize) -> Vec<(std::ops::Range<usize>, Style)> {
+        let document = &self.document;
+        let text = document.text();
+        let id = document.id();
+        let unchanged = |highlighter: &Highlighter| {
+            highlighter
+                .revision()
+                .and_then(|revision| document.first_change_since(revision))
+                .unwrap_or(usize::MAX)
+        };
+        if let Some(highlighter) = &mut self.highlighter {
+            if self.highlighted != id {
+                // Saved lexer states belong to another document.
+                *highlighter = Highlighter::new(highlighter.language());
+                self.highlighted = id;
+            }
+            let whole = milli::markdown::bom_len(text)..text.len();
+            let changed = unchanged(highlighter);
+            return crate::projection::code_styles(highlighter.window(
+                text,
+                std::slice::from_ref(&whole),
+                document.revision(),
+                changed,
+                start,
+                end,
+            ));
+        }
+        if self.fence_document != id {
+            self.fences.clear();
+            self.fence_document = id;
+        }
+        let mut spans = Vec::new();
+        for (block, lines, language) in self.parsed.code_blocks(start..end) {
+            let size = lines.last().map_or(0, |line| line.end) - block;
+            if size <= LARGE_FENCE {
+                let reached = lines.partition_point(|line| line.start < end);
+                spans.extend(
+                    crate::syntax::highlight(language, text, &lines[..reached])
+                        .into_iter()
+                        .filter(|(span, _)| span.end > start),
+                );
+                continue;
+            }
+            // Keep a few large blocks' saved states, keyed by where the
+            // block starts; an edit above it moves it and starts afresh.
+            let found = self
+                .fences
+                .iter()
+                .position(|(at, highlighter)| *at == block && highlighter.language() == language);
+            let mut entry = match found {
+                Some(index) => self.fences.remove(index),
+                None => (block, Highlighter::new(language)),
+            };
+            let changed = unchanged(&entry.1);
+            spans.extend(
+                entry
+                    .1
+                    .window(text, lines, document.revision(), changed, start, end),
+            );
+            self.fences.push(entry);
+            if self.fences.len() > 4 {
+                self.fences.remove(0);
+            }
+        }
+        crate::projection::code_styles(spans)
     }
 
     /// Lay out the viewport from the top anchor, with a few lines above it

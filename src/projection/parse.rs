@@ -158,13 +158,35 @@ impl Parsed {
 
     /// Replace code highlighting with `spans`, as from a `Highlighter`
     /// window. Only layout inside the spans' lines sees their colors.
-    pub fn set_code_spans(&mut self, spans: Vec<(Range<usize>, Token)>) {
-        let colors = theme::palette();
-        self.styles = spans
-            .into_iter()
-            .map(|(range, token)| (range, token_style(token, &colors)))
-            .collect();
-        self.measure_reach();
+    /// Fenced code and front matter with a language, overlapping `range`:
+    /// each block's start, content segments, and language.
+    pub fn code_blocks(
+        &self,
+        range: Range<usize>,
+    ) -> impl Iterator<Item = (usize, &[Range<usize>], &'static Language)> {
+        let first = self
+            .surfaces
+            .partition_point(|s| s.range.end <= range.start);
+        self.surfaces[first..]
+            .iter()
+            .take_while(move |s| s.range.start < range.end)
+            .filter_map(|s| Some((s.range.start, s.lines.as_slice(), s.language?)))
+    }
+
+    /// Highlighting of the code blocks `range` reaches, each lexed from its
+    /// start, as layout's code styles.
+    #[cfg(test)]
+    pub fn code_styles(&self, source: &str, range: Range<usize>) -> Vec<(Range<usize>, Style)> {
+        let mut spans = Vec::new();
+        for (_, lines, language) in self.code_blocks(range.clone()) {
+            let reached = lines.partition_point(|line| line.start < range.end);
+            spans.extend(
+                syntax::highlight(language, source, &lines[..reached])
+                    .into_iter()
+                    .filter(|(span, _)| span.end > range.start),
+            );
+        }
+        code_styles(spans)
     }
 
     fn measure_reach(&mut self) {
@@ -426,9 +448,8 @@ impl Parsed {
                         for fence in [&done.open, &done.close].into_iter().flatten() {
                             self.syntax(fence.clone(), muted);
                         }
-                        if let Some(language) = done.language {
-                            self.highlight(language, source, &done.lines, colors);
-                        }
+                        // Code inside is highlighted a window at a time; see
+                        // `code_blocks`.
                         self.surfaces.push(done);
                     }
                 }
@@ -846,6 +867,15 @@ impl Parsed {
         }
         ranges
     }
+}
+
+/// Highlighted code spans in the current theme's styles.
+pub fn code_styles(spans: Vec<(Range<usize>, Token)>) -> Vec<(Range<usize>, Style)> {
+    let colors = theme::palette();
+    spans
+        .into_iter()
+        .map(|(span, token)| (span, token_style(token, &colors)))
+        .collect()
 }
 
 fn token_style(token: Token, colors: &Palette) -> Style {

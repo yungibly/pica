@@ -17,6 +17,7 @@ use unicode_width::UnicodeWidthStr;
 pub(super) fn build(
     source: &str,
     parsed: &Parsed,
+    code: &[(Range<usize>, Style)],
     disclosed: &[Range<usize>],
     width: usize,
     live: bool,
@@ -38,6 +39,8 @@ pub(super) fn build(
             .decorations
             .partition_point(|d| d.range.start < start),
         sweep: Sweep::at(&parsed.styles, &parsed.reach, start),
+        code,
+        next_code: code.partition_point(|(span, _)| span.end <= start),
         rows: vec![first],
         positions: Positions::default(),
         row_text: false,
@@ -189,6 +192,10 @@ struct Layout<'a> {
     decorations: &'a [Decoration],
     next_decoration: usize,
     sweep: Sweep<'a>,
+    /// Highlighted code, sorted and nonoverlapping: it refines the styles
+    /// of the Markdown around it.
+    code: &'a [(Range<usize>, Style)],
+    next_code: usize,
     rows: Vec<VisualRow>,
     positions: Positions,
     /// Whether the current row holds source text other than whitespace.
@@ -372,8 +379,29 @@ impl<'a> Layout<'a> {
             .bg(self.colors.background);
         match atom.style {
             Some(style) => base.patch(style),
-            None => self.sweep.style(base, &atom.source),
+            None => {
+                let style = self.sweep.style(base, &atom.source);
+                self.code_style(style, &atom.source)
+            }
         }
+    }
+
+    /// Patch the code spans overlapping `range`, which arrive in order.
+    fn code_style(&mut self, mut style: Style, range: &Range<usize>) -> Style {
+        while self
+            .code
+            .get(self.next_code)
+            .is_some_and(|(span, _)| span.end <= range.start)
+        {
+            self.next_code += 1;
+        }
+        for (span, code) in &self.code[self.next_code..] {
+            if span.start >= range.end {
+                break;
+            }
+            style = style.patch(*code);
+        }
+        style
     }
 
     /// Display text and width, with tabs and invisible text made safe.
@@ -744,6 +772,7 @@ impl<'a> Layout<'a> {
             self.next_decoration,
             self.sweep.next,
             self.sweep.active.clone(),
+            self.next_code,
         );
         let mut cells = Vec::new();
         for row in &table.rows {
@@ -775,7 +804,12 @@ impl<'a> Layout<'a> {
             }
             cells.push(atoms_by_cell);
         }
-        (self.next_decoration, self.sweep.next, self.sweep.active) = saved;
+        (
+            self.next_decoration,
+            self.sweep.next,
+            self.sweep.active,
+            self.next_code,
+        ) = saved;
         let natural: Vec<usize> = (0..columns)
             .map(|column| {
                 cells

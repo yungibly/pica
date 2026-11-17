@@ -9,7 +9,7 @@ mod tests;
 #[cfg(test)]
 use milli::Selection;
 use milli::markdown::Task;
-pub use parse::{OutlineEntry, Parsed};
+pub use parse::{OutlineEntry, Parsed, code_styles};
 use ratatui::style::{Color, Style};
 use std::{fmt, ops::Range};
 
@@ -276,19 +276,23 @@ impl Projection {
         width: usize,
         live: bool,
     ) -> Self {
-        layout::build(source, parsed, disclosed, width, live, Window::WHOLE)
+        let code = parsed.code_styles(source, 0..source.len());
+        layout::build(source, parsed, &code, disclosed, width, live, Window::WHOLE)
     }
 
-    /// Lay out only `window`, which must start at a restart point.
+    /// Lay out only `window`, which must start at a restart point. `code`
+    /// holds highlighted code for the window, sorted and nonoverlapping,
+    /// as from `Parsed::code_styles` or a `Highlighter`.
     pub fn window(
         source: &str,
         parsed: &Parsed,
+        code: &[(Range<usize>, Style)],
         disclosed: &[Range<usize>],
         width: usize,
         live: bool,
         window: Window,
     ) -> Self {
-        layout::build(source, parsed, disclosed, width, live, window)
+        layout::build(source, parsed, code, disclosed, width, live, window)
     }
 
     /// The source offset of the first row.

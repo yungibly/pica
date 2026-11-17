@@ -303,13 +303,15 @@ impl Highlighter {
         self.revision
     }
 
-    /// Spans on lines that begin in `start..end`, identical to highlighting
-    /// all of `source` after `skip` bytes (its BOM). `unchanged` is how much
-    /// of the source is the same as at the previous call's revision.
+    /// Spans on lines that begin in `start..end`, identical to `highlight`
+    /// of `segments` (sorted, nonoverlapping, on character boundaries, as
+    /// `highlight` takes them). `unchanged` is how much of the source is the
+    /// same as at the previous call's revision; segments before it must be
+    /// too.
     pub fn window(
         &mut self,
         source: &str,
-        skip: usize,
+        segments: &[Range<usize>],
         revision: u64,
         unchanged: usize,
         start: usize,
@@ -322,21 +324,17 @@ impl Highlighter {
             self.checkpoints.truncate(keep);
             self.revision = Some(revision);
         }
-        let start = start.max(skip);
+        let Some(first) = segments.first() else {
+            return Vec::new();
+        };
+        let start = start.max(first.start);
         let saved = self.checkpoints.partition_point(|(at, _)| *at <= start);
         let (mut line, mut machine) = match saved.checked_sub(1) {
             Some(index) => {
                 let (at, machine) = &self.checkpoints[index];
                 (*at, machine.rebind(source))
             }
-            None => (
-                skip,
-                Machine::new(
-                    self.language,
-                    source,
-                    std::slice::from_ref(&(skip..source.len())),
-                ),
-            ),
+            None => (first.start, Machine::new(self.language, source, segments)),
         };
         let mut out = Out {
             src: source,
@@ -347,37 +345,70 @@ impl Highlighter {
         let mut previous = line;
         let mut next = saved;
         let bytes = source.as_bytes();
-        while line < source.len() && line < end.max(start + 1) {
-            let stop = bytes[line..]
-                .iter()
-                .position(|&b| b == b'\n' || b == b'\r')
-                .map_or(source.len(), |at| line + at);
-            machine.line(line, stop, &mut out);
-            line = stop + usize::from(stop < source.len());
-            if bytes.get(stop) == Some(&b'\r') && bytes.get(line) == Some(&b'\n') {
-                line += 1;
+        // As `feed` splits segments into lines; a saved state may resume
+        // inside a segment.
+        let mut index = segments.partition_point(|segment| segment.end <= line);
+        while let Some(segment) = segments.get(index) {
+            let mut stop = segment.end.min(source.len());
+            while !source.is_char_boundary(stop) {
+                stop -= 1;
             }
-            if line >= source.len() {
-                break;
+            let mut first = segment.start.max(line);
+            while first < stop && !source.is_char_boundary(first) {
+                first += 1;
             }
-            while self
-                .checkpoints
-                .get(next)
-                .is_some_and(|(at, _)| *at <= line)
-            {
-                previous = self.checkpoints[next].0;
-                next += 1;
+            index += 1;
+            if first > stop || (first == stop && first != segment.start) {
+                continue;
             }
-            if line - previous >= self.spacing {
-                self.checkpoints.insert(next, (line, machine.rebind("")));
-                previous = line;
-                next += 1;
+            if first == segment.start {
+                out.segment = first;
+            }
+            line = first;
+            loop {
+                if line >= end.max(start + 1) {
+                    return finish(out, start);
+                }
+                let close = bytes[line..stop]
+                    .iter()
+                    .position(|&b| b == b'\n' || b == b'\r')
+                    .map_or(stop, |at| line + at);
+                machine.line(line, close, &mut out);
+                if close == stop {
+                    line = stop;
+                    break;
+                }
+                line = close + 1;
+                if bytes[close] == b'\r' && line < stop && bytes[line] == b'\n' {
+                    line += 1;
+                }
+                if line >= stop {
+                    break;
+                }
+                while self
+                    .checkpoints
+                    .get(next)
+                    .is_some_and(|(at, _)| *at <= line)
+                {
+                    previous = self.checkpoints[next].0;
+                    next += 1;
+                }
+                if line - previous >= self.spacing {
+                    self.checkpoints.insert(next, (line, machine.rebind("")));
+                    previous = line;
+                    next += 1;
+                }
             }
         }
-        let first = out.spans.partition_point(|(range, _)| range.end <= start);
-        out.spans.drain(..first);
-        out.spans
+        finish(out, start)
     }
+}
+
+/// Spans from `start` on.
+fn finish(mut out: Out, start: usize) -> Vec<(Range<usize>, Token)> {
+    let first = out.spans.partition_point(|(range, _)| range.end <= start);
+    out.spans.drain(..first);
+    out.spans
 }
 
 /// A lexer consumes one line at a time, carrying state to the next line.
