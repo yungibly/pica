@@ -12,8 +12,16 @@ case "$(uname -s)-$(uname -m)" in
         platform=x86_64-apple-darwin
         expected=8744d5b4a34c8bd58e85352c85b9fe5421cc01da8d67c7d8609cd8c8bd9f40ef
         ;;
+    Linux-x86_64)
+        platform=x86_64-unknown-linux-gnu
+        expected=4788539cf313fe6d30b321de5bbe7ac8b5830c84b2aa6f6815335686da19dc83
+        ;;
+    Linux-aarch64 | Linux-arm64)
+        platform=aarch64-unknown-linux-gnu
+        expected=557aa41e585205c0a1d7dfbe1786842e63360d9a4ccb2bd7096f7d4af275706b
+        ;;
     *)
-        echo "This bootstrap currently supports macOS arm64 and x86_64." >&2
+        echo "This bootstrap supports macOS and Linux on arm64 and x86_64." >&2
         exit 1
         ;;
 esac
@@ -36,7 +44,11 @@ if [ ! -f "$archive" ]; then
         -o "$temporary_dir/$asset"
     archive="$temporary_dir/$asset"
 fi
-actual=$(shasum -a 256 "$archive" | awk '{print $1}')
+if command -v sha256sum >/dev/null 2>&1; then
+    actual=$(sha256sum "$archive" | awk '{print $1}')
+else
+    actual=$(shasum -a 256 "$archive" | awk '{print $1}')
+fi
 if [ "$actual" != "$expected" ]; then
     echo "Checksum mismatch for $archive; nothing was installed." >&2
     exit 1
