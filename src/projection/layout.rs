@@ -2,7 +2,8 @@
 //! concealment, word or column wrapping, hanging indents, and row surfaces.
 //! Rendered tables become grids whose borders and padding carry no source.
 use super::{
-    Fill, FillKind, Glyph, Positions, Projection, VisualRow, overlaps,
+    Fill, FillKind, Glyph, GlyphText, Positions, Projection, Resume, TABLE_ROW_LIMIT, VisualRow,
+    Window, overlaps,
     parse::{Decoration, Parsed, RAIL, Table, line_end, next_line},
     safe_text, unsafe_char,
 };
@@ -16,10 +17,15 @@ use unicode_width::UnicodeWidthStr;
 pub(super) fn build(
     source: &str,
     parsed: &Parsed,
+    code: &[(Range<usize>, Style)],
     disclosed: &[Range<usize>],
     width: usize,
     live: bool,
+    window: Window,
 ) -> Projection {
+    let start = window.start.min(source.len());
+    let mut first = VisualRow::new(start, Some(window.line));
+    first.restart = true;
     let mut layout = Layout {
         source,
         parsed,
@@ -28,28 +34,41 @@ pub(super) fn build(
         // One spare cell leaves an insertion caret visible after a full row.
         limit: width.saturating_sub(1).max(1),
         colors: theme::palette(),
-        decorations: parsed
+        decorations: &parsed.decorations,
+        next_decoration: parsed
             .decorations
-            .iter()
-            .filter(|d| live && !disclosed.iter().any(|r| overlaps(r, &d.range)))
-            .collect(),
-        next_decoration: 0,
-        sweep: Sweep {
-            spans: &parsed.styles,
-            next: 0,
-            active: Vec::new(),
-        },
-        rows: vec![VisualRow::new(0, Some(1))],
+            .partition_point(|d| d.range.start < start),
+        sweep: Sweep::at(&parsed.styles, &parsed.reach, start),
+        code,
+        next_code: code.partition_point(|(span, _)| span.end <= start),
+        rows: vec![first],
         positions: Positions::default(),
         row_text: false,
         column: 0,
-        line: 1,
+        line: window.line,
         word_start: true,
         context: Context::default(),
-        cursors: [0; 4],
+        cursors: [
+            parsed.surfaces.partition_point(|s| s.range.end <= start),
+            parsed.headings.partition_point(|h| h.range.end <= start),
+            parsed.rules.partition_point(|r| r.end <= start),
+            parsed.tables.partition_point(|t| t.range.end <= start),
+        ],
+        window,
+        through_row: None,
     };
-    layout.run();
-    if !layout.positions.contains(source.len()) {
+    layout.begin_line(start);
+    let mut first_row = 0;
+    let mut from = start;
+    if let Some(resume) = window.resume.filter(|resume| resume.row > 0 && !live)
+        && layout.prime(start, resume)
+    {
+        first_row = resume.row;
+        from = resume.offset;
+    }
+    let end = layout.run(from);
+    let complete = end >= source.len();
+    if complete && !layout.positions.contains(source.len()) {
         let end = layout.here();
         layout.positions.insert(source.len(), end);
     }
@@ -57,6 +76,10 @@ pub(super) fn build(
         rows: layout.rows,
         revision: parsed.snapshot.revision,
         positions: layout.positions,
+        start,
+        end,
+        complete,
+        first_row,
     }
 }
 
@@ -98,7 +121,17 @@ struct Active {
     earliest_end: usize,
 }
 
-impl Sweep<'_> {
+impl<'a> Sweep<'a> {
+    /// Begin at `offset`, past every span that ends before it. `reach[i]` is
+    /// the furthest end among the first `i + 1` spans.
+    fn at(spans: &'a [(Range<usize>, Style)], reach: &[usize], offset: usize) -> Self {
+        Self {
+            spans,
+            next: reach.partition_point(|end| *end <= offset),
+            active: Vec::new(),
+        }
+    }
+
     /// Styles are requested in source order, so spans enter and leave once.
     /// Only spans above the lowest departed one are patched again, which
     /// keeps deeply nested spans linear.
@@ -165,9 +198,14 @@ struct Layout<'a> {
     live: bool,
     limit: usize,
     colors: Palette,
-    decorations: Vec<&'a Decoration>,
+    /// All decorations; those in disclosed source are skipped as they come.
+    decorations: &'a [Decoration],
     next_decoration: usize,
     sweep: Sweep<'a>,
+    /// Highlighted code, sorted and nonoverlapping: it refines the styles
+    /// of the Markdown around it.
+    code: &'a [(Range<usize>, Style)],
+    next_code: usize,
     rows: Vec<VisualRow>,
     positions: Positions,
     /// Whether the current row holds source text other than whitespace.
@@ -178,19 +216,28 @@ struct Layout<'a> {
     context: Context,
     /// Next unexamined surface, heading, rule, and table.
     cursors: [usize; 4],
+    window: Window,
+    /// The row holding `window.through`, once layout has passed it.
+    through_row: Option<usize>,
 }
 
 impl<'a> Layout<'a> {
-    fn run(&mut self) {
+    /// Lay out from `offset` until the window is full, returning where
+    /// layout stopped.
+    fn run(&mut self, mut offset: usize) -> usize {
         let source = self.source;
-        let mut offset = 0;
-        self.begin_line(0);
         while offset < source.len() {
+            if let Some(end) = self.overflow(offset) {
+                return end;
+            }
             if self.context.first_row == self.rows.len() - 1
                 && self.column == 0
                 && let Some(end) = self.rendered_table(offset)
             {
                 offset = end;
+                if self.full(offset) {
+                    return offset;
+                }
                 continue;
             }
             let atom = self.atom(offset);
@@ -201,11 +248,16 @@ impl<'a> Layout<'a> {
                 self.anchor_fill(start);
                 self.row().end = start;
                 self.line += 1;
-                self.rows.push(VisualRow::new(offset, Some(self.line)));
+                let mut row = VisualRow::new(offset, Some(self.line));
+                row.restart = true;
+                self.rows.push(row);
                 self.column = 0;
                 self.row_text = false;
                 self.word_start = true;
                 self.positions.insert(offset, self.here());
+                if self.full(offset) {
+                    return offset;
+                }
                 self.begin_line(offset);
                 continue;
             }
@@ -217,6 +269,140 @@ impl<'a> Layout<'a> {
             self.place(atom);
         }
         self.anchor_fill(source.len());
+        source.len()
+    }
+
+    /// Lay out a literal line's first row, which fixes its hanging indent,
+    /// then continue at `resume` as on a later row of the same line. Returns
+    /// false, having laid out nothing, when the line cannot resume there.
+    fn prime(&mut self, start: usize, resume: Resume) -> bool {
+        if !self.context.literal || resume.offset >= line_end(self.source, start) {
+            return false;
+        }
+        let mut offset = start;
+        while self.rows.len() == 1 {
+            if offset >= resume.offset {
+                break;
+            }
+            let atom = self.atom(offset);
+            let begin = offset;
+            offset = atom.source.end;
+            if matches!(atom.text, "\n" | "\r\n" | "\r") {
+                break;
+            }
+            if atom.text.is_empty() || (begin == 0 && atom.text == "\u{feff}") {
+                continue;
+            }
+            self.place(atom);
+        }
+        if self.rows.len() < 2 {
+            // Too short to wrap before `resume`: start over normally.
+            self.rows.truncate(1);
+            self.rows[0].glyphs.clear();
+            self.rows[0].fill = None;
+            self.rows[0].end = start;
+            self.positions = Positions::default();
+            self.column = 0;
+            self.row_text = false;
+            self.word_start = true;
+            self.next_decoration = self.decorations.partition_point(|d| d.range.start < start);
+            self.sweep = Sweep::at(&self.parsed.styles, &self.parsed.reach, start);
+            self.next_code = self.code.partition_point(|(span, _)| span.end <= start);
+            self.begin_line(start);
+            return false;
+        }
+        // As `wrap` begins a row: the line's hang, then text.
+        let width = self.hang_width();
+        let mut row = VisualRow::new(resume.offset, None);
+        if let Some((glyphs, _)) = &self.context.hang {
+            row.glyphs = glyphs
+                .iter()
+                .map(|glyph| Glyph {
+                    source: resume.offset..resume.offset,
+                    ..glyph.clone()
+                })
+                .collect();
+        }
+        self.rows = vec![row];
+        self.positions = Positions::default();
+        self.column = width;
+        self.row_text = false;
+        // No later row is the line's first.
+        self.context.first_row = usize::MAX;
+        self.next_decoration = self
+            .decorations
+            .partition_point(|d| d.range.start < resume.offset);
+        self.sweep = Sweep::at(&self.parsed.styles, &self.parsed.reach, resume.offset);
+        self.next_code = self
+            .code
+            .partition_point(|(span, _)| span.end <= resume.offset);
+        true
+    }
+
+    /// Note the row holding `window.through` once layout passes it.
+    fn pass_through(&mut self, offset: usize) {
+        if self.through_row.is_none() && offset > self.window.through {
+            self.through_row = Some(
+                self.positions
+                    .at_or_before(self.window.through)
+                    .map_or(0, |cell| cell.0),
+            );
+        }
+    }
+
+    /// Inside a line, past the rows the window needs: drop the rows begun
+    /// beyond them and return where the window ends, so a very long line
+    /// costs the rows shown rather than all of its rows.
+    fn overflow(&mut self, offset: usize) -> Option<usize> {
+        self.pass_through(offset);
+        let keep = self
+            .through_row?
+            .saturating_add(self.window.after)
+            .saturating_add(1);
+        if self.rows.len() <= keep {
+            return None;
+        }
+        let end = self.rows[keep].start;
+        self.rows.truncate(keep);
+        while self.positions.0.last().is_some_and(|(at, _)| *at >= end) {
+            self.positions.0.pop();
+        }
+        Some(end)
+    }
+
+    /// At a fresh line starting at `offset`: whether the window already has
+    /// its rows. If so, drop the line's empty row and its position.
+    fn full(&mut self, offset: usize) -> bool {
+        if offset < self.source.len() {
+            self.pass_through(offset);
+        }
+        let Some(through) = self.through_row else {
+            return false;
+        };
+        let after = (self.rows.len() - 1).saturating_sub(through + 1);
+        if offset >= self.source.len()
+            || after < self.window.after
+            || !self
+                .rows
+                .last()
+                .is_some_and(|row| row.restart && row.glyphs.is_empty())
+        {
+            return false;
+        }
+        self.rows.pop();
+        while self.positions.0.last().is_some_and(|(at, _)| *at >= offset) {
+            self.positions.0.pop();
+        }
+        true
+    }
+
+    /// Whether `decoration` replaces its source in this layout.
+    fn active(&self, decoration: &Decoration) -> bool {
+        self.live
+            && !self
+                .disclosed
+                .iter()
+                .any(|r| overlaps(r, &decoration.range))
     }
 
     fn row(&mut self) -> &mut VisualRow {
@@ -239,7 +425,7 @@ impl<'a> Layout<'a> {
         if let Some(decoration) = self
             .decorations
             .get(self.next_decoration)
-            .filter(|d| d.range.start == offset)
+            .filter(|d| d.range.start == offset && self.active(d))
         {
             self.next_decoration += 1;
             return Atom {
@@ -269,14 +455,35 @@ impl<'a> Layout<'a> {
             .bg(self.colors.background);
         match atom.style {
             Some(style) => base.patch(style),
-            None => self.sweep.style(base, &atom.source),
+            None => {
+                let style = self.sweep.style(base, &atom.source);
+                self.code_style(style, &atom.source)
+            }
         }
+    }
+
+    /// Patch the code spans overlapping `range`, which arrive in order.
+    fn code_style(&mut self, mut style: Style, range: &Range<usize>) -> Style {
+        while self
+            .code
+            .get(self.next_code)
+            .is_some_and(|(span, _)| span.end <= range.start)
+        {
+            self.next_code += 1;
+        }
+        for (span, code) in &self.code[self.next_code..] {
+            if span.start >= range.end {
+                break;
+            }
+            style = style.patch(*code);
+        }
+        style
     }
 
     /// Display text and width, with tabs and invisible text made safe.
     fn display(&self, text: &'a str) -> (Cow<'a, str>, usize) {
         let displayed = if text == "\t" {
-            Cow::Owned(" ".repeat((4 - self.column % 4).min(self.limit)))
+            Cow::Borrowed(&"    "[..(4 - self.column % 4).min(self.limit)])
         } else {
             safe(text)
         };
@@ -331,7 +538,7 @@ impl<'a> Layout<'a> {
         let column = self.column;
         let row = self.row();
         row.glyphs.push(Glyph {
-            text: displayed.into_owned(),
+            text: GlyphText::new(&displayed),
             source: start..end,
             column,
             width,
@@ -360,7 +567,7 @@ impl<'a> Layout<'a> {
             let (text, space) = if let Some(decoration) = self
                 .decorations
                 .get(index)
-                .filter(|d| d.range.start == offset)
+                .filter(|d| d.range.start == offset && self.active(d))
             {
                 offset = decoration.range.end;
                 index += 1;
@@ -536,10 +743,14 @@ impl<'a> Layout<'a> {
                         ..band(close.start)
                     }
                 } else {
+                    // Segments are sorted, so a long fence costs a search.
+                    let first = surface
+                        .lines
+                        .partition_point(|segment| segment.end <= start);
                     let anchor = surface
                         .lines
-                        .iter()
-                        .find(|segment| segment.end > start && segment.start <= end)
+                        .get(first)
+                        .filter(|segment| segment.start <= end)
                         .map_or(start, |segment| segment.start.max(start));
                     self.context.content = anchor + source[anchor..end.max(anchor)].len()
                         - source[anchor..end.max(anchor)].trim_start().len();
@@ -612,7 +823,7 @@ impl<'a> Layout<'a> {
                 t.range.start >= offset && self.source[offset..t.range.start].trim().is_empty()
             })
             .filter(|t| t.range.start < line_end(self.source, offset).max(offset + 1))?;
-        if !self.rendered(&table.range) {
+        if !self.rendered(&table.range) || table.rows.len() > TABLE_ROW_LIMIT {
             return None;
         }
         let grid = self.grid(table)?;
@@ -637,6 +848,7 @@ impl<'a> Layout<'a> {
             self.next_decoration,
             self.sweep.next,
             self.sweep.active.clone(),
+            self.next_code,
         );
         let mut cells = Vec::new();
         for row in &table.rows {
@@ -668,7 +880,12 @@ impl<'a> Layout<'a> {
             }
             cells.push(atoms_by_cell);
         }
-        (self.next_decoration, self.sweep.next, self.sweep.active) = saved;
+        (
+            self.next_decoration,
+            self.sweep.next,
+            self.sweep.active,
+            self.next_code,
+        ) = saved;
         let natural: Vec<usize> = (0..columns)
             .map(|column| {
                 cells
@@ -778,7 +995,7 @@ impl<'a> Layout<'a> {
                         if atom.width > 0 {
                             let column = self.column;
                             self.row().glyphs.push(Glyph {
-                                text: atom.text.clone(),
+                                text: GlyphText::new(&atom.text),
                                 source: atom.source.clone(),
                                 column,
                                 width: atom.width,
@@ -825,7 +1042,9 @@ impl<'a> Layout<'a> {
             self.next_decoration += 1;
         }
         if end < self.source.len() || self.source[..end].ends_with(['\n', '\r']) {
-            self.rows.push(VisualRow::new(end, Some(self.line)));
+            let mut after = VisualRow::new(end, Some(self.line));
+            after.restart = true;
+            self.rows.push(after);
             self.column = 0;
             self.row_text = false;
             self.word_start = true;

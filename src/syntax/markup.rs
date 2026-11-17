@@ -36,6 +36,14 @@ enum Kind {
 
 const RAW_ELEMENTS: [&[u8]; 2] = [b"script", b"style"];
 
+rebind!(Markup {
+    html,
+    mode,
+    kind,
+    value,
+    raw
+});
+
 impl<'a> Markup<'a> {
     pub(super) fn new(src: &'a str, html: bool) -> Self {
         Self {
@@ -326,6 +334,15 @@ enum Context {
     /// At-rule prelude such as `@media screen and (...)`.
     AtRule,
 }
+
+rebind!(Css {
+    scss,
+    comment,
+    depth,
+    context,
+    fresh,
+    bracket
+});
 
 impl<'a> Css<'a> {
     pub(super) fn new(src: &'a str, scss: bool) -> Self {

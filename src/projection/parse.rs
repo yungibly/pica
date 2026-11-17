@@ -13,7 +13,6 @@ use milli::{
 use pulldown_cmark::{Alignment, BlockQuoteKind, CodeBlockKind, Event, Parser, Tag, TagEnd};
 use ratatui::style::{Modifier, Style};
 use std::ops::Range;
-use unicode_segmentation::GraphemeCursor;
 
 /// Quote markers become a rail, repeated on wrapped rows.
 pub(super) const RAIL: &str = "▎";
@@ -65,13 +64,26 @@ pub(super) struct TableRow {
     pub cells: Vec<Range<usize>>,
 }
 
+/// A heading as the outline lists it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OutlineEntry {
+    /// Plain, terminal-safe text; never empty.
+    pub title: String,
+    pub level: u8,
+    pub offset: usize,
+}
+
 pub struct Parsed {
     pub snapshot: MarkdownSnapshot,
     pub theme: Theme,
     pub icons: IconSet,
+    /// Headings in source order, from the same parse.
+    pub outline: Vec<OutlineEntry>,
     pub(super) markdown: bool,
     /// Sorted by start; later spans refine earlier ones.
     pub(super) styles: Vec<(Range<usize>, Style)>,
+    /// The furthest end among `styles[..=i]`, to begin layout mid-source.
+    pub(super) reach: Vec<usize>,
     /// Sorted and nonoverlapping, on grapheme boundaries.
     pub(super) decorations: Vec<Decoration>,
     pub(super) surfaces: Vec<Surface>,
@@ -89,12 +101,34 @@ impl Parsed {
         markdown: bool,
         language: Option<&'static Language>,
     ) -> Self {
+        Self::assemble(source, snapshot, false, markdown, language)
+    }
+
+    /// Markdown analysis whose snapshot comes from the same parse, as
+    /// `Document::markdown` would give it for `revision`.
+    pub fn markdown(source: &str, revision: u64) -> Self {
+        let snapshot = MarkdownSnapshot {
+            revision,
+            ..MarkdownSnapshot::default()
+        };
+        Self::assemble(source, snapshot, true, true, None)
+    }
+
+    fn assemble(
+        source: &str,
+        snapshot: MarkdownSnapshot,
+        build_snapshot: bool,
+        markdown: bool,
+        language: Option<&'static Language>,
+    ) -> Self {
         let mut parsed = Self {
             snapshot,
             theme: theme::current_theme(),
             icons: icons::current(),
+            outline: Vec::new(),
             markdown,
             styles: Vec::new(),
+            reach: Vec::new(),
             decorations: Vec::new(),
             surfaces: Vec::new(),
             headings: Vec::new(),
@@ -103,16 +137,107 @@ impl Parsed {
         };
         let colors = theme::palette();
         if markdown {
-            parsed.analyze(source, &colors);
+            parsed.analyze(source, &colors, build_snapshot);
         } else if let Some(language) = language {
             let whole = markdown::bom_len(source)..source.len();
             parsed.highlight(language, source, std::slice::from_ref(&whole), &colors);
         }
         parsed.styles.sort_by_key(|(range, _)| range.start);
+        parsed.measure_reach();
         parsed
     }
 
-    fn analyze(&mut self, source: &str, colors: &Palette) {
+    /// An empty analysis for no revision, replaced before it is used.
+    pub fn stale() -> Self {
+        let snapshot = MarkdownSnapshot {
+            revision: u64::MAX,
+            ..MarkdownSnapshot::default()
+        };
+        Self::new("", snapshot, false, None)
+    }
+
+    /// Replace code highlighting with `spans`, as from a `Highlighter`
+    /// window. Only layout inside the spans' lines sees their colors.
+    /// Fenced code and front matter with a language, overlapping `range`:
+    /// each block's start, content segments, and language.
+    pub fn code_blocks(
+        &self,
+        range: Range<usize>,
+    ) -> impl Iterator<Item = (usize, &[Range<usize>], &'static Language)> {
+        let first = self
+            .surfaces
+            .partition_point(|s| s.range.end <= range.start);
+        self.surfaces[first..]
+            .iter()
+            .take_while(move |s| s.range.start < range.end)
+            .filter_map(|s| Some((s.range.start, s.lines.as_slice(), s.language?)))
+    }
+
+    /// Highlighting of the code blocks `range` reaches, each lexed from its
+    /// start, as layout's code styles.
+    #[cfg(test)]
+    pub fn code_styles(&self, source: &str, range: Range<usize>) -> Vec<(Range<usize>, Style)> {
+        let mut spans = Vec::new();
+        for (_, lines, language) in self.code_blocks(range.clone()) {
+            let reached = lines.partition_point(|line| line.start < range.end);
+            spans.extend(
+                syntax::highlight(language, source, &lines[..reached])
+                    .into_iter()
+                    .filter(|(span, _)| span.end > range.start),
+            );
+        }
+        code_styles(spans)
+    }
+
+    fn measure_reach(&mut self) {
+        let mut furthest = 0;
+        self.reach = self
+            .styles
+            .iter()
+            .map(|(range, _)| {
+                furthest = furthest.max(range.end);
+                furthest
+            })
+            .collect();
+    }
+
+    /// Whether a layout of `source` can begin afresh at line start `offset`:
+    /// the line ending before it starts a visual row, which concealed syntax
+    /// and rendered tables prevent.
+    pub fn restarts_at(
+        &self,
+        source: &str,
+        offset: usize,
+        disclosed: &[Range<usize>],
+        live: bool,
+    ) -> bool {
+        if offset == 0 || !live {
+            return true;
+        }
+        if offset > source.len() {
+            return false;
+        }
+        let hidden = |range: &Range<usize>| !disclosed.iter().any(|r| overlaps(r, range));
+        let before = self.decorations.partition_point(|d| d.range.start < offset);
+        if before > 0 {
+            let decoration = &self.decorations[before - 1];
+            if decoration.range.end >= offset && hidden(&decoration.range) {
+                return false;
+            }
+        }
+        let table = self
+            .tables
+            .partition_point(|t| t.range.start < offset)
+            .checked_sub(1)
+            .map(|index| &self.tables[index]);
+        !table.is_some_and(|table| {
+            offset < table.range.end
+                && table.rows.len() <= super::TABLE_ROW_LIMIT
+                && hidden(&table.range)
+        })
+    }
+
+    fn analyze(&mut self, source: &str, colors: &Palette, build_snapshot: bool) {
         let bom = markdown::bom_len(source);
         let muted = Style::default().fg(colors.muted);
         let mut lists: Vec<bool> = Vec::new();
@@ -123,9 +248,16 @@ impl Parsed {
         let mut in_head = false;
         let mut html: Option<Vec<Range<usize>>> = None;
         let mut quotes: Vec<(Range<usize>, Option<BlockQuoteKind>)> = Vec::new();
+        let mut snapshot =
+            build_snapshot.then(|| markdown::SnapshotBuilder::new(source, self.snapshot.revision));
+        let mut title: Option<OutlineEntry> = None;
         let input = markdown::parser_input(&source[bom..]);
         for (event, range) in Parser::new_ext(&input, markdown::options()).into_offset_iter() {
             let range = range.start + bom..range.end + bom;
+            if let Some(snapshot) = &mut snapshot {
+                snapshot.event(&event, range.clone());
+            }
+            self.outline_event(&event, &range, &mut title);
             // A bullet waits only for a task marker that would replace it.
             if let Some((start, depth)) = bullet
                 && !matches!(
@@ -316,9 +448,8 @@ impl Parsed {
                         for fence in [&done.open, &done.close].into_iter().flatten() {
                             self.syntax(fence.clone(), muted);
                         }
-                        if let Some(language) = done.language {
-                            self.highlight(language, source, &done.lines, colors);
-                        }
+                        // Code inside is highlighted a window at a time; see
+                        // `code_blocks`.
                         self.surfaces.push(done);
                     }
                 }
@@ -432,6 +563,9 @@ impl Parsed {
         if let Some((start, depth)) = bullet {
             self.bullet(start, depth, colors);
         }
+        if let Some(snapshot) = snapshot {
+            self.snapshot = snapshot.finish();
+        }
         self.rails(source, &quotes, colors);
         self.tasks(source, colors);
         self.decorations
@@ -448,6 +582,44 @@ impl Parsed {
             }
             keep
         });
+    }
+
+    /// Collect heading text for the outline, as plain text.
+    fn outline_event(
+        &mut self,
+        event: &Event,
+        range: &Range<usize>,
+        title: &mut Option<OutlineEntry>,
+    ) {
+        match event {
+            Event::Start(Tag::Heading { level, .. }) => {
+                *title = Some(OutlineEntry {
+                    title: String::new(),
+                    level: *level as u8,
+                    offset: range.start,
+                });
+            }
+            Event::Text(text) | Event::Code(text) => {
+                if let Some(title) = title {
+                    title.title.push_str(text);
+                }
+            }
+            Event::SoftBreak | Event::HardBreak => {
+                if let Some(title) = title {
+                    title.title.push(' ');
+                }
+            }
+            Event::End(TagEnd::Heading(_)) => {
+                if let Some(mut entry) = title.take() {
+                    entry.title = super::safe_text(entry.title.trim());
+                    if entry.title.is_empty() {
+                        entry.title = "Untitled heading".into();
+                    }
+                    self.outline.push(entry);
+                }
+            }
+            _ => {}
+        }
     }
 
     fn highlight(
@@ -697,6 +869,15 @@ impl Parsed {
     }
 }
 
+/// Highlighted code spans in the current theme's styles.
+pub fn code_styles(spans: Vec<(Range<usize>, Token)>) -> Vec<(Range<usize>, Style)> {
+    let colors = theme::palette();
+    spans
+        .into_iter()
+        .map(|(span, token)| (span, token_style(token, &colors)))
+        .collect()
+}
+
 fn token_style(token: Token, colors: &Palette) -> Style {
     let ink = &colors.syntax;
     let (color, modifier) = match token {
@@ -807,10 +988,5 @@ fn closing_fence(source: &str, range: &Range<usize>) -> Option<Range<usize>> {
 }
 
 fn boundary(source: &str, offset: usize) -> bool {
-    offset == 0
-        || offset == source.len()
-        || (source.is_char_boundary(offset)
-            && GraphemeCursor::new(offset, source.len(), true)
-                .is_boundary(source, 0)
-                .unwrap_or(false))
+    milli::document::is_boundary(source, offset)
 }

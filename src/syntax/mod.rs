@@ -1,6 +1,24 @@
 //! Small, dependency-free syntax highlighting for code files and fenced code.
 //! Every lexer is a line-oriented state machine: spans never leave their line,
 //! while block comments and multi-line strings carry over to the next line.
+
+/// `rebind!(Lexer { fields })` copies a lexer's state onto another source.
+/// State refers to source text only by offset, so a state saved at a line
+/// start stays valid while the text before that line is unchanged.
+macro_rules! rebind {
+    ($name:ident { $($field:ident),* $(,)? } $(, nested $inner:ident)?) => {
+        impl $name<'_> {
+            pub(super) fn rebind<'b>(&self, src: &'b str) -> $name<'b> {
+                $name {
+                    src,
+                    $($inner: self.$inner.rebind(src),)?
+                    $($field: self.$field.clone(),)*
+                }
+            }
+        }
+    };
+}
+
 mod languages;
 mod lexer;
 mod markup;
@@ -191,27 +209,227 @@ fn run<'a>(language: &Language, source: &'a str, segments: &[Range<usize>]) -> O
         segment: 0,
         rejected: 0,
     };
-    let out_mut = &mut out;
-    match language.lexer {
-        Lexer::Code(grammar) => {
-            let mut code = lexer::Code::new(grammar, source, segments);
-            feed(&mut code, segments, out_mut);
-        }
-        Lexer::Json => feed(&mut special::Json::new(source), segments, out_mut),
-        Lexer::Yaml => feed(&mut special::Yaml::new(source), segments, out_mut),
-        Lexer::Toml => feed(&mut special::Toml::new(source), segments, out_mut),
-        Lexer::Ini => feed(&mut special::Ini::new(source), segments, out_mut),
-        Lexer::Diff => feed(&mut special::Diff::new(source), segments, out_mut),
-        Lexer::Markdown => feed(&mut special::Markdown::new(source), segments, out_mut),
-        Lexer::Html => feed(&mut markup::Markup::new(source, true), segments, out_mut),
-        Lexer::Xml => feed(&mut markup::Markup::new(source, false), segments, out_mut),
-        Lexer::Css => feed(&mut markup::Css::new(source, false), segments, out_mut),
-        Lexer::Scss => feed(&mut markup::Css::new(source, true), segments, out_mut),
-        Lexer::Shell => feed(&mut shell::Shell::new(source), segments, out_mut),
-        Lexer::Make => feed(&mut shell::Make::new(source), segments, out_mut),
-        Lexer::Docker => feed(&mut shell::Docker::new(source), segments, out_mut),
-    }
+    feed(
+        &mut Machine::new(language, source, segments),
+        segments,
+        &mut out,
+    );
     out
+}
+
+/// Any language's lexer, so its state can be saved and resumed.
+enum Machine<'a> {
+    Code(lexer::Code<'a>),
+    Json(special::Json<'a>),
+    Yaml(special::Yaml<'a>),
+    Toml(special::Toml<'a>),
+    Ini(special::Ini<'a>),
+    Diff(special::Diff<'a>),
+    Markdown(special::Markdown<'a>),
+    Markup(markup::Markup<'a>),
+    Css(markup::Css<'a>),
+    Shell(shell::Shell<'a>),
+    Make(shell::Make<'a>),
+    Docker(shell::Docker<'a>),
+}
+
+impl<'a> Machine<'a> {
+    fn new(language: &Language, source: &'a str, segments: &[Range<usize>]) -> Self {
+        match language.lexer {
+            Lexer::Code(grammar) => Self::Code(lexer::Code::new(grammar, source, segments)),
+            Lexer::Json => Self::Json(special::Json::new(source)),
+            Lexer::Yaml => Self::Yaml(special::Yaml::new(source)),
+            Lexer::Toml => Self::Toml(special::Toml::new(source)),
+            Lexer::Ini => Self::Ini(special::Ini::new(source)),
+            Lexer::Diff => Self::Diff(special::Diff::new(source)),
+            Lexer::Markdown => Self::Markdown(special::Markdown::new(source)),
+            Lexer::Html => Self::Markup(markup::Markup::new(source, true)),
+            Lexer::Xml => Self::Markup(markup::Markup::new(source, false)),
+            Lexer::Css => Self::Css(markup::Css::new(source, false)),
+            Lexer::Scss => Self::Css(markup::Css::new(source, true)),
+            Lexer::Shell => Self::Shell(shell::Shell::new(source)),
+            Lexer::Make => Self::Make(shell::Make::new(source)),
+            Lexer::Docker => Self::Docker(shell::Docker::new(source)),
+        }
+    }
+
+    fn rebind<'b>(&self, src: &'b str) -> Machine<'b> {
+        match self {
+            Self::Code(lexer) => Machine::Code(lexer.rebind(src)),
+            Self::Json(lexer) => Machine::Json(lexer.rebind(src)),
+            Self::Yaml(lexer) => Machine::Yaml(lexer.rebind(src)),
+            Self::Toml(lexer) => Machine::Toml(lexer.rebind(src)),
+            Self::Ini(lexer) => Machine::Ini(lexer.rebind(src)),
+            Self::Diff(lexer) => Machine::Diff(lexer.rebind(src)),
+            Self::Markdown(lexer) => Machine::Markdown(lexer.rebind(src)),
+            Self::Markup(lexer) => Machine::Markup(lexer.rebind(src)),
+            Self::Css(lexer) => Machine::Css(lexer.rebind(src)),
+            Self::Shell(lexer) => Machine::Shell(lexer.rebind(src)),
+            Self::Make(lexer) => Machine::Make(lexer.rebind(src)),
+            Self::Docker(lexer) => Machine::Docker(lexer.rebind(src)),
+        }
+    }
+}
+
+impl Lex for Machine<'_> {
+    fn line(&mut self, start: usize, end: usize, out: &mut Out) {
+        match self {
+            Self::Code(lexer) => lexer.line(start, end, out),
+            Self::Json(lexer) => lexer.line(start, end, out),
+            Self::Yaml(lexer) => lexer.line(start, end, out),
+            Self::Toml(lexer) => lexer.line(start, end, out),
+            Self::Ini(lexer) => lexer.line(start, end, out),
+            Self::Diff(lexer) => lexer.line(start, end, out),
+            Self::Markdown(lexer) => lexer.line(start, end, out),
+            Self::Markup(lexer) => lexer.line(start, end, out),
+            Self::Css(lexer) => lexer.line(start, end, out),
+            Self::Shell(lexer) => lexer.line(start, end, out),
+            Self::Make(lexer) => lexer.line(start, end, out),
+            Self::Docker(lexer) => lexer.line(start, end, out),
+        }
+    }
+}
+
+/// Source bytes between saved lexer states.
+const CHECKPOINT_SPACING: usize = 4096;
+
+/// Highlights a whole file a window at a time. Lexer state is saved at line
+/// starts as lexing passes them, so a window is lexed from the nearest saved
+/// state before it rather than from the top of the file. Saved states before
+/// an edit stay valid; later ones are dropped.
+pub struct Highlighter {
+    language: &'static Language,
+    spacing: usize,
+    revision: Option<u64>,
+    /// Lexer state at the start of a line, by offset, ascending.
+    checkpoints: Vec<(usize, Machine<'static>)>,
+}
+
+impl Highlighter {
+    pub fn new(language: &'static Language) -> Self {
+        Self {
+            language,
+            spacing: CHECKPOINT_SPACING,
+            revision: None,
+            checkpoints: Vec::new(),
+        }
+    }
+
+    pub fn language(&self) -> &'static Language {
+        self.language
+    }
+
+    /// The revision of the last window, which saved states belong to.
+    pub fn revision(&self) -> Option<u64> {
+        self.revision
+    }
+
+    /// Spans on lines that begin in `start..end`, identical to `highlight`
+    /// of `segments` (sorted, nonoverlapping, on character boundaries, as
+    /// `highlight` takes them). `unchanged` is how much of the source is the
+    /// same as at the previous call's revision; segments before it must be
+    /// too.
+    pub fn window(
+        &mut self,
+        source: &str,
+        segments: &[Range<usize>],
+        revision: u64,
+        unchanged: usize,
+        start: usize,
+        end: usize,
+    ) -> Vec<(Range<usize>, Token)> {
+        if self.revision != Some(revision) {
+            // A state at `at` depends on the text before it, and on the byte
+            // at `at` for whether a CR ended its line.
+            let keep = self.checkpoints.partition_point(|(at, _)| *at < unchanged);
+            self.checkpoints.truncate(keep);
+            self.revision = Some(revision);
+        }
+        let Some(first) = segments.first() else {
+            return Vec::new();
+        };
+        let start = start.max(first.start);
+        let saved = self.checkpoints.partition_point(|(at, _)| *at <= start);
+        let (mut line, mut machine) = match saved.checked_sub(1) {
+            Some(index) => {
+                let (at, machine) = &self.checkpoints[index];
+                (*at, machine.rebind(source))
+            }
+            None => (first.start, Machine::new(self.language, source, segments)),
+        };
+        let mut out = Out {
+            src: source,
+            spans: Vec::new(),
+            segment: line,
+            rejected: 0,
+        };
+        let mut previous = line;
+        let mut next = saved;
+        let bytes = source.as_bytes();
+        // As `feed` splits segments into lines; a saved state may resume
+        // inside a segment.
+        let mut index = segments.partition_point(|segment| segment.end <= line);
+        while let Some(segment) = segments.get(index) {
+            let mut stop = segment.end.min(source.len());
+            while !source.is_char_boundary(stop) {
+                stop -= 1;
+            }
+            let mut first = segment.start.max(line);
+            while first < stop && !source.is_char_boundary(first) {
+                first += 1;
+            }
+            index += 1;
+            if first > stop || (first == stop && first != segment.start) {
+                continue;
+            }
+            if first == segment.start {
+                out.segment = first;
+            }
+            line = first;
+            loop {
+                if line >= end.max(start + 1) {
+                    return finish(out, start);
+                }
+                let close = bytes[line..stop]
+                    .iter()
+                    .position(|&b| b == b'\n' || b == b'\r')
+                    .map_or(stop, |at| line + at);
+                machine.line(line, close, &mut out);
+                if close == stop {
+                    line = stop;
+                    break;
+                }
+                line = close + 1;
+                if bytes[close] == b'\r' && line < stop && bytes[line] == b'\n' {
+                    line += 1;
+                }
+                if line >= stop {
+                    break;
+                }
+                while self
+                    .checkpoints
+                    .get(next)
+                    .is_some_and(|(at, _)| *at <= line)
+                {
+                    previous = self.checkpoints[next].0;
+                    next += 1;
+                }
+                if line - previous >= self.spacing {
+                    self.checkpoints.insert(next, (line, machine.rebind("")));
+                    previous = line;
+                    next += 1;
+                }
+            }
+        }
+        finish(out, start)
+    }
+}
+
+/// Spans from `start` on.
+fn finish(mut out: Out, start: usize) -> Vec<(Range<usize>, Token)> {
+    let first = out.spans.partition_point(|(range, _)| range.end <= start);
+    out.spans.drain(..first);
+    out.spans
 }
 
 /// A lexer consumes one line at a time, carrying state to the next line.

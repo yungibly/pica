@@ -398,15 +398,37 @@ impl Workspace {
         }
     }
 
-    fn refresh_outline(&mut self) {
-        let tab = &self.tabs[self.active];
-        let markdown = tab.editor.is_markdown();
-        self.sidebar.refresh(
-            tab.number,
-            tab.editor.document.revision(),
-            markdown,
-            tab.editor.document.text(),
-        );
+    /// Headings for the visible outline, from the editor's own analysis.
+    /// Large files have none unless `requested`, as by the heading picker,
+    /// which parses them once; a hidden outline is not refreshed.
+    fn refresh_outline(&mut self, requested: bool) {
+        let tab = &mut self.tabs[self.active];
+        if !requested && !self.sidebar.visible(self.area, tab.editor.is_markdown()) {
+            // Forget the outline rather than keep one for another revision.
+            self.sidebar.headings.clear();
+            self.sidebar.key = None;
+            return;
+        }
+        let markdown = if requested {
+            tab.editor.is_markdown()
+        } else {
+            tab.editor.markdown_analysis()
+        };
+        let (number, revision) = (tab.number, tab.editor.document.revision());
+        let editor = &mut tab.editor;
+        self.sidebar.refresh(number, revision, markdown, || {
+            if let Some(outline) = editor.outline() {
+                return outline
+                    .iter()
+                    .map(|entry| sidebar::Heading {
+                        title: entry.title.clone(),
+                        level: entry.level,
+                        offset: entry.offset,
+                    })
+                    .collect();
+            }
+            sidebar::headings(editor.document.text())
+        });
     }
 
     fn open_palette(&mut self, line_mode: bool) {
@@ -448,7 +470,7 @@ impl Workspace {
         }
         if self.sidebar.focused {
             self.editor_mut().deactivate();
-            self.refresh_outline();
+            self.refresh_outline(false);
             let caret = self.editor().document.selection().head;
             self.sidebar.select_current(caret);
         }
@@ -794,7 +816,7 @@ impl Workspace {
                     _ => {}
                 }
                 if self.sidebar.focused {
-                    self.refresh_outline();
+                    self.refresh_outline(false);
                     match key.code {
                         KeyCode::Esc | KeyCode::Tab => {
                             self.sidebar.focused = false;
@@ -863,7 +885,7 @@ impl Workspace {
                 return;
             }
             if let Event::Mouse(mouse) = &event {
-                self.refresh_outline();
+                self.refresh_outline(false);
                 if self.sidebar.area.contains((mouse.column, mouse.row).into()) {
                     match mouse.kind {
                         MouseEventKind::Down(MouseButton::Left) => {
@@ -1006,7 +1028,7 @@ impl Workspace {
         let area = frame.area();
         self.area = area;
         self.layout_valid = true;
-        self.refresh_outline();
+        self.refresh_outline(false);
         let sidebar_visible = self.sidebar.visible(area, self.editor().is_markdown());
         if !sidebar_visible {
             self.sidebar.focused = false;
@@ -1988,6 +2010,8 @@ mod tests {
         let path = dir.path().join("text.txt");
         std::fs::write(&path, "# not markdown").unwrap();
         let mut app = Workspace::open(None).unwrap();
+        // The outline is parsed only while it is shown.
+        app.sidebar.preference = Some(true);
         app.handle_event(Event::Paste("# one\n\n```\n# hidden\n```\n".into()));
         draw(&mut app, 120, 36);
         assert_eq!(app.sidebar.headings.len(), 1);

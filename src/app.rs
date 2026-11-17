@@ -1,8 +1,8 @@
-use crate::syntax::Language;
+use crate::syntax::{Highlighter, Language};
 use crate::{
     clipboard::{self, Clipboard},
     file_io::{ExternalChange, FileState},
-    projection::{Affinity, Fill, FillKind, Parsed, Projection, safe_text},
+    projection::{Affinity, Fill, FillKind, Parsed, Projection, Resume, Window, safe_text},
     search::{
         Action as SearchAction, Button as SearchButton, FieldDrag, FieldGlyph, FieldMap, Focus,
         Geometry as SearchGeometry, Search, contains,
@@ -11,7 +11,7 @@ use crate::{
 use crossterm::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
-use milli::{BlockKind, Document, InlineStyle, Selection};
+use milli::{BlockKind, Document, InlineStyle, MarkdownSnapshot, Selection};
 use ratatui::{
     Frame,
     layout::Rect,
@@ -121,14 +121,56 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
     ),
 ];
 
+/// A document and one of its revisions: `(Document::id, revision)`.
+type Version = (u64, u64);
+
 type LayoutKey = (
-    u64,
+    Version,
     Vec<std::ops::Range<usize>>,
     usize,
     bool,
     Theme,
     crate::icons::IconSet,
 );
+
+/// Files larger than this open in large-file mode: plain source, without
+/// Markdown analysis, live rendering, or highlighting.
+pub(crate) const LARGE_FILE: usize = 256 * 1024;
+/// Large-file mode ends only once a file shrinks below this, so editing near
+/// the threshold does not switch views back and forth.
+const LARGE_FILE_EXIT: usize = 192 * 1024;
+/// Rows laid out past the viewport beyond the screen of overscan, so small
+/// scrolls reuse the window.
+const OVERSCAN: usize = 4;
+/// Markdown code blocks larger than this keep saved lexer states; smaller
+/// ones are lexed from their start for each window.
+const LARGE_FENCE: usize = 8 * 1024;
+/// Documents up to this size count words on every edit; larger ones count
+/// when typing pauses.
+const EAGER_WORD_COUNT: usize = 8 * 1024;
+
+/// Windows skip at least this many rows of a long line when they resume
+/// inside it; nearer rows are cheaper to lay out than to look up.
+const LONG_LINE_ROWS: usize = 32;
+
+/// Where the rows of one long source line begin, from earlier layouts of a
+/// source view, so a window inside the line can resume near it.
+struct Wraps {
+    document: u64,
+    revision: u64,
+    width: usize,
+    /// The line's start, which is its first row's.
+    start: usize,
+    rows: Vec<usize>,
+}
+
+/// The first visible row: `row` rows into the layout of zero-based source
+/// line `line`. A line, unlike a row number, survives relayout.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Anchor {
+    line: usize,
+    row: usize,
+}
 
 #[derive(Debug, PartialEq, Eq)]
 enum Overlay {
@@ -156,10 +198,26 @@ pub struct App {
     markdown: bool,
     /// Detected for other text files; Markdown highlights fenced code itself.
     language: Option<&'static Language>,
+    /// Large-file mode, which overrides `live` without changing it.
+    large: bool,
     parsed: Parsed,
+    /// The document and revision `parsed` describes.
+    analyzed: Version,
+    /// Highlights the visible window of a code file.
+    highlighter: Option<Highlighter>,
+    /// The document whose lexer states `highlighter` holds.
+    highlighted: u64,
+    /// Saved lexer states for large Markdown code blocks, by block start.
+    fences: Vec<(usize, Highlighter)>,
+    fence_document: u64,
+    wraps: Option<Wraps>,
+    /// Laid out for the rows around the viewport only.
     pub projection: Projection,
     pub viewport: Rect,
+    /// The top visible row, local to `projection`.
     pub scroll: usize,
+    /// The top visible row, by source line, kept across relayout.
+    top: Anchor,
     preferred_column: Option<usize>,
     affinity: Affinity,
     dragging: bool,
@@ -181,8 +239,10 @@ pub struct App {
     help_scroll: usize,
     reload_prompt_visible: Cell<bool>,
     last_disk_change: Option<ExternalChange>,
-    word_count: Cell<Option<(u64, usize)>>,
-    line_count: Cell<Option<(u64, usize)>>,
+    word_count: Cell<Option<(Version, usize)>>,
+    /// The smallest indentation step of a revision, for indent guides.
+    indent_unit: Cell<Option<(Version, Option<usize>)>>,
+    last_input: std::time::Instant,
     pub should_exit: bool,
     message: String,
     message_is_error: bool,
@@ -214,7 +274,7 @@ impl App {
         let mut app = Self::new(text, Some(file), markdown);
         if language.is_some() {
             app.language = language;
-            app.parsed = app.analysis();
+            app.refresh_mode();
         }
         Ok(app)
     }
@@ -307,7 +367,7 @@ impl App {
                     self.file = Some(file);
                     self.last_disk_change = None;
                     self.deactivate();
-                    self.parsed = self.analysis();
+                    self.refresh_mode();
                     self.layout_key = None;
                     self.preferred_column = None;
                     self.affinity = Affinity::Downstream;
@@ -447,31 +507,111 @@ impl App {
         self.language
     }
 
+    /// Whether Markdown renders live: the preference, unless the file is large.
+    pub(crate) fn live_view(&self) -> bool {
+        self.live && !self.large
+    }
+
+    /// Markdown structure applies: not in large-file mode or other files.
+    pub(crate) fn markdown_analysis(&self) -> bool {
+        self.markdown && !self.large
+    }
+
+    /// One parse per revision gives rendering, the snapshot, and the
+    /// outline. Code highlighting comes from `highlighter`, a window at a time.
     fn analysis(&self) -> Parsed {
-        Parsed::new(
-            self.document.text(),
-            self.document.markdown(),
-            self.markdown,
-            self.language,
-        )
+        let revision = self.document.revision();
+        if self.markdown_analysis() {
+            return Parsed::markdown(self.document.text(), revision);
+        }
+        let snapshot = MarkdownSnapshot {
+            revision,
+            ..MarkdownSnapshot::default()
+        };
+        Parsed::new(self.document.text(), snapshot, false, None)
+    }
+
+    /// The headings of the current revision, from the shared analysis; `None`
+    /// when the document has no Markdown analysis.
+    pub(crate) fn outline(&mut self) -> Option<&[crate::projection::OutlineEntry]> {
+        self.ensure_parsed();
+        self.markdown_analysis()
+            .then_some(self.parsed.outline.as_slice())
+    }
+
+    /// Re-evaluate large-file mode, highlighting, and analysis after the
+    /// text, path, or language changes.
+    fn refresh_mode(&mut self) {
+        let length = self.document.text().len();
+        let large = if self.large {
+            length >= LARGE_FILE_EXIT
+        } else {
+            length > LARGE_FILE
+        };
+        // Plain text loses nothing, so only files that render say so.
+        let lost = if self.markdown {
+            Some("plain source view without Markdown rendering")
+        } else {
+            self.language.map(|_| "no syntax highlighting")
+        };
+        if large
+            && !self.large
+            && let Some(lost) = lost
+        {
+            self.inform(format!("Large file ({} KiB): {lost}", length / 1024));
+        }
+        self.large = large;
+        self.highlighter = match (self.language, self.highlighter.take()) {
+            (Some(language), Some(kept)) if !large && kept.language() == language => Some(kept),
+            (Some(language), _) if !large => Some(Highlighter::new(language)),
+            _ => None,
+        };
+        self.parsed = self.analysis();
+        self.analyzed = self.version();
+        self.layout_key = None;
+    }
+
+    /// Bring the analysis up to the current revision, theme, and mode.
+    fn ensure_parsed(&mut self) {
+        let length = self.document.text().len();
+        if (self.large && length < LARGE_FILE_EXIT) || (!self.large && length > LARGE_FILE) {
+            self.refresh_mode();
+        }
+        if self.analyzed != self.version()
+            || self.parsed.theme != theme::current_theme()
+            || self.parsed.icons != crate::icons::current()
+        {
+            self.parsed = self.analysis();
+            self.analyzed = self.version();
+        }
+    }
+
+    /// Identifies the text: the document and its revision.
+    fn version(&self) -> Version {
+        (self.document.id(), self.document.revision())
     }
 
     fn new(text: String, file: Option<FileState>, markdown: bool) -> Self {
         let document = Document::new(text);
-        let parsed = Parsed::new(document.text(), document.markdown(), markdown, None);
-        let projection =
-            Projection::build(document.text(), &parsed, document.selection(), 80, markdown);
-        Self {
+        let mut app = Self {
             document,
             file,
             live: markdown,
             ruler: true,
             markdown,
             language: None,
-            parsed,
-            projection,
+            large: false,
+            parsed: Parsed::stale(),
+            analyzed: (u64::MAX, u64::MAX),
+            highlighter: None,
+            highlighted: u64::MAX,
+            fences: Vec::new(),
+            fence_document: u64::MAX,
+            wraps: None,
+            projection: Projection::default(),
             viewport: Rect::default(),
             scroll: 0,
+            top: Anchor::default(),
             preferred_column: None,
             affinity: Affinity::Downstream,
             dragging: false,
@@ -489,7 +629,8 @@ impl App {
             reload_prompt_visible: Cell::new(false),
             last_disk_change: None,
             word_count: Cell::new(None),
-            line_count: Cell::new(None),
+            indent_unit: Cell::new(None),
+            last_input: std::time::Instant::now(),
             should_exit: false,
             message: String::new(),
             message_is_error: false,
@@ -501,10 +642,13 @@ impl App {
             header: true,
             label: None,
             view_toggled: false,
-        }
+        };
+        app.refresh_mode();
+        app
     }
 
     pub fn handle_event(&mut self, event: Event) {
+        self.last_input = std::time::Instant::now();
         // Only direct text entry may continue a typing group. UI commands,
         // failed saves, view changes and pointer gestures must end it too.
         let typing = self.overlay == Overlay::None
@@ -592,9 +736,469 @@ impl App {
         self.layout_key = None;
     }
 
+    /// The caret's row and column in `projection`, which must hold it; see
+    /// `caret_cell`.
     pub fn caret_position(&self) -> (usize, usize) {
         self.projection
             .cursor_with_affinity(self.document.selection().head, self.affinity)
+    }
+
+    /// The caret's cell, if the laid-out window holds it.
+    fn caret_cell(&self) -> Option<(usize, usize)> {
+        self.projection
+            .locate(self.document.selection().head)
+            .map(|_| self.caret_position())
+    }
+
+    /// Lay out what navigation needs and bring the caret into the window,
+    /// returning its cell.
+    fn prepare_caret(&mut self) -> (usize, usize) {
+        self.update_layout();
+        if !self.dragging && self.caret_cell().is_none() {
+            let height = self.page_height();
+            self.place_caret(height / 2, true);
+        }
+        self.caret_position()
+    }
+
+    fn page_height(&self) -> usize {
+        usize::from(self.viewport.height).max(1)
+    }
+
+    /// The layout width, before the first draw has measured one.
+    fn layout_width(&self) -> usize {
+        if self.viewport.width == 0 && self.viewport.height == 0 {
+            80
+        } else {
+            usize::from(self.viewport.width)
+        }
+    }
+
+    fn layout_key(&self) -> LayoutKey {
+        let live = self.live_view();
+        // Layout depends on the selection only through what it discloses, so
+        // caret movement within a block or in source view reuses it.
+        let disclosed = if live {
+            self.parsed
+                .disclosed(self.document.text(), self.document.selection())
+        } else {
+            Vec::new()
+        };
+        (
+            self.version(),
+            disclosed,
+            self.layout_width(),
+            live,
+            theme::current_theme(),
+            crate::icons::current(),
+        )
+    }
+
+    /// Lay out the window from zero-based `line` (or the restart point
+    /// before it) through the row holding `through` and `after` more rows.
+    fn lay_out(&mut self, line: usize, through: usize, before: usize, after: usize) {
+        let Some(key) = self.layout_key.clone() else {
+            return;
+        };
+        // Inside a long source line, begin `before` rows above `through`'s
+        // row rather than at the line's start.
+        let resume = self.resume_point(through, before);
+        let line = resume.map_or(line, |_| self.document.line_index(through));
+        let document = &self.document;
+        let text = document.text();
+        let live = key.3;
+        let mut line = line.min(document.line_count() - 1);
+        while line > 0
+            && !self
+                .parsed
+                .restarts_at(text, document.line_start(line), &key.1, live)
+        {
+            line -= 1;
+        }
+        let start = document.line_start(line);
+        // Lines are at least a row each, except two joined by concealed
+        // syntax, so code highlighting reaches past any row the window holds.
+        let last = document
+            .line_index(through.min(text.len()))
+            .saturating_add(after.saturating_mul(2))
+            .saturating_add(4);
+        let end = if last >= document.line_count() {
+            text.len()
+        } else {
+            document.line_start(last)
+        };
+        let code = self.code_styles(start, end);
+        let text = self.document.text();
+        self.projection = Projection::window(
+            text,
+            &self.parsed,
+            &code,
+            &key.1,
+            key.2,
+            live,
+            Window {
+                start,
+                line: line + 1,
+                through: through.max(start),
+                after,
+                resume,
+            },
+        );
+        self.record_wraps();
+    }
+
+    /// Bring the long-line row starts to this revision: starts at or before
+    /// an edit hold, unless it changed the first row, which sets the
+    /// hanging indent; a change before the line drops them.
+    fn update_wraps(&mut self) {
+        let (id, revision, width) = (
+            self.document.id(),
+            self.document.revision(),
+            self.layout_width(),
+        );
+        let changed = self.wraps.as_ref().and_then(|wraps| {
+            (wraps.revision != revision).then(|| self.document.first_change_since(wraps.revision))
+        });
+        let live = self.live_view();
+        let Some(wraps) = &mut self.wraps else {
+            return;
+        };
+        if wraps.document != id || wraps.width != width || live {
+            self.wraps = None;
+            return;
+        }
+        if let Some(changed) = changed {
+            match changed {
+                Some(at) if at < wraps.start => {
+                    self.wraps = None;
+                    return;
+                }
+                Some(at) => {
+                    let kept = if wraps.rows.get(1).is_some_and(|second| at >= *second) {
+                        wraps.rows.partition_point(|row| *row <= at)
+                    } else {
+                        1
+                    };
+                    wraps.rows.truncate(kept);
+                }
+                None => {}
+            }
+            wraps.revision = revision;
+        }
+    }
+
+    /// A known row of a long line to begin a window at, `before` rows above
+    /// the row holding `offset`.
+    fn resume_point(&mut self, offset: usize, before: usize) -> Option<Resume> {
+        self.update_wraps();
+        let wraps = self.wraps.as_ref()?;
+        let line = self.document.line_index(wraps.start);
+        if self.document.line_start(line) != wraps.start
+            || offset < wraps.start
+            || offset > self.document.line_content(line).end
+        {
+            return None;
+        }
+        let row = wraps.rows.partition_point(|start| *start <= offset) - 1;
+        let row = row
+            .checked_sub(before)
+            .filter(|row| *row >= LONG_LINE_ROWS)?;
+        Some(Resume {
+            row,
+            offset: wraps.rows[row],
+        })
+    }
+
+    /// Remember where the rows of the first long line in the window begin,
+    /// extending what is known of it.
+    fn record_wraps(&mut self) {
+        if self.live_view() {
+            return;
+        }
+        let projection = &self.projection;
+        let rows = projection.rows(0..projection.row_count());
+        let mut index = 0;
+        let (skipped, count) = loop {
+            if index >= rows.len() {
+                return;
+            }
+            let count = 1 + rows[index + 1..]
+                .iter()
+                .take_while(|row| !row.restart)
+                .count();
+            let skipped = if index == 0 {
+                projection.first_row()
+            } else {
+                0
+            };
+            if skipped + count >= LONG_LINE_ROWS * 2 {
+                break (skipped, count);
+            }
+            index += count;
+        };
+        let first = rows[index].start;
+        let start = self.document.line_start(self.document.line_index(first));
+        let starts = rows[index..index + count].iter().map(|row| row.start);
+        let (id, revision, width) = (
+            self.document.id(),
+            self.document.revision(),
+            self.layout_width(),
+        );
+        match &mut self.wraps {
+            Some(wraps)
+                if wraps.document == id
+                    && wraps.revision == revision
+                    && wraps.width == width
+                    && wraps.start == start
+                    && wraps.rows.len() >= skipped
+                    && wraps.rows.get(skipped).is_none_or(|row| *row == first) =>
+            {
+                wraps.rows.truncate(skipped);
+                wraps.rows.extend(starts);
+            }
+            _ if skipped == 0 && first == start => {
+                self.wraps = Some(Wraps {
+                    document: id,
+                    revision,
+                    width,
+                    start,
+                    rows: starts.collect(),
+                });
+            }
+            _ => {}
+        }
+    }
+
+    /// Highlighting for `start..end`: of a code file, from the nearest saved
+    /// lexer state; of Markdown, each code block the range reaches. Large
+    /// blocks keep saved states too, so neither costs more for its length.
+    fn code_styles(&mut self, start: usize, end: usize) -> Vec<(std::ops::Range<usize>, Style)> {
+        let document = &self.document;
+        let text = document.text();
+        let id = document.id();
+        let unchanged = |highlighter: &Highlighter| {
+            highlighter
+                .revision()
+                .and_then(|revision| document.first_change_since(revision))
+                .unwrap_or(usize::MAX)
+        };
+        if let Some(highlighter) = &mut self.highlighter {
+            if self.highlighted != id {
+                // Saved lexer states belong to another document.
+                *highlighter = Highlighter::new(highlighter.language());
+                self.highlighted = id;
+            }
+            let whole = milli::markdown::bom_len(text)..text.len();
+            let changed = unchanged(highlighter);
+            return crate::projection::code_styles(highlighter.window(
+                text,
+                std::slice::from_ref(&whole),
+                document.revision(),
+                changed,
+                start,
+                end,
+            ));
+        }
+        if self.fence_document != id {
+            self.fences.clear();
+            self.fence_document = id;
+        }
+        let mut spans = Vec::new();
+        for (block, lines, language) in self.parsed.code_blocks(start..end) {
+            let size = lines.last().map_or(0, |line| line.end) - block;
+            if size <= LARGE_FENCE {
+                let reached = lines.partition_point(|line| line.start < end);
+                spans.extend(
+                    crate::syntax::highlight(language, text, &lines[..reached])
+                        .into_iter()
+                        .filter(|(span, _)| span.end > start),
+                );
+                continue;
+            }
+            // Keep a few large blocks' saved states, keyed by where the
+            // block starts; an edit above it moves it and starts afresh.
+            let found = self
+                .fences
+                .iter()
+                .position(|(at, highlighter)| *at == block && highlighter.language() == language);
+            let mut entry = match found {
+                Some(index) => self.fences.remove(index),
+                None => (block, Highlighter::new(language)),
+            };
+            let changed = unchanged(&entry.1);
+            spans.extend(
+                entry
+                    .1
+                    .window(text, lines, document.revision(), changed, start, end),
+            );
+            self.fences.push(entry);
+            if self.fences.len() > 4 {
+                self.fences.remove(0);
+            }
+        }
+        crate::projection::code_styles(spans)
+    }
+
+    /// Lay out the viewport from the top anchor, with a few lines above it
+    /// and a few rows below, plus `above` and `below` more rows for a move.
+    fn lay_out_top(&mut self, above: usize, below: usize) {
+        let height = self.page_height();
+        let line = self.top.line.min(self.document.line_count() - 1);
+        let start = self.document.line_start(line);
+        // The top row's start, when a long line's rows are known.
+        self.update_wraps();
+        let top = self
+            .wraps
+            .as_ref()
+            .filter(|wraps| wraps.start == start)
+            .filter(|_| self.top.row >= LONG_LINE_ROWS + above + OVERSCAN)
+            .and_then(|wraps| wraps.rows.get(self.top.row))
+            .copied();
+        let mut back = above + OVERSCAN;
+        loop {
+            match top {
+                Some(top) => self.lay_out(line, top, above + OVERSCAN, height + below + OVERSCAN),
+                None => self.lay_out(
+                    line.saturating_sub(back),
+                    start,
+                    0,
+                    self.top.row + height + below + OVERSCAN,
+                ),
+            }
+            let skipped = self.projection.first_row();
+            self.scroll = if skipped > 0 {
+                self.top.row - skipped
+            } else {
+                self.projection.first_row_at(start) + self.top.row
+            }
+            .min(self.projection.row_count() - 1);
+            // Each line is at least one row, so this rarely repeats.
+            if self.scroll >= above || self.projection.start() == 0 || back > line {
+                break;
+            }
+            back = back * 2 + above;
+        }
+    }
+
+    /// Whether the window holds the viewport and the row after it, or
+    /// reaches the end of the document.
+    fn covers(&self) -> bool {
+        self.projection.row_count().saturating_sub(self.scroll) > self.page_height()
+            || self.projection.complete()
+    }
+
+    /// Hold `above` rows above the top row and `below` past the viewport,
+    /// where the document has them, for a scroll or a move across rows.
+    fn reach(&mut self, above: usize, below: usize) {
+        let rows = self.projection.row_count();
+        let enough_above = self.scroll >= above || self.projection.start() == 0;
+        let enough_below = rows.saturating_sub(self.scroll) > self.page_height() + below
+            || self.projection.complete();
+        if self.dragging || (enough_above && enough_below) {
+            return;
+        }
+        self.top = self.anchor_at(self.scroll);
+        self.lay_out_top(above, below);
+    }
+
+    /// The top anchor for window row `row`.
+    fn anchor_at(&self, row: usize) -> Anchor {
+        let restart = self.projection.restart_row(row);
+        if !self.projection.row(restart).restart {
+            // The window resumed inside a long line.
+            return Anchor {
+                line: self.document.line_index(self.projection.row(0).start),
+                row: self.projection.first_row() + row,
+            };
+        }
+        Anchor {
+            line: self.document.line_index(self.projection.row(restart).start),
+            row: row - restart,
+        }
+    }
+
+    /// Bring the analysis and window up to date for the current revision,
+    /// selection, and width. A drag keeps its geometry until it ends.
+    fn update_layout(&mut self) {
+        self.ensure_parsed();
+        if self.dragging {
+            return;
+        }
+        let key = self.layout_key();
+        if self.layout_key.as_ref() != Some(&key) {
+            self.layout_key = Some(key);
+            self.lay_out_top(0, 0);
+            // Keep the caret on its screen row when disclosure reflows text.
+            if let Some(screen_row) = self.anchor_screen_row.take() {
+                match self.caret_cell() {
+                    Some((row, _)) if row >= screen_row || self.projection.start() == 0 => {
+                        self.scroll = row.saturating_sub(screen_row);
+                    }
+                    _ => self.place_caret(screen_row, false),
+                }
+            }
+        } else {
+            self.anchor_screen_row = None;
+            if !self.covers() {
+                self.top = self.anchor_at(self.scroll);
+                self.lay_out_top(0, 0);
+            }
+        }
+    }
+
+    /// Lay out around the caret and scroll so `above` rows show above its
+    /// row, or fewer at the top of the document. With `fill`, the last page
+    /// stays full instead of ending above the bottom of the viewport.
+    fn place_caret(&mut self, above: usize, fill: bool) {
+        let height = self.page_height();
+        let head = self.document.selection().head;
+        let line = self.document.line_index(head);
+        let mut back = above + OVERSCAN;
+        loop {
+            let below = height.saturating_sub(above) + OVERSCAN;
+            // Filling the last page may want up to a screen above the caret.
+            let before = if fill { height } else { above } + OVERSCAN;
+            self.lay_out(line.saturating_sub(back), head, before, below);
+            let row = self.caret_cell().map_or(0, |cell| cell.0);
+            let mut wanted = above;
+            if fill && self.projection.complete() {
+                let below = self.projection.row_count() - row;
+                wanted = wanted.max(height.saturating_sub(below));
+            }
+            if row >= wanted || self.projection.start() == 0 || back > line {
+                self.scroll = row.saturating_sub(wanted);
+                break;
+            }
+            back = back * 2 + wanted;
+        }
+        self.top = self.anchor_at(self.scroll);
+    }
+
+    /// Scroll as little as keeps the caret visible. A caret far outside the
+    /// window, after a jump or a paste, is centered instead.
+    fn follow(&mut self, height: usize) {
+        match self.caret_cell() {
+            Some((row, _)) => {
+                if row < self.scroll {
+                    self.scroll = row;
+                } else if row >= self.scroll + height {
+                    self.scroll = row + 1 - height;
+                }
+            }
+            None => {
+                let head = self.document.selection().head;
+                let line = self.document.line_index(head);
+                let first = self.document.line_index(self.projection.start());
+                let last = self.document.line_index(self.projection.end());
+                if head < self.projection.start() && first - line <= height {
+                    self.place_caret(0, false);
+                } else if head >= self.projection.end() && line <= last + height {
+                    self.place_caret(height - 1, false);
+                } else {
+                    self.place_caret(height / 2, true);
+                }
+            }
+        }
     }
 
     fn key(&mut self, key: KeyEvent) {
@@ -731,7 +1335,7 @@ impl App {
                 KeyCode::Char('`') if self.markdown => {
                     self.document.toggle_inline(InlineStyle::Code);
                 }
-                KeyCode::Char('t' | 'T') if self.markdown => {
+                KeyCode::Char('t' | 'T') if self.markdown_analysis() => {
                     self.document.toggle_task_at_caret();
                 }
                 KeyCode::Char('/') => self.toggle_comment(),
@@ -780,8 +1384,8 @@ impl App {
                 self.preferred_column = None;
             }
             KeyCode::End => {
-                let (row, _) = self.caret_position();
-                let row = &self.projection.rows[row];
+                let (row, _) = self.prepare_caret();
+                let row = self.projection.row(row);
                 self.move_to(row.end, shift);
                 self.affinity = Affinity::Upstream;
                 self.preferred_column = None;
@@ -789,10 +1393,12 @@ impl App {
             KeyCode::Enter => {
                 if shift || alt {
                     self.document.literal_newline();
-                } else if self.markdown {
-                    // List continuation, or an auto-indented newline.
-                    self.document.enter();
+                } else if self.markdown_analysis() {
+                    // List continuation, or an auto-indented newline, from
+                    // the cached parse.
+                    self.markdown_enter();
                 } else {
+                    // Code, plain text, and large-file mode never parse.
                     milli::editing::indent_newline(&mut self.document);
                 }
                 self.preferred_column = None;
@@ -825,6 +1431,12 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    /// Markdown Enter, reusing this revision's analysis instead of parsing.
+    fn markdown_enter(&mut self) -> bool {
+        self.ensure_parsed();
+        self.document.enter_with(&self.parsed.snapshot)
     }
 
     fn finish_gesture(&mut self) {
@@ -921,6 +1533,10 @@ impl App {
         if !self.markdown {
             return self.language.map_or(Some(("#", "")), Language::comment);
         }
+        if self.large {
+            // Large-file mode never parses; treat the text as prose.
+            return Some(("<!--", "-->"));
+        }
         let source = self.document.text();
         let caret = self.document.selection().range().start;
         let snapshot = self.document.markdown();
@@ -962,6 +1578,14 @@ impl App {
     }
 
     fn vertical(&mut self, delta: isize, extend: bool) {
+        // Lay out the rows the move crosses beyond the viewport.
+        let (row, _) = self.prepare_caret();
+        let target = row as isize - self.scroll as isize + delta;
+        let height = self.page_height() as isize;
+        self.reach(
+            (-target).max(0) as usize,
+            (target + 1 - height).max(0) as usize,
+        );
         let (row, col) = self.caret_position();
         let col = *self.preferred_column.get_or_insert(col);
         let target_row = self.projection.navigable_row(row, delta);
@@ -981,16 +1605,21 @@ impl App {
             if !contains(self.editor_area, event.column, event.row) {
                 return;
             }
-            self.scroll = if event.kind == MouseEventKind::ScrollUp {
+            let up = event.kind == MouseEventKind::ScrollUp;
+            self.update_layout();
+            self.reach(if up { 3 } else { 0 }, if up { 0 } else { 3 });
+            self.scroll = if up {
                 self.scroll.saturating_sub(3)
-            } else {
+            } else if self.projection.complete() {
                 (self.scroll + 3).min(
                     self.projection
-                        .rows
-                        .len()
+                        .row_count()
                         .saturating_sub(self.viewport.height as usize),
                 )
+            } else {
+                (self.scroll + 3).min(self.projection.row_count() - 1)
             };
+            self.top = self.anchor_at(self.scroll);
             self.follow_cursor = false;
             return;
         }
@@ -1047,6 +1676,9 @@ impl App {
     fn toggle_view(&mut self) {
         if self.markdown {
             self.live = !self.live;
+            if self.large {
+                self.inform("Large file: live view stays off until the file is smaller");
+            }
             self.view_toggled = true;
         }
     }
@@ -1505,7 +2137,7 @@ impl App {
                             self.document.mark_saved();
                             self.overlay = Overlay::None;
                             self.should_exit = quit_after;
-                            self.parsed = self.analysis();
+                            self.refresh_mode();
                             self.layout_key = None;
                         }
                         Err(error) => self.set_message(error.to_string()),
@@ -1562,7 +2194,7 @@ impl App {
         let body_top = body_top(self.header, area.height);
         // Source and code views number their lines; live prose is a column.
         let digits = self.gutter_digits(area.width);
-        let (margin, prose_width) = if self.live {
+        let (margin, prose_width) = if self.live_view() {
             // Two cells each side leave room for heading marks and code
             // surfaces that hang into the margin.
             let gutter = if area.width >= 48 { 4 } else { 2 };
@@ -1578,65 +2210,26 @@ impl App {
             prose_width,
             area.height.saturating_sub(body_top + 1 + search_height),
         );
-        if self.parsed.snapshot.revision != self.document.revision()
-            || self.parsed.theme != theme::current_theme()
-            || self.parsed.icons != crate::icons::current()
-        {
-            self.parsed = self.analysis();
-        }
-        // Layout depends on the selection only through what it discloses, so
-        // caret movement within a block or in source view reuses it.
-        let disclosed = if self.live {
-            self.parsed
-                .disclosed(self.document.text(), self.document.selection())
-        } else {
-            Vec::new()
-        };
-        let key = (
-            self.document.revision(),
-            disclosed,
-            self.viewport.width as usize,
-            self.live,
-            theme::current_theme(),
-            crate::icons::current(),
-        );
-        if !self.dragging {
-            if self.layout_key.as_ref() != Some(&key) {
-                self.projection = Projection::layout(
-                    self.document.text(),
-                    &self.parsed,
-                    &key.1,
-                    key.2,
-                    self.live,
-                );
-                self.layout_key = Some(key);
-                if let Some(screen_row) = self.anchor_screen_row.take() {
-                    self.scroll = self.caret_position().0.saturating_sub(screen_row);
-                }
-            } else {
-                self.anchor_screen_row = None;
-            }
-        }
-        let (cursor_row, cursor_col) = self.caret_position();
+        self.update_layout();
         let height = self.viewport.height as usize;
-        // A jump lands a third of the way down, with what follows it in view,
-        // unless the document ends first.
-        if std::mem::take(&mut self.reveal) && height > 0 {
-            self.scroll = cursor_row
-                .saturating_sub(height / 3)
-                .min(self.projection.rows.len().saturating_sub(height));
-        }
-        if self.follow_cursor && height > 0 {
-            if cursor_row < self.scroll {
-                self.scroll = cursor_row;
+        if !self.dragging {
+            // A jump lands a third of the way down, with what follows it in
+            // view, unless the document ends first.
+            if std::mem::take(&mut self.reveal) && height > 0 {
+                self.place_caret(height / 3, true);
             }
-            if cursor_row >= self.scroll + height {
-                self.scroll = cursor_row + 1 - height;
+            if self.follow_cursor && height > 0 {
+                self.follow(height);
+            }
+            self.scroll = self
+                .scroll
+                .min(self.projection.row_count().saturating_sub(1));
+            self.top = self.anchor_at(self.scroll);
+            if !self.covers() {
+                self.lay_out_top(0, 0);
             }
         }
-        self.scroll = self
-            .scroll
-            .min(self.projection.rows.len().saturating_sub(1));
+        let (cursor_row, cursor_col) = self.caret_cell().unwrap_or((usize::MAX, 0));
         let filename = self.file.as_ref().map_or_else(
             || "Untitled.md".into(),
             |f| safe_text(&f.path.display().to_string()),
@@ -1667,21 +2260,26 @@ impl App {
             None
         };
         let colors = palette();
-        let rows = &self.projection.rows;
+        let rows = self.projection.rows(0..self.projection.row_count());
+        // A window resumed inside a long line begins on that line.
+        let resumed = (self.projection.first_row() > 0)
+            .then(|| self.document.line_index(self.projection.start()) + 1);
         let line_of = |row: usize| {
             rows[..=row.min(rows.len() - 1)]
                 .iter()
                 .rev()
                 .find_map(|r| r.line)
+                .or(resumed)
         };
-        let caret_line = line_of(cursor_row);
+        // Source views number every line, so rows agree with the document.
+        let caret_line = Some(self.document.line_index(self.document.selection().head) + 1);
         let mut line = if self.scroll > 0 {
             line_of(self.scroll - 1)
         } else {
-            None
+            resumed
         };
         let guides = if digits > 0 {
-            indent_guides(rows, self.scroll, height)
+            self.indent_guides(height)
         } else {
             None
         };
@@ -1815,41 +2413,97 @@ impl App {
 
     /// Number width for the gutter, or zero when it is hidden.
     fn gutter_digits(&self, width: u16) -> u16 {
-        if self.live || !self.ruler || width < 24 {
+        if self.live_view() || !self.ruler || width < 24 {
             return 0;
         }
         (self.line_count().to_string().len() as u16).max(3)
     }
 
     fn line_count(&self) -> usize {
-        let revision = self.document.revision();
-        if let Some((cached, count)) = self.line_count.get()
+        self.document.line_count()
+    }
+
+    /// The indentation of zero-based source `line`, if it has text.
+    fn line_indent(&self, line: usize) -> Option<usize> {
+        source_indent(&self.document.text()[self.document.line_content(line)])
+    }
+
+    /// The document's smallest indentation, as a guide step from 2 to 8.
+    fn indent_unit(&self) -> Option<usize> {
+        let revision = self.version();
+        if let Some((cached, unit)) = self.indent_unit.get()
             && cached == revision
         {
-            return count;
+            return unit;
         }
-        let bytes = self.document.text().as_bytes();
-        let count = 1 + bytes
-            .iter()
-            .enumerate()
-            .filter(|(index, byte)| {
-                **byte == b'\n' || (**byte == b'\r' && bytes.get(index + 1) != Some(&b'\n'))
-            })
-            .count();
-        self.line_count.set(Some((revision, count)));
-        count
+        let mut smallest: Option<usize> = None;
+        for line in 0..self.line_count() {
+            if let Some(indent) = self.line_indent(line).filter(|indent| *indent > 0) {
+                smallest = Some(smallest.map_or(indent, |s| s.min(indent)));
+                if indent <= 2 {
+                    break;
+                }
+            }
+        }
+        let unit = smallest.map(|unit| unit.clamp(2, 8));
+        self.indent_unit.set(Some((revision, unit)));
+        unit
+    }
+
+    fn indent_guides(&self, height: usize) -> Option<(usize, Vec<usize>)> {
+        let unit = self.indent_unit()?;
+        let after = if self.projection.complete() {
+            self.line_count()
+        } else {
+            self.document.line_index(self.projection.end())
+        };
+        let beyond = (after..self.line_count()).map(|line| self.line_indent(line));
+        let resumed = (self.projection.first_row() > 0)
+            .then(|| self.line_indent(self.document.line_index(self.projection.start())))
+            .flatten();
+        Some(indent_guides(
+            self.projection.rows(0..self.projection.row_count()),
+            self.scroll,
+            height,
+            unit,
+            beyond,
+            resumed,
+        ))
+    }
+
+    /// Rows for the whole document and the top row's place among them:
+    /// exact when the window holds every row, otherwise estimated from
+    /// source lines at the window's rows per line.
+    fn row_extent(&self) -> (usize, usize) {
+        let rows = self.projection.row_count();
+        if self.projection.start() == 0 && self.projection.complete() {
+            return (rows, self.scroll);
+        }
+        let first = self.document.line_index(self.projection.start());
+        let last = if self.projection.complete() {
+            self.line_count()
+        } else {
+            self.document.line_index(self.projection.end())
+        };
+        let lines = (last - first).max(1);
+        let estimate = |line: usize| line.saturating_mul(rows) / lines;
+        let top = self.anchor_at(self.scroll);
+        (
+            estimate(self.line_count()).max(rows),
+            estimate(top.line) + top.row,
+        )
     }
 
     /// A thin thumb on the editor's right edge, only when content overflows.
     /// While Find is open, the track also marks where matches are.
     fn draw_scrollbar(&self, frame: &mut Frame, area: Rect, height: usize) {
-        let total = self.projection.rows.len();
+        let (total, scroll) = self.row_extent();
         if height == 0 || total <= height || area.width < 3 {
             return;
         }
         let colors = palette();
         let thumb = (height * height / total).clamp(1, height);
-        let top = (self.scroll * height).div_ceil(total).min(height - thumb);
+        let top = (scroll * height).div_ceil(total).min(height - thumb);
         let x = area.right() - 1;
         let buffer = frame.buffer_mut();
         for y in top..top + thumb {
@@ -1864,8 +2518,14 @@ impl App {
             return;
         }
         let current = self.search.current(self.document.selection());
+        let whole = self.projection.start() == 0 && self.projection.complete();
         for (index, range) in self.search.matches.iter().enumerate() {
-            let y = self.projection.cursor(range.start).0 * height / total;
+            let y = if whole {
+                self.projection.cursor(range.start).0 * height / total
+            } else {
+                self.document.line_index(range.start) * height / self.line_count()
+            }
+            .min(height - 1);
             let color = if current == Some(index) {
                 colors.search_active
             } else {
@@ -2082,16 +2742,42 @@ impl App {
         }
     }
 
+    /// Words in the document. Counting costs several times a parse, so past
+    /// a small size the count from an earlier revision stands while typing;
+    /// `idle` brings it up to date when input pauses.
     fn source_word_count(&self) -> usize {
-        let revision = self.document.revision();
-        if let Some((cached_revision, count)) = self.word_count.get()
-            && cached_revision == revision
+        let revision = self.version();
+        match self.word_count.get() {
+            Some((cached, count))
+                if cached == revision || self.document.text().len() > EAGER_WORD_COUNT =>
+            {
+                count
+            }
+            _ => {
+                let count = self.document.text().unicode_words().count();
+                self.word_count.set(Some((revision, count)));
+                count
+            }
+        }
+    }
+
+    /// Deferred work for a pause in input. Returns whether to redraw.
+    pub(crate) fn idle(&mut self) -> bool {
+        if self.last_input.elapsed() < std::time::Duration::from_millis(250) {
+            return false;
+        }
+        let revision = self.version();
+        if self.large
+            || !self
+                .word_count
+                .get()
+                .is_some_and(|(cached, _)| cached != revision)
         {
-            return count;
+            return false;
         }
         let count = self.document.text().unicode_words().count();
         self.word_count.set(Some((revision, count)));
-        count
+        true
     }
 
     /// Context takes priority over passive metadata. Search geometry belongs to
@@ -2147,24 +2833,21 @@ impl App {
     fn caret_line_column(&self) -> (usize, usize) {
         let text = self.document.text();
         let head = self.document.selection().head;
-        // CRLF is one grapheme, so count LF and lone CR bytes.
-        let bytes = &text.as_bytes()[..head];
-        let line = bytes
-            .iter()
-            .enumerate()
-            .filter(|(index, byte)| {
-                **byte == b'\n' || (**byte == b'\r' && bytes.get(index + 1) != Some(&b'\n'))
-            })
-            .count()
-            + 1;
-        let line_start = text[..head].rfind(['\n', '\r']).map_or(0, |i| i + 1);
-        (line, text[line_start..head].graphemes(true).count() + 1)
+        let line = self.document.line_index(head);
+        let before = &text[self.document.line_start(line)..head];
+        // Within a line, each ASCII byte is a grapheme of its own.
+        let column = if before.is_ascii() {
+            before.len()
+        } else {
+            before.graphemes(true).count()
+        };
+        (line + 1, column + 1)
     }
 
     /// Document length, in lines for code and words for prose, and how much
     /// of it a selection covers.
     fn extent(&self) -> String {
-        if self.language.is_some() {
+        if self.language.is_some() || self.large {
             let lines = self.line_count();
             let selected = self.document.selected_text().lines().count();
             let unit = if lines == 1 { "line" } else { "lines" };
@@ -2209,7 +2892,7 @@ impl App {
         let icons = crate::icons::current();
         let nerd = icons == crate::icons::IconSet::Nerd;
         let (name, icon) = match (self.markdown, self.language) {
-            (true, _) if self.live => ("markdown".to_owned(), icons.file(true)),
+            (true, _) if self.live_view() => ("markdown".to_owned(), icons.file(true)),
             (true, _) => ("markdown source".to_owned(), icons.file(true)),
             (false, Some(language)) => (
                 language.name().to_lowercase(),
@@ -2518,40 +3201,58 @@ fn body_top(header: bool, height: u16) -> u16 {
     u16::from(header && height > 0)
 }
 
-/// Indentation for guides on each visible row, with the document's smallest
-/// indent as the step. Wrapped rows share their line's indent; blank lines
-/// take the indent of the code that follows, so a block's guides run through
-/// its blank lines and stop where it closes.
+/// The display column where a source line's text begins, or `None` for a
+/// blank line. Tabs advance to the next multiple of four.
+fn source_indent(line: &str) -> Option<usize> {
+    let mut column = 0;
+    for c in line.trim_start_matches('\u{feff}').chars() {
+        match c {
+            '\t' => column += 4 - column % 4,
+            c if c.is_whitespace() => column += 1,
+            _ => return Some(column),
+        }
+    }
+    None
+}
+
+/// Indentation for guides on each visible row, with `unit` as the step.
+/// Wrapped rows share their line's indent; blank lines take the indent of
+/// the code that follows, so a block's guides run through its blank lines
+/// and stop where it closes. `beyond` continues the search for that code
+/// past the last laid-out row, a line at a time; `resumed` is the indent of
+/// a line whose first row precedes the window.
 fn indent_guides(
     rows: &[crate::projection::VisualRow],
     scroll: usize,
     height: usize,
-) -> Option<(usize, Vec<usize>)> {
+    unit: usize,
+    beyond: impl Iterator<Item = Option<usize>>,
+    resumed: Option<usize>,
+) -> (usize, Vec<usize>) {
     let leading = |row: &crate::projection::VisualRow| {
         row.glyphs
             .iter()
             .find(|glyph| !glyph.source.is_empty() && !glyph.text.trim().is_empty())
             .map(|glyph| glyph.column)
     };
-    let unit = rows
-        .iter()
-        .filter(|row| row.line.is_some())
-        .filter_map(leading)
-        .filter(|indent| *indent > 0)
-        .min()?
-        .clamp(2, 8);
     // Resolve each row's indent, carrying a line's indent onto its wrapped rows.
     let resolve = |index: usize| -> Option<usize> {
-        let first = rows[..=index].iter().rposition(|row| row.line.is_some())?;
-        leading(&rows[first])
+        match rows[..=index].iter().rposition(|row| row.line.is_some()) {
+            Some(first) => leading(&rows[first]),
+            None => resumed,
+        }
     };
     let end = (scroll + height).min(rows.len());
     let mut indents: Vec<Option<usize>> = (scroll..end).map(resolve).collect();
-    let mut next = (end..rows.len()).take(200).find_map(resolve).unwrap_or(0);
+    let ahead = rows.len().saturating_sub(end).min(200);
+    let mut next = (end..end + ahead)
+        .find_map(resolve)
+        .or_else(|| beyond.take(200 - ahead).flatten().next())
+        .unwrap_or(0);
     for indent in indents.iter_mut().rev() {
         next = *indent.get_or_insert(next);
     }
-    Some((unit, indents.into_iter().map(|i| i.unwrap_or(0)).collect()))
+    (unit, indents.into_iter().map(|i| i.unwrap_or(0)).collect())
 }
 
 /// Paint a row surface between the text column's margins; labels hanging
@@ -2849,6 +3550,10 @@ fn is_markdown(path: &std::path::Path) -> bool {
         )
     })
 }
+
+#[cfg(test)]
+#[path = "app_window_tests.rs"]
+mod window_tests;
 
 #[cfg(test)]
 mod tests {
@@ -3680,12 +4385,12 @@ mod tests {
         draw(&mut app, 80, 24);
         assert_eq!(app.document.selection().head, source.find("text").unwrap());
         assert_eq!(app.document.text(), source);
-        assert!(app.projection.rows[2].glyphs.iter().any(|g| g.text == "["));
+        assert!(app.projection.row(2).glyphs.iter().any(|g| g.text == "["));
     }
 
     fn checkbox_position(app: &App) -> (usize, usize) {
         app.projection
-            .rows
+            .rows(0..app.projection.row_count())
             .iter()
             .enumerate()
             .find_map(|(row, visual)| {
@@ -3747,7 +4452,7 @@ mod tests {
             draw(&mut app, 80, 24);
             assert!(
                 app.projection
-                    .rows
+                    .rows(0..app.projection.row_count())
                     .iter()
                     .flat_map(|r| &r.glyphs)
                     .all(|g| g.task.is_none())
@@ -3821,7 +4526,7 @@ mod tests {
                 app.projection
                     .pointer_task(
                         &app.parsed,
-                        app.projection.rows.len(),
+                        app.projection.row_count(),
                         column,
                         usize::from(app.viewport.width)
                     )
@@ -3903,7 +4608,7 @@ mod tests {
         draw(&mut app, 24, 20);
         assert!(
             app.projection
-                .rows
+                .rows(0..app.projection.row_count())
                 .iter()
                 .flat_map(|r| &r.glyphs)
                 .any(|g| g.text == "*")
@@ -4008,7 +4713,7 @@ mod tests {
     fn end_and_blank_cell_click_keep_upstream_wrap_affinity() {
         let mut app = App::new("abcdefghijklmnopqrstuvwxyz0123456789".into(), None, false);
         draw(&mut app, 12, 12);
-        let first_end = app.projection.rows[0].end;
+        let first_end = app.projection.row(0).end;
         key(&mut app, KeyCode::End, KeyModifiers::NONE);
         draw(&mut app, 12, 12);
         assert_eq!(app.document.selection().head, first_end);
@@ -5248,7 +5953,7 @@ mod tests {
         // The document's end stays at the bottom rather than rising above it.
         app.jump_to_source(text.find("## End").unwrap());
         draw(&mut app, 80, 24);
-        assert_eq!(app.scroll, app.projection.rows.len() - height);
+        assert_eq!(app.scroll, app.projection.row_count() - height);
         assert!(app.caret_position().0 - app.scroll > reading);
         app.jump_to_source(text.find("A paragraph").unwrap());
         draw(&mut app, 80, 24);

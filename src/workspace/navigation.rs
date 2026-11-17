@@ -1,7 +1,6 @@
 //! Session-local document and heading pickers. Queries never edit source.
 use super::{Choice, ChoiceMode, Picker, Workspace, safe_text};
 use std::path::{Path, PathBuf};
-use unicode_segmentation::UnicodeSegmentation;
 
 impl Workspace {
     pub(super) fn open_documents(&mut self) {
@@ -88,22 +87,14 @@ impl Workspace {
     pub(super) fn open_headings(&mut self) {
         self.editor_mut().deactivate();
         self.sidebar.focused = false;
-        self.refresh_outline();
-        let source = self.editor().document.text();
-        let mut line_starts = vec![0];
-        line_starts.extend(
-            source
-                .grapheme_indices(true)
-                .filter_map(|(index, grapheme)| {
-                    matches!(grapheme, "\r" | "\n" | "\r\n").then_some(index + grapheme.len())
-                }),
-        );
+        self.refresh_outline(true);
+        let document = &self.editor().document;
         let entries = self
             .sidebar
             .headings
             .iter()
             .map(|heading| {
-                let line = line_starts.partition_point(|&start| start <= heading.offset);
+                let line = document.line_index(heading.offset) + 1;
                 (
                     heading.title.clone(),
                     format!("H{} · line {line}", heading.level),

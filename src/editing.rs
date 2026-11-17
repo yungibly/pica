@@ -331,10 +331,22 @@ pub fn preferred_newline(text: &str, offset: usize) -> &'static str {
 /// that keeps the line's indentation (see `indent_newline`), as in any file.
 /// All helper edits, including removal of a selection, are one undo transaction.
 pub fn enter(document: &mut Document) -> bool {
+    enter_with(document, None)
+}
+
+/// `enter`, reusing `cached` analysis when it is for the current revision.
+pub fn enter_with(document: &mut Document, cached: Option<&MarkdownSnapshot>) -> bool {
     let range = document.selection().range();
+    let fresh;
+    let snapshot = match cached.filter(|snapshot| snapshot.revision == document.revision()) {
+        Some(snapshot) => snapshot,
+        None => {
+            fresh = document.markdown();
+            &fresh
+        }
+    };
     let source = document.text();
     let line = line_range(source, range.start);
-    let snapshot = document.markdown();
 
     // A selection across lines/constructs is simply replaced by a newline.
     // Inline code also remains literal when the caret is inside its delimiters.
@@ -347,21 +359,15 @@ pub fn enter(document: &mut Document) -> bool {
             ) && block.range.start <= line.end
                 && block.range.end > line.start
         })
-        || Parser::new_ext(
-            &markdown::parser_input(&source[markdown::bom_len(source)..]),
-            markdown::options(),
-        )
-        .into_offset_iter()
-        .any(|(event, literal)| {
-            matches!(event, Event::Code(_))
-                && literal.start + markdown::bom_len(source) < range.start
-                && range.start < literal.end + markdown::bom_len(source)
-        })
+        || snapshot
+            .code_spans
+            .iter()
+            .any(|literal| literal.start < range.start && range.start < literal.end)
     {
         return indent_newline(document);
     }
 
-    let empty_dash = empty_nested_dash(source, &line, &snapshot);
+    let empty_dash = empty_nested_dash(source, &line, snapshot);
     let item = snapshot
         .blocks
         .iter()
@@ -381,7 +387,7 @@ pub fn enter(document: &mut Document) -> bool {
     let Some(item) = item else {
         return indent_newline(document);
     };
-    let Some(prefix) = item_prefix(source, &item.range, &snapshot) else {
+    let Some(prefix) = item_prefix(source, &item.range, snapshot) else {
         return indent_newline(document);
     };
     // Typing Enter in a marker edits literal source, not a guessed list context.
@@ -404,10 +410,10 @@ pub fn enter(document: &mut Document) -> bool {
             })
             .min_by_key(|block| block.range.len());
         let replacement = if let Some(parent) =
-            parent.and_then(|parent| item_prefix(source, &parent.range, &snapshot))
+            parent.and_then(|parent| item_prefix(source, &parent.range, snapshot))
         {
             parent.continuation
-        } else if needs_exit_separator(source, &line, &snapshot) {
+        } else if needs_exit_separator(source, &line, snapshot) {
             // Without a blank separator, immediately typed prose would be a
             // CommonMark lazy continuation of the preceding list. Make the
             // exit explicit in the source so it also survives undo/reopening.

@@ -12,6 +12,8 @@ pub(super) struct Json<'a> {
     comment: bool,
 }
 
+rebind!(Json { comment });
+
 impl<'a> Json<'a> {
     pub(super) fn new(src: &'a str) -> Self {
         Self {
@@ -126,6 +128,13 @@ pub(super) struct Yaml<'a> {
     pending: bool,
     flow: u32,
 }
+
+rebind!(Yaml {
+    quote,
+    block,
+    pending,
+    flow
+});
 
 impl<'a> Yaml<'a> {
     pub(super) fn new(src: &'a str) -> Self {
@@ -344,6 +353,12 @@ pub(super) struct Toml<'a> {
     depth: u32,
     tables: u64,
 }
+
+rebind!(Toml {
+    multi,
+    depth,
+    tables
+});
 
 impl<'a> Toml<'a> {
     pub(super) fn new(src: &'a str) -> Self {
@@ -586,6 +601,8 @@ pub(super) struct Ini<'a> {
     src: &'a str,
 }
 
+rebind!(Ini {});
+
 impl<'a> Ini<'a> {
     pub(super) fn new(src: &'a str) -> Self {
         Self { src }
@@ -681,6 +698,8 @@ pub(super) struct Diff<'a> {
     old: u32,
     new: u32,
 }
+
+rebind!(Diff { old, new });
 
 impl<'a> Diff<'a> {
     pub(super) fn new(src: &'a str) -> Self {
@@ -800,6 +819,8 @@ pub(super) struct Markdown<'a> {
     fence: Option<(u8, usize)>,
     comment: bool,
 }
+
+rebind!(Markdown { fence, comment });
 
 impl<'a> Markdown<'a> {
     pub(super) fn new(src: &'a str) -> Self {
