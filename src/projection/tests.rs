@@ -679,6 +679,14 @@ fn every_layout_of_a_rich_document_keeps_its_source_contracts() {
                 let lines = p.rows.iter().filter_map(|r| r.line).collect::<Vec<_>>();
                 assert!(lines.windows(2).all(|pair| pair[1] == pair[0] + 1));
                 assert_eq!(lines.first(), Some(&1));
+                if caret % 7 == 0 {
+                    let disclosed = if live {
+                        parsed.disclosed(text, Selection::caret(*caret))
+                    } else {
+                        Vec::new()
+                    };
+                    check_windows(text, &parsed, &disclosed, width, live, &p);
+                }
             }
         }
     }
@@ -845,6 +853,116 @@ fn check_layouts(text: &str, parsed: &Parsed, noise: &mut Noise) {
         }
         for offset in &boundaries {
             assert!(p.cursor(*offset).0 < p.rows.len());
+        }
+        let selection = Selection::caret(caret);
+        let disclosed = if live {
+            parsed.disclosed(text, selection)
+        } else {
+            Vec::new()
+        };
+        check_windows(text, parsed, &disclosed, width, live, &p);
+    }
+}
+
+/// Starts of lines, as `Document` counts them.
+fn line_starts(text: &str) -> Vec<usize> {
+    let bytes = text.as_bytes();
+    let mut starts = vec![0];
+    for at in 1..=text.len() {
+        if bytes[at - 1] == b'\n' || (bytes[at - 1] == b'\r' && bytes.get(at) != Some(&b'\n')) {
+            starts.push(at);
+        }
+    }
+    starts
+}
+
+fn same_row(window: &VisualRow, whole: &VisualRow) -> bool {
+    window.start == whole.start
+        && window.end == whole.end
+        && window.fill == whole.fill
+        && window.navigable == whole.navigable
+        && window.line.is_some() == whole.line.is_some()
+        && window.glyphs.len() == whole.glyphs.len()
+        && window.glyphs.iter().zip(&whole.glyphs).all(|(a, b)| {
+            a.text == b.text
+                && a.source == b.source
+                && a.column == b.column
+                && a.width == b.width
+                && a.style == b.style
+                && a.task == b.task
+        })
+}
+
+/// Every line where `Parsed::restarts_at` allows a window to begin lays out
+/// exactly as the whole document does from that row, and a short window
+/// stops where a later line begins.
+fn check_windows(
+    text: &str,
+    parsed: &Parsed,
+    disclosed: &[Range<usize>],
+    width: usize,
+    live: bool,
+    whole: &Projection,
+) {
+    for (index, start) in line_starts(text).into_iter().enumerate() {
+        if !parsed.restarts_at(text, start, disclosed, live) {
+            continue;
+        }
+        let first = whole
+            .rows
+            .iter()
+            .position(|row| row.restart && row.start == start)
+            .unwrap_or_else(|| panic!("no restart row at {start} in {text:?}"));
+        let window = Window {
+            start,
+            line: index + 1,
+            through: start,
+            after: usize::MAX,
+        };
+        let p = Projection::window(text, parsed, disclosed, width, live, window);
+        assert!(p.complete());
+        assert_eq!(
+            p.rows.len(),
+            whole.rows.len() - first,
+            "{text:?} from {start}"
+        );
+        for (row, expected) in p.rows.iter().zip(&whole.rows[first..]) {
+            assert!(
+                same_row(row, expected),
+                "{text:?} from {start}:\n{row:?}\n{expected:?}"
+            );
+        }
+        for offset in start..=text.len() {
+            if text.is_char_boundary(offset) && whole.positions.contains(offset) {
+                let (row, column) = whole.cursor(offset);
+                assert_eq!(
+                    p.cursor(offset),
+                    (row - first, column),
+                    "{text:?} at {offset}"
+                );
+            }
+        }
+        // A short window ends at a restart row, and holds what it promised.
+        let short = Projection::window(
+            text,
+            parsed,
+            disclosed,
+            width,
+            live,
+            Window { after: 1, ..window },
+        );
+        assert!(short.rows.len() <= p.rows.len());
+        assert!(short.complete() || short.rows.len() >= 2);
+        if !short.complete() {
+            let next = &p.rows[short.rows.len()];
+            assert!(
+                next.restart && next.start == short.end(),
+                "{text:?} from {start}"
+            );
+            assert_eq!(short.locate(short.end()), None);
+        }
+        for (row, expected) in short.rows.iter().zip(&p.rows) {
+            assert!(same_row(row, expected));
         }
     }
 }

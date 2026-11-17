@@ -72,6 +72,8 @@ pub struct Parsed {
     pub(super) markdown: bool,
     /// Sorted by start; later spans refine earlier ones.
     pub(super) styles: Vec<(Range<usize>, Style)>,
+    /// The furthest end among `styles[..=i]`, to begin layout mid-source.
+    pub(super) reach: Vec<usize>,
     /// Sorted and nonoverlapping, on grapheme boundaries.
     pub(super) decorations: Vec<Decoration>,
     pub(super) surfaces: Vec<Surface>,
@@ -95,6 +97,7 @@ impl Parsed {
             icons: icons::current(),
             markdown,
             styles: Vec::new(),
+            reach: Vec::new(),
             decorations: Vec::new(),
             surfaces: Vec::new(),
             headings: Vec::new(),
@@ -109,7 +112,76 @@ impl Parsed {
             parsed.highlight(language, source, std::slice::from_ref(&whole), &colors);
         }
         parsed.styles.sort_by_key(|(range, _)| range.start);
+        parsed.measure_reach();
         parsed
+    }
+
+    /// An empty analysis for no revision, replaced before it is used.
+    pub fn stale() -> Self {
+        let snapshot = MarkdownSnapshot {
+            revision: u64::MAX,
+            ..MarkdownSnapshot::default()
+        };
+        Self::new("", snapshot, false, None)
+    }
+
+    /// Replace code highlighting with `spans`, as from a `Highlighter`
+    /// window. Only layout inside the spans' lines sees their colors.
+    pub fn set_code_spans(&mut self, spans: Vec<(Range<usize>, Token)>) {
+        let colors = theme::palette();
+        self.styles = spans
+            .into_iter()
+            .map(|(range, token)| (range, token_style(token, &colors)))
+            .collect();
+        self.measure_reach();
+    }
+
+    fn measure_reach(&mut self) {
+        let mut furthest = 0;
+        self.reach = self
+            .styles
+            .iter()
+            .map(|(range, _)| {
+                furthest = furthest.max(range.end);
+                furthest
+            })
+            .collect();
+    }
+
+    /// Whether a layout of `source` can begin afresh at line start `offset`:
+    /// the line ending before it starts a visual row, which concealed syntax
+    /// and rendered tables prevent.
+    pub fn restarts_at(
+        &self,
+        source: &str,
+        offset: usize,
+        disclosed: &[Range<usize>],
+        live: bool,
+    ) -> bool {
+        if offset == 0 || !live {
+            return true;
+        }
+        if offset > source.len() {
+            return false;
+        }
+        let hidden = |range: &Range<usize>| !disclosed.iter().any(|r| overlaps(r, range));
+        let before = self.decorations.partition_point(|d| d.range.start < offset);
+        if before > 0 {
+            let decoration = &self.decorations[before - 1];
+            if decoration.range.end >= offset && hidden(&decoration.range) {
+                return false;
+            }
+        }
+        let table = self
+            .tables
+            .partition_point(|t| t.range.start < offset)
+            .checked_sub(1)
+            .map(|index| &self.tables[index]);
+        !table.is_some_and(|table| {
+            offset < table.range.end
+                && table.rows.len() <= super::TABLE_ROW_LIMIT
+                && hidden(&table.range)
+        })
     }
 
     fn analyze(&mut self, source: &str, colors: &Palette) {

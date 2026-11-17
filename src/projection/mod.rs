@@ -6,14 +6,118 @@ mod parse;
 #[cfg(test)]
 mod tests;
 
-use milli::{Selection, markdown::Task};
+#[cfg(test)]
+use milli::Selection;
+use milli::markdown::Task;
 pub use parse::Parsed;
 use ratatui::style::{Color, Style};
-use std::ops::Range;
+use std::{fmt, ops::Range};
+
+/// Tables with more rows than this stay literal source, so one table never
+/// costs more than this to lay out.
+pub const TABLE_ROW_LIMIT: usize = 200;
+
+/// A glyph's display text. Graphemes are short, so they are stored inline
+/// without a heap allocation; longer text, such as a table rule, is boxed.
+#[derive(Clone, PartialEq, Eq)]
+pub struct GlyphText(Repr);
+
+#[derive(Clone, PartialEq, Eq)]
+enum Repr {
+    Inline { len: u8, bytes: [u8; 22] },
+    Heap(Box<str>),
+}
+
+impl GlyphText {
+    pub fn new(text: &str) -> Self {
+        if text.len() <= 22 {
+            let mut bytes = [0; 22];
+            bytes[..text.len()].copy_from_slice(text.as_bytes());
+            Self(Repr::Inline {
+                len: text.len() as u8,
+                bytes,
+            })
+        } else {
+            Self(Repr::Heap(text.into()))
+        }
+    }
+
+    pub fn as_str(&self) -> &str {
+        match &self.0 {
+            Repr::Inline { len, bytes } => {
+                std::str::from_utf8(&bytes[..usize::from(*len)]).expect("copied from a str")
+            }
+            Repr::Heap(text) => text,
+        }
+    }
+}
+
+impl std::ops::Deref for GlyphText {
+    type Target = str;
+
+    fn deref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl AsRef<str> for GlyphText {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl From<&str> for GlyphText {
+    fn from(text: &str) -> Self {
+        Self::new(text)
+    }
+}
+
+impl PartialEq<str> for GlyphText {
+    fn eq(&self, other: &str) -> bool {
+        self.as_str() == other
+    }
+}
+
+impl PartialEq<&str> for GlyphText {
+    fn eq(&self, other: &&str) -> bool {
+        self.as_str() == *other
+    }
+}
+
+impl fmt::Debug for GlyphText {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(self.as_str(), f)
+    }
+}
+
+/// Where a window of rows begins and how far it reaches.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Window {
+    /// A restart point: the start of a line that begins a visual row, where
+    /// layout can begin afresh. See `Parsed::restarts_at`.
+    pub start: usize,
+    /// One-based source line number at `start`.
+    pub line: usize,
+    /// The window holds the row containing this offset…
+    pub through: usize,
+    /// …and at least this many rows after it, ending where a line ends.
+    pub after: usize,
+}
+
+impl Window {
+    /// Every row of the source, for tests and comparisons.
+    #[cfg(test)]
+    pub const WHOLE: Self = Self {
+        start: 0,
+        line: 1,
+        through: usize::MAX,
+        after: usize::MAX,
+    };
+}
 
 #[derive(Clone, Debug)]
 pub struct Glyph {
-    pub text: String,
+    pub text: GlyphText,
     /// Empty for inserted decoration, which never takes selection or matches.
     pub source: Range<usize>,
     pub column: usize,
@@ -54,6 +158,8 @@ pub struct VisualRow {
     pub fill: Option<Fill>,
     /// False for rows of pure decoration, which vertical movement skips.
     pub navigable: bool,
+    /// Layout starting afresh at `start` would begin with this row.
+    pub restart: bool,
 }
 
 impl VisualRow {
@@ -65,15 +171,38 @@ impl VisualRow {
             line,
             fill: None,
             navigable: true,
+            restart: false,
         }
     }
 }
 
+/// Visual rows for a window of the source, from a restart point to a line
+/// end. Row numbers are local to the window.
 #[derive(Clone, Debug)]
 pub struct Projection {
     rows: Vec<VisualRow>,
     pub revision: u64,
     positions: Positions,
+    /// Source covered: `start..end`, and whether `end` is the source's end.
+    start: usize,
+    end: usize,
+    complete: bool,
+}
+
+impl Default for Projection {
+    /// One empty row, before anything has been laid out.
+    fn default() -> Self {
+        let mut row = VisualRow::new(0, Some(1));
+        row.restart = true;
+        Self {
+            rows: vec![row],
+            revision: 0,
+            positions: Positions(vec![(0, (0, 0))]),
+            start: 0,
+            end: 0,
+            complete: false,
+        }
+    }
 }
 
 /// Caret cells by source offset. Layout records them in source order, so
@@ -120,6 +249,8 @@ pub struct Hit {
 }
 
 impl Projection {
+    /// Lay out the whole source, disclosing around `selection`.
+    #[cfg(test)]
     pub fn build(
         source: &str,
         parsed: &Parsed,
@@ -135,7 +266,9 @@ impl Projection {
         Self::layout(source, parsed, &disclosed, width, live)
     }
 
-    /// Lay out with precomputed disclosure, as returned by `Parsed::disclosed`.
+    /// Lay out the whole source with precomputed disclosure, as returned by
+    /// `Parsed::disclosed`.
+    #[cfg(test)]
     pub fn layout(
         source: &str,
         parsed: &Parsed,
@@ -143,7 +276,55 @@ impl Projection {
         width: usize,
         live: bool,
     ) -> Self {
-        layout::build(source, parsed, disclosed, width, live)
+        layout::build(source, parsed, disclosed, width, live, Window::WHOLE)
+    }
+
+    /// Lay out only `window`, which must start at a restart point.
+    pub fn window(
+        source: &str,
+        parsed: &Parsed,
+        disclosed: &[Range<usize>],
+        width: usize,
+        live: bool,
+        window: Window,
+    ) -> Self {
+        layout::build(source, parsed, disclosed, width, live, window)
+    }
+
+    /// The source offset of the first row.
+    pub fn start(&self) -> usize {
+        self.start
+    }
+
+    /// Where layout stopped: the start of the first line not laid out.
+    pub fn end(&self) -> usize {
+        self.end
+    }
+
+    /// Whether the rows reach the end of the source.
+    pub fn complete(&self) -> bool {
+        self.complete
+    }
+
+    /// The caret cell for `offset`, when this window lays it out.
+    pub fn locate(&self, offset: usize) -> Option<(usize, usize)> {
+        (offset >= self.start && (offset < self.end || (self.complete && offset == self.end)))
+            .then(|| self.cursor(offset))
+    }
+
+    /// The first row starting at or after `offset`.
+    pub fn first_row_at(&self, offset: usize) -> usize {
+        self.rows
+            .partition_point(|row| row.start < offset)
+            .min(self.rows.len() - 1)
+    }
+
+    /// The nearest row at or above `row` where layout could restart.
+    pub fn restart_row(&self, row: usize) -> usize {
+        (0..=row.min(self.rows.len() - 1))
+            .rev()
+            .find(|row| self.rows[*row].restart)
+            .unwrap_or(0)
     }
 
     /// A visual row of this projection. Row numbers are local to it.
