@@ -6,14 +6,9 @@ in [`yungibly/homebrew-tap`](https://github.com/yungibly/homebrew-tap).
 The source uses the MIT license. Theme and dependency licenses accompany every
 binary archive and are installed by the formula under milli's shared data directory.
 
-`v0.2.1` is [published](https://github.com/yungibly/milli/releases/tag/v0.2.1).
-Its [CI](https://github.com/yungibly/milli/actions/runs/35973616461),
-[native release builds](https://github.com/yungibly/milli/actions/runs/35973817712),
-and [three-platform Homebrew installation checks](https://github.com/yungibly/milli/actions/runs/35974597706)
-all passed before the tap update. The earlier releases,
-[`v0.2.0`](https://github.com/yungibly/milli/releases/tag/v0.2.0) and
-[`v0.1.0`](https://github.com/yungibly/milli/releases/tag/v0.1.0), passed the
-same checks.
+Releases through `v0.2.1` shipped as **Eymi** from `yungibly/eymi`; GitHub
+redirects those URLs to this repository, and their archives keep the `eymi-`
+prefix. `v0.3.0` is the first release named milli.
 
 ## CI and supported packages
 
@@ -108,3 +103,21 @@ Do not replace a public release archive to make its checksum fit an old formula.
 The platform DSL follows the [Homebrew Formula Cookbook](https://docs.brew.sh/Formula-Cookbook#handling-different-system-configurations).
 GitHub documents [release events](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#release)
 and [workflow-token event behavior](https://docs.github.com/en/actions/how-tos/writing-workflows/choosing-when-your-workflow-runs/triggering-a-workflow#triggering-a-workflow-from-a-workflow).
+
+## Renaming a formula
+
+The tap renames a formula in one commit that deletes the old file, keeps the
+new one, and maps the old name in `formula_renames.json` at the tap root, as
+[Homebrew documents](https://docs.brew.sh/Rename-A-Formula). `brew upgrade`
+then migrates existing installations to the new name. For the Eymi rename:
+
+1. Let the **Homebrew** workflow verify and publish `Formula/milli.rb` for the
+   first milli release; it never touches other files.
+2. In `yungibly/homebrew-tap`, commit `milli: renamed from eymi`, deleting
+   `Formula/eymi.rb` and adding `formula_renames.json` containing
+   `{"eymi": "milli"}`. Keep earlier names mapped directly to the newest one if
+   the formula is ever renamed again.
+
+Preferences and recovery snapshots need no migration: milli reads an existing
+`eymi`, then `marklane`, directory when its own is absent.
+
