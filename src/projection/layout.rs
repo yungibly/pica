@@ -714,15 +714,27 @@ impl<'a> Layout<'a> {
                 color: self.colors.code_background,
                 label: None,
             };
+            // A rendered fence line is a flat edge of the surface. Where the
+            // theme has no surface color (the terminal's own), a thin rule
+            // marks the block's edges instead.
+            let ruled = rendered && self.colors.code_background == self.colors.background;
+            let edge = |anchor: usize| PendingFill {
+                kind: if ruled {
+                    FillKind::Rule
+                } else {
+                    FillKind::Band
+                },
+                color: if ruled {
+                    self.colors.faint
+                } else {
+                    self.colors.code_background
+                },
+                ..band(anchor)
+            };
             let on_line = |range: &Range<usize>| range.start >= start && range.start <= end;
             self.context.fill = Some(
                 if let Some(open) = surface.open.as_ref().filter(|r| on_line(r)) {
                     PendingFill {
-                        kind: if rendered {
-                            FillKind::Lower
-                        } else {
-                            FillKind::Band
-                        },
                         label: (rendered && !surface.label.is_empty()).then(|| {
                             (
                                 format!(" {} ", surface.label),
@@ -731,17 +743,10 @@ impl<'a> Layout<'a> {
                                     .bg(self.colors.code_background),
                             )
                         }),
-                        ..band(open.start)
+                        ..edge(open.start)
                     }
                 } else if let Some(close) = surface.close.as_ref().filter(|r| on_line(r)) {
-                    PendingFill {
-                        kind: if rendered {
-                            FillKind::Upper
-                        } else {
-                            FillKind::Band
-                        },
-                        ..band(close.start)
-                    }
+                    edge(close.start)
                 } else {
                     // Segments are sorted, so a long fence costs a search.
                     let first = surface

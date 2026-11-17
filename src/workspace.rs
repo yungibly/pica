@@ -112,6 +112,8 @@ pub struct Workspace {
     layout_valid: bool,
     /// Whether Markdown opens live; an explicit switch is remembered.
     markdown_live: bool,
+    /// Indent guides in code and source views, off until chosen.
+    guides: bool,
     pub should_exit: bool,
 }
 
@@ -139,6 +141,7 @@ impl Workspace {
             area: Rect::new(0, 0, 80, 24),
             layout_valid: false,
             markdown_live: true,
+            guides: false,
             should_exit: false,
         })
     }
@@ -548,6 +551,11 @@ impl Workspace {
             Command::DuplicateDown => (KeyCode::Down, KeyModifiers::ALT | KeyModifiers::SHIFT),
             Command::Theme => {
                 self.open_themes();
+                return;
+            }
+            Command::Guides => {
+                self.guides = !self.guides;
+                self.persist_guides();
                 return;
             }
             Command::Icons => {
@@ -1052,9 +1060,11 @@ impl Workspace {
         // Like micro, a lone document has no tab row; the status line names it.
         let header = self.tabs.len() > 1 || sidebar_visible;
         let label = self.name(self.active);
+        let guides = self.guides;
         let editor = self.editor_mut();
         editor.header = header;
         editor.label = Some(label);
+        editor.guides = guides;
         self.editor_mut().draw_in(frame, editor_area, show_cursor);
         self.tab_hits.clear();
         self.sidebar.invalidate();

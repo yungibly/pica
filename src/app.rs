@@ -258,6 +258,8 @@ pub struct App {
     pub(crate) label: Option<String>,
     /// Set when the user switches live/source; the workspace remembers it.
     pub(crate) view_toggled: bool,
+    /// Indent guides in code and source views; the workspace sets this.
+    pub(crate) guides: bool,
 }
 
 impl App {
@@ -642,6 +644,7 @@ impl App {
             header: true,
             label: None,
             view_toggled: false,
+            guides: false,
         };
         app.refresh_mode();
         app
@@ -2278,7 +2281,7 @@ impl App {
         } else {
             resumed
         };
-        let guides = if digits > 0 {
+        let guides = if digits > 0 && self.guides {
             self.indent_guides(height)
         } else {
             None
@@ -3268,8 +3271,6 @@ fn draw_fill(frame: &mut Frame, area: Rect, viewport: Rect, fill: &Fill, y: u16)
     let buffer = frame.buffer_mut();
     let (symbol, style) = match fill.kind {
         FillKind::Band => (" ", Style::default().bg(fill.color)),
-        FillKind::Lower => ("▄", Style::default().fg(fill.color).bg(page)),
-        FillKind::Upper => ("▀", Style::default().fg(fill.color).bg(page)),
         FillKind::Rule => ("─", Style::default().fg(fill.color).bg(page)),
     };
     for x in left..right {
@@ -4305,6 +4306,13 @@ mod tests {
         let source = "fn main() {\n    if ok {\n\n        run();\n    }\n}\n";
         let mut app = App::new(source.into(), None, false);
         app.document.set_caret(source.find("run").unwrap()).unwrap();
+        // Guides are off until chosen.
+        let quiet = draw(&mut app, 60, 12);
+        let row1: String = (app.viewport.x..app.viewport.right())
+            .map(|x| quiet.backend().buffer()[(x, app.viewport.y + 1)].symbol())
+            .collect();
+        assert!(row1.starts_with("    if ok {"), "{row1}");
+        app.guides = true;
         let terminal = draw(&mut app, 60, 12);
         let buffer = terminal.backend().buffer();
         let x = app.viewport.x;

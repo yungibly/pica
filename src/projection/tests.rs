@@ -411,6 +411,7 @@ fn lone_headers_and_aligned_wrapped_cells_keep_tidy_edges() {
 
 #[test]
 fn code_spans_wrap_with_their_padding_and_punctuation() {
+    crate::theme::set_theme(crate::theme::Theme::Dark);
     let text = "intro\n\nRefs (`blockedRef`, `failedRef`, `graphRef`, `modeRef`) wrap here.";
     let row_of = |p: &Projection, offset: usize| {
         p.rows
@@ -532,17 +533,27 @@ fn a_line_opening_with_a_long_word_or_code_keeps_its_hang() {
 
 #[test]
 fn code_surfaces_hide_fences_and_carry_a_language_tab() {
+    crate::theme::set_theme(crate::theme::Theme::Terminal);
     let text = "intro\n\n```rust\nfn x() {}\n```\n";
+    // Without a surface color, thin rules mark the block's edges.
+    let p = project(text, 0, 40, true);
+    assert_eq!(p.rows[2].fill.as_ref().unwrap().kind, FillKind::Rule);
+    assert_eq!(
+        p.rows[2].fill.as_ref().unwrap().label.as_ref().unwrap().0,
+        " rust "
+    );
+    assert_eq!(p.rows[4].fill.as_ref().unwrap().kind, FillKind::Rule);
+    crate::theme::set_theme(crate::theme::Theme::Dark);
     let p = project(text, 0, 40, true);
     let fence = &p.rows[2];
     let fill = fence.fill.as_ref().unwrap();
-    assert_eq!(fill.kind, FillKind::Lower);
+    assert_eq!(fill.kind, FillKind::Band);
     assert_eq!(fill.from, -1);
     assert_eq!(fill.label.as_ref().unwrap().0, " rust ");
     assert!(fence.glyphs.is_empty());
     assert_eq!(row_text(&p.rows[3]), "fn x() {}");
     assert_eq!(p.rows[3].fill.as_ref().unwrap().kind, FillKind::Band);
-    assert_eq!(p.rows[4].fill.as_ref().unwrap().kind, FillKind::Upper);
+    assert_eq!(p.rows[4].fill.as_ref().unwrap().kind, FillKind::Band);
     let inside = project(text, text.find("fn").unwrap(), 40, true);
     assert_eq!(row_text(&inside.rows[2]), "```rust");
     assert!(
@@ -624,17 +635,25 @@ fn tasks_replace_their_bullet_and_checked_text_is_struck() {
 
 #[test]
 fn front_matter_is_a_surface_not_a_rule_and_heading() {
+    crate::theme::set_theme(crate::theme::Theme::Dark);
     let text = "---\ntitle: x\n---\n\nbody\n";
     let p = project(text, text.len(), 40, true);
-    assert_eq!(p.rows[0].fill.as_ref().unwrap().kind, FillKind::Lower);
+    assert_eq!(p.rows[0].fill.as_ref().unwrap().kind, FillKind::Band);
     assert_eq!(p.rows[1].fill.as_ref().unwrap().kind, FillKind::Band);
     assert_eq!(row_text(&p.rows[1]), "title: x");
-    assert_eq!(p.rows[2].fill.as_ref().unwrap().kind, FillKind::Upper);
+    assert_eq!(p.rows[2].fill.as_ref().unwrap().kind, FillKind::Band);
 }
 
 #[test]
 fn inline_code_delimiters_become_padding_of_the_same_width() {
+    crate::theme::set_theme(crate::theme::Theme::Terminal);
     let text = "a `b` c\n\nx";
+    // With no code surface to pad, the backticks stay as quiet marks.
+    assert_eq!(
+        display(&project(text, text.len(), 40, true)),
+        "a `b` c\n\nx"
+    );
+    crate::theme::set_theme(crate::theme::Theme::Dark);
     let rendered = project(text, text.len(), 40, true);
     assert_eq!(display(&rendered), "a  b  c\n\nx");
     let background = crate::theme::palette().code_background;

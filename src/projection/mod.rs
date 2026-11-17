@@ -144,10 +144,8 @@ pub struct Glyph {
 pub enum FillKind {
     /// A solid surface behind the row's text.
     Band,
-    /// Half-height edges that open and close a code surface.
-    Lower,
-    Upper,
-    /// A thin horizontal line, for thematic breaks.
+    /// A thin horizontal line, for thematic breaks and the edges of code
+    /// blocks where the theme has no surface color.
     Rule,
 }
 

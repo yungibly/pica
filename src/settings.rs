@@ -158,6 +158,13 @@ impl Settings {
     pub fn save_markdown_live(&mut self, live: bool) -> io::Result<()> {
         self.save("markdown-view", if live { "live" } else { "source" })
     }
+    /// Indent guides in code and source views; off unless chosen.
+    pub fn guides(&self) -> bool {
+        self.values.get("guides").is_some_and(|value| value == "on")
+    }
+    pub fn save_guides(&mut self, on: bool) -> io::Result<()> {
+        self.save("guides", if on { "on" } else { "off" })
+    }
     pub fn icons(&self) -> Option<IconSet> {
         self.values
             .get("icons")
@@ -422,11 +429,14 @@ mod tests {
         settings.save_sidebar(Some(false)).unwrap();
         assert_eq!(settings.markdown_live(), None);
         settings.save_markdown_live(false).unwrap();
+        assert!(!settings.guides());
+        settings.save_guides(true).unwrap();
         settings.save_icons(IconSet::Nerd).unwrap();
         let loaded = Settings::load(dir.path()).unwrap();
         assert_eq!(loaded.theme(), Some(Theme::Light));
         assert_eq!(loaded.sidebar(), Some(false));
         assert_eq!(loaded.markdown_live(), Some(false));
+        assert!(loaded.guides());
         assert_eq!(loaded.icons(), Some(IconSet::Nerd));
         assert!(fs::read_to_string(path).unwrap().contains("future=keep"));
     }

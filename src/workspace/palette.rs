@@ -47,11 +47,12 @@ pub(super) enum Command {
     DuplicateDown,
     Theme,
     Icons,
+    Guides,
     Reload,
     Recover,
 }
 impl Command {
-    pub const ALL: [Self; 38] = [
+    pub const ALL: [Self; 39] = [
         Self::New,
         Self::Open,
         Self::Save,
@@ -88,6 +89,7 @@ impl Command {
         Self::DuplicateDown,
         Self::Theme,
         Self::Icons,
+        Self::Guides,
         Self::Reload,
         Self::Recover,
     ];
@@ -129,6 +131,7 @@ impl Command {
             Self::DuplicateDown => "Duplicate lines below",
             Self::Theme => "Choose theme…",
             Self::Icons => "Toggle Nerd Font icons",
+            Self::Guides => "Toggle indent guides",
             Self::Reload => "Reload file from disk",
             Self::Recover => "Recover documents…",
         }

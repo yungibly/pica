@@ -393,17 +393,23 @@ impl Parsed {
                                 && boundary(source, range.start + ticks + 1)
                                 && boundary(source, range.end - ticks - 1),
                         );
+                        // Without a code surface (the terminal's own colors),
+                        // padding would read as stray spaces: the backticks
+                        // stay, quietly, instead.
+                        let padded = colors.code_background != colors.background;
                         for run in [
                             range.start..range.start + ticks + strip,
                             range.end - ticks - strip..range.end,
                         ] {
                             self.styles.push((run.clone(), muted));
-                            self.decorations.push(Decoration {
-                                range: run,
-                                replacement: " ".into(),
-                                style: None,
-                                task: None,
-                            });
+                            if padded {
+                                self.decorations.push(Decoration {
+                                    range: run,
+                                    replacement: " ".into(),
+                                    style: None,
+                                    task: None,
+                                });
+                            }
                         }
                     }
                 }

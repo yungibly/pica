@@ -34,6 +34,7 @@ impl Workspace {
         let settings = match Settings::load(config) {
             Ok(settings) => {
                 self.sidebar.preference = settings.sidebar();
+                self.guides = settings.guides();
                 if settings.markdown_live() == Some(false) {
                     self.markdown_live = false;
                     for tab in &mut self.tabs {
@@ -144,6 +145,19 @@ impl Workspace {
         if let Some(Err(error)) = result {
             self.editor_mut().set_message(format!(
                 "View changed for this session; could not save preferences: {error}"
+            ));
+        }
+    }
+    pub(super) fn persist_guides(&mut self) {
+        let on = self.guides;
+        let result = self
+            .persistence
+            .as_mut()
+            .and_then(|state| state.settings.as_mut())
+            .map(|settings| settings.save_guides(on));
+        if let Some(Err(error)) = result {
+            self.editor_mut().set_message(format!(
+                "Guides changed for this session; could not save preferences: {error}"
             ));
         }
     }
