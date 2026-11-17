@@ -309,9 +309,21 @@ impl Workspace {
         }
     }
 
-    fn refresh_outline(&mut self) {
+    /// Parse headings for the visible outline. Large files have none unless
+    /// `requested`, as by the heading picker; a hidden outline is not parsed.
+    fn refresh_outline(&mut self, requested: bool) {
         let tab = &self.tabs[self.active];
-        let markdown = tab.editor.is_markdown();
+        if !requested && !self.sidebar.visible(self.area, tab.editor.is_markdown()) {
+            // Forget the outline rather than keep one for another revision.
+            self.sidebar.headings.clear();
+            self.sidebar.key = None;
+            return;
+        }
+        let markdown = if requested {
+            tab.editor.is_markdown()
+        } else {
+            tab.editor.markdown_analysis()
+        };
         self.sidebar.refresh(
             tab.number,
             tab.editor.document.revision(),
@@ -358,7 +370,7 @@ impl Workspace {
         }
         if self.sidebar.focused {
             self.editor_mut().deactivate();
-            self.refresh_outline();
+            self.refresh_outline(false);
             let caret = self.editor().document.selection().head;
             self.sidebar.select_current(caret);
         }
@@ -679,7 +691,7 @@ impl Workspace {
                     _ => {}
                 }
                 if self.sidebar.focused {
-                    self.refresh_outline();
+                    self.refresh_outline(false);
                     match key.code {
                         KeyCode::Esc | KeyCode::Tab => {
                             self.sidebar.focused = false;
@@ -743,7 +755,7 @@ impl Workspace {
                 return;
             }
             if let Event::Mouse(mouse) = &event {
-                self.refresh_outline();
+                self.refresh_outline(false);
                 if self.sidebar.area.contains((mouse.column, mouse.row).into()) {
                     match mouse.kind {
                         MouseEventKind::Down(MouseButton::Left) => {
@@ -882,7 +894,7 @@ impl Workspace {
         let area = frame.area();
         self.area = area;
         self.layout_valid = true;
-        self.refresh_outline();
+        self.refresh_outline(false);
         let sidebar_visible = self.sidebar.visible(area, self.editor().is_markdown());
         if !sidebar_visible {
             self.sidebar.focused = false;

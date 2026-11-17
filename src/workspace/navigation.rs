@@ -88,7 +88,7 @@ impl Workspace {
     pub(super) fn open_headings(&mut self) {
         self.editor_mut().deactivate();
         self.sidebar.focused = false;
-        self.refresh_outline();
+        self.refresh_outline(true);
         let source = self.editor().document.text();
         let mut line_starts = vec![0];
         line_starts.extend(
