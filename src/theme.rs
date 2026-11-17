@@ -135,14 +135,6 @@ struct BuiltinTheme {
 static BUILTIN_PALETTES: OnceLock<Vec<Palette>> = OnceLock::new();
 static SAGE_PALETTES: OnceLock<[Palette; 2]> = OnceLock::new();
 
-fn fade(page: Color, inks: [Color; 6], amount: u16) -> [Color; 6] {
-    let mut bands = inks;
-    for (level, band) in bands.iter_mut().enumerate() {
-        *band = mix(page, *band, amount * HEADING_STRENGTH[level] / 100);
-    }
-    bands
-}
-
 /// The terminal's default colors plus its ANSI palette. Surfaces stay the
 /// terminal background (`Reset`), so the editor looks like the terminal it
 /// runs in, light or dark. Ink avoids blue and yellow, which common default
@@ -247,7 +239,7 @@ fn sage_palettes() -> [Palette; 2] {
             faint: Color::Rgb(78, 92, 81),
             list_marker: Color::Rgb(142, 200, 185),
             headings: dark_headings,
-            heading_bands: fade(dark, dark_headings, 115),
+            heading_bands: [dark; 6],
             callouts: [
                 Color::Rgb(147, 194, 227),
                 Color::Rgb(171, 210, 145),
@@ -300,7 +292,7 @@ fn sage_palettes() -> [Palette; 2] {
             faint: Color::Rgb(172, 181, 160),
             list_marker: Color::Rgb(33, 102, 88),
             headings: light_headings,
-            heading_bands: fade(light, light_headings, 95),
+            heading_bands: [light; 6],
             callouts: [
                 Color::Rgb(47, 90, 146),
                 Color::Rgb(72, 112, 40),
@@ -566,13 +558,12 @@ fn derive_palette(theme: &BuiltinTheme) -> Palette {
     );
     let orange = mix(ansi[1], ansi[3], 450);
     let tints = [ansi[4], ansi[5], ansi[6], ansi[2], ansi[3], orange];
-    let mut heading_bands = tints;
-    for (level, band_color) in heading_bands.iter_mut().enumerate() {
-        *band_color = band(background, *band_color, foreground, level);
-    }
+    // Headings sit on the page itself: a margin mark and colored ink, not a
+    // full-width band.
+    let heading_bands = [background; 6];
     let mut headings = tints;
-    for (heading, band) in headings.iter_mut().zip(heading_bands) {
-        *heading = readable(*heading, &[background, band], text);
+    for heading in &mut headings {
+        *heading = readable(*heading, &[background], text);
     }
     Palette {
         background,
@@ -625,19 +616,6 @@ fn derive_palette(theme: &BuiltinTheme) -> Palette {
             deleted: page(ansi[1], &[code_background]),
         },
     }
-}
-
-/// Deeper headings fade toward the page, so level reads before color does.
-const HEADING_STRENGTH: [u16; 6] = [100, 80, 62, 50, 42, 36];
-
-/// A quiet tint behind heading rows, backing off until body text still reads.
-fn band(background: Color, tint: Color, foreground: Color, level: usize) -> Color {
-    let strength = HEADING_STRENGTH[level];
-    [130, 100, 75, 55, 40]
-        .into_iter()
-        .map(|amount| mix(background, tint, amount * strength / 100))
-        .find(|candidate| *candidate != background && contrast(foreground, *candidate) >= 4.5)
-        .unwrap_or(background)
 }
 
 /// Prefer a visible selection that keeps body text readable: the theme's
