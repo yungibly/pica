@@ -750,28 +750,48 @@ impl App {
         );
     }
 
-    /// Lay out around the top anchor: a screen of rows above it for upward
-    /// movement, and two below it for the viewport and downward movement.
-    fn lay_out_top(&mut self) {
+    /// Lay out the viewport from the top anchor, with a few lines above it
+    /// and a few rows below, plus `above` and `below` more rows for a move.
+    fn lay_out_top(&mut self, above: usize, below: usize) {
         let height = self.page_height();
         let line = self.top.line.min(self.document.line_count() - 1);
         let start = self.document.line_start(line);
-        self.lay_out(
-            line.saturating_sub(height),
-            start,
-            self.top.row + 2 * height + OVERSCAN,
-        );
-        self.scroll = (self.projection.first_row_at(start) + self.top.row)
-            .min(self.projection.row_count() - 1);
+        let mut back = above + OVERSCAN;
+        loop {
+            self.lay_out(
+                line.saturating_sub(back),
+                start,
+                self.top.row + height + below + OVERSCAN,
+            );
+            self.scroll = (self.projection.first_row_at(start) + self.top.row)
+                .min(self.projection.row_count() - 1);
+            // Each line is at least one row, so this rarely repeats.
+            if self.scroll >= above || self.projection.start() == 0 || back > line {
+                break;
+            }
+            back = back * 2 + above;
+        }
     }
 
-    /// Whether the window holds a screen of rows above the top row and two
-    /// from it down, or reaches the document's edges.
+    /// Whether the window holds the viewport and the row after it, or
+    /// reaches the end of the document.
     fn covers(&self) -> bool {
-        let height = self.page_height();
+        self.projection.row_count().saturating_sub(self.scroll) > self.page_height()
+            || self.projection.complete()
+    }
+
+    /// Hold `above` rows above the top row and `below` past the viewport,
+    /// where the document has them, for a scroll or a move across rows.
+    fn reach(&mut self, above: usize, below: usize) {
         let rows = self.projection.row_count();
-        (self.scroll >= height || self.projection.start() == 0)
-            && (rows.saturating_sub(self.scroll) >= 2 * height || self.projection.complete())
+        let enough_above = self.scroll >= above || self.projection.start() == 0;
+        let enough_below = rows.saturating_sub(self.scroll) > self.page_height() + below
+            || self.projection.complete();
+        if self.dragging || (enough_above && enough_below) {
+            return;
+        }
+        self.top = self.anchor_at(self.scroll);
+        self.lay_out_top(above, below);
     }
 
     /// The top anchor for window row `row`.
@@ -793,17 +813,21 @@ impl App {
         let key = self.layout_key();
         if self.layout_key.as_ref() != Some(&key) {
             self.layout_key = Some(key);
-            self.lay_out_top();
-            if let Some(screen_row) = self.anchor_screen_row.take()
-                && let Some((row, _)) = self.caret_cell()
-            {
-                self.scroll = row.saturating_sub(screen_row);
+            self.lay_out_top(0, 0);
+            // Keep the caret on its screen row when disclosure reflows text.
+            if let Some(screen_row) = self.anchor_screen_row.take() {
+                match self.caret_cell() {
+                    Some((row, _)) if row >= screen_row || self.projection.start() == 0 => {
+                        self.scroll = row.saturating_sub(screen_row);
+                    }
+                    _ => self.place_caret(screen_row, false),
+                }
             }
         } else {
             self.anchor_screen_row = None;
             if !self.covers() {
                 self.top = self.anchor_at(self.scroll);
-                self.lay_out_top();
+                self.lay_out_top(0, 0);
             }
         }
     }
@@ -815,9 +839,10 @@ impl App {
         let height = self.page_height();
         let head = self.document.selection().head;
         let line = self.document.line_index(head);
-        let mut back = above + height;
+        let mut back = above + OVERSCAN;
         loop {
-            self.lay_out(line.saturating_sub(back), head, 2 * height + OVERSCAN);
+            let below = height.saturating_sub(above) + OVERSCAN;
+            self.lay_out(line.saturating_sub(back), head, below);
             let row = self.caret_cell().map_or(0, |cell| cell.0);
             let mut wanted = above;
             if fill && self.projection.complete() {
@@ -1101,8 +1126,15 @@ impl App {
     }
 
     fn vertical(&mut self, delta: isize, extend: bool) {
-        // The window holds a screen of rows on either side of the viewport.
-        let (row, col) = self.prepare_caret();
+        // Lay out the rows the move crosses beyond the viewport.
+        let (row, _) = self.prepare_caret();
+        let target = row as isize - self.scroll as isize + delta;
+        let height = self.page_height() as isize;
+        self.reach(
+            (-target).max(0) as usize,
+            (target + 1 - height).max(0) as usize,
+        );
+        let (row, col) = self.caret_position();
         let col = *self.preferred_column.get_or_insert(col);
         let target_row = self.projection.navigable_row(row, delta);
         let hit = self.projection.hit(target_row, col);
@@ -1121,8 +1153,10 @@ impl App {
             if !contains(self.editor_area, event.column, event.row) {
                 return;
             }
-            // The window holds a screen beyond each edge of the viewport.
-            self.scroll = if event.kind == MouseEventKind::ScrollUp {
+            let up = event.kind == MouseEventKind::ScrollUp;
+            self.update_layout();
+            self.reach(if up { 3 } else { 0 }, if up { 0 } else { 3 });
+            self.scroll = if up {
                 self.scroll.saturating_sub(3)
             } else if self.projection.complete() {
                 (self.scroll + 3).min(
@@ -1732,7 +1766,7 @@ impl App {
                 .min(self.projection.row_count().saturating_sub(1));
             self.top = self.anchor_at(self.scroll);
             if !self.covers() {
-                self.lay_out_top();
+                self.lay_out_top(0, 0);
             }
         }
         let (cursor_row, cursor_col) = self.caret_cell().unwrap_or((usize::MAX, 0));

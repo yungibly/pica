@@ -382,3 +382,52 @@ fn enter_reuses_the_drawn_analysis() {
     press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
     assert_eq!(app.document.text(), "- one `co\nde` here");
 }
+
+#[test]
+#[ignore]
+fn probe_frame_costs() {
+    use std::time::Instant;
+    let path = std::env::var("PROBE").unwrap();
+    let mut app = crate::workspace::Workspace::open(Some(path.clone().into())).unwrap();
+    let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+    terminal.draw(|frame| app.draw(frame)).unwrap();
+    let lines = app.editor().document.line_count();
+    let fraction: usize = std::env::var("AT").map_or(2, |at| at.parse().unwrap());
+    let middle = app
+        .editor()
+        .document
+        .line_start(lines * fraction / 4)
+        .min(app.editor().document.text().len());
+    app.editor_mut().jump_to_source(middle);
+    terminal.draw(|frame| app.draw(frame)).unwrap();
+    let mut total = Vec::new();
+    for round in 0..40 {
+        let key = if round % 2 == 0 {
+            KeyCode::Char('x')
+        } else {
+            KeyCode::Backspace
+        };
+        let t = Instant::now();
+        app.handle_event(Event::Key(KeyEvent::new(key, KeyModifiers::NONE)));
+        let handled = t.elapsed();
+        let editor = app.editor_mut();
+        let p = Instant::now();
+        editor.ensure_parsed();
+        let parsed = p.elapsed();
+        let l = Instant::now();
+        editor.update_layout();
+        let laid = l.elapsed();
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        total.push((t.elapsed(), handled, parsed, laid));
+    }
+    total.sort_by_key(|t| t.0);
+    eprintln!(
+        "{path}: total p50 {:?} p95 {:?} · handle {:?} parse {:?} layout {:?} rows {}",
+        total[20].0,
+        total[38].0,
+        total[20].1,
+        total[20].2,
+        total[20].3,
+        app.editor().projection.row_count()
+    );
+}
