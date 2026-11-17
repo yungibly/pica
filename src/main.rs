@@ -18,6 +18,9 @@ mod workspace;
 
 use std::io::{self, IsTerminal};
 
+/// Piped input and files share the open limit; undo history is 32 MiB.
+const MAX_BYTES: usize = 8 * 1024 * 1024;
+
 fn main() {
     if let Err(error) = run() {
         eprintln!("milli: {error}");
@@ -52,9 +55,28 @@ fn run() -> io::Result<()> {
             icons::IconSet::detect(|name| std::env::var(name).ok())
         }
     }));
-    let mut app = workspace::Workspace::open(options.path)?;
+    let mut read_stdin = false;
+    let mut items = Vec::new();
+    for target in options.targets {
+        items.push(match target.input {
+            cli::Input::File(path) => {
+                let (path, position) = cli::locate(path, target.position);
+                workspace::Launch::Path(path, position)
+            }
+            cli::Input::Stdin => {
+                read_stdin = true;
+                workspace::Launch::Piped(stdin_text()?, target.position)
+            }
+        });
+    }
+    // Like micro, piped input with no file opens as a buffer: `cmd | milli`.
+    if items.is_empty() && stdin_is_piped() {
+        read_stdin = true;
+        items.push(workspace::Launch::Piped(stdin_text()?, options.position));
+    }
+    let mut app = workspace::Workspace::launch(items)?;
     if options.source {
-        app.editor_mut().live = false;
+        app.show_source();
     }
     if options.snapshot {
         print!(
@@ -63,7 +85,9 @@ fn run() -> io::Result<()> {
         );
         return Ok(());
     }
-    if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+    // Keys come from the terminal. After reading piped input, Crossterm
+    // falls back to /dev/tty for them; otherwise stdin must be a terminal.
+    if !io::stdout().is_terminal() || !(io::stdin().is_terminal() || read_stdin && has_tty()) {
         return Err(io::Error::other(
             "Interactive mode needs a terminal; use --snapshot for a headless render",
         ));
@@ -81,4 +105,40 @@ fn run() -> io::Result<()> {
         }
     }
     terminal::run(&mut app)
+}
+
+fn stdin_text() -> io::Result<String> {
+    file_io::read_input(io::stdin().lock(), MAX_BYTES)
+}
+
+/// A pipe or redirected file, not a terminal or a device such as /dev/null.
+#[cfg(unix)]
+fn stdin_is_piped() -> bool {
+    use std::os::{fd::AsFd, unix::fs::FileTypeExt};
+    let Ok(descriptor) = io::stdin().as_fd().try_clone_to_owned() else {
+        return false;
+    };
+    std::fs::File::from(descriptor)
+        .metadata()
+        .is_ok_and(|metadata| metadata.file_type().is_fifo() || metadata.is_file())
+}
+
+#[cfg(not(unix))]
+fn stdin_is_piped() -> bool {
+    !io::stdin().is_terminal()
+}
+
+#[cfg(unix)]
+fn has_tty() -> bool {
+    std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/tty")
+        .is_ok()
+}
+
+/// Crossterm's Windows backend reads the console, not standard input.
+#[cfg(not(unix))]
+fn has_tty() -> bool {
+    true
 }

@@ -1,6 +1,10 @@
 //! Markdown-aware edit commands. Literal insertion never passes through helpers.
+mod general;
 mod lines;
 
+pub use general::{
+    cut_lines, duplicate, indent_newline, line_column_offset, smart_home, toggle_comment,
+};
 pub(crate) use lines::rearrange as rearrange_lines;
 
 use std::ops::Range;
@@ -323,7 +327,8 @@ pub fn preferred_newline(text: &str, offset: usize) -> &'static str {
     }
 }
 
-/// Enter continues the parser-confirmed current item, or inserts a literal newline.
+/// Enter continues the parser-confirmed current item, or inserts a newline
+/// that keeps the line's indentation (see `indent_newline`), as in any file.
 /// All helper edits, including removal of a selection, are one undo transaction.
 pub fn enter(document: &mut Document) -> bool {
     let range = document.selection().range();
@@ -353,7 +358,7 @@ pub fn enter(document: &mut Document) -> bool {
                 && range.start < literal.end + markdown::bom_len(source)
         })
     {
-        return document.literal_newline();
+        return indent_newline(document);
     }
 
     let empty_dash = empty_nested_dash(source, &line, &snapshot);
@@ -374,14 +379,14 @@ pub fn enter(document: &mut Document) -> bool {
         })
         .min_by_key(|block| block.range.len());
     let Some(item) = item else {
-        return document.literal_newline();
+        return indent_newline(document);
     };
     let Some(prefix) = item_prefix(source, &item.range, &snapshot) else {
-        return document.literal_newline();
+        return indent_newline(document);
     };
     // Typing Enter in a marker edits literal source, not a guessed list context.
     if range.start < prefix.content_start {
-        return document.literal_newline();
+        return indent_newline(document);
     }
 
     if line.start == prefix.line_start
@@ -604,7 +609,7 @@ fn item_prefix(
 }
 
 /// The physical source line excluding its ending; CRLF is one grapheme.
-fn line_range(text: &str, offset: usize) -> Range<usize> {
+pub fn line_range(text: &str, offset: usize) -> Range<usize> {
     let bytes = text.as_bytes();
     let start = bytes[..offset]
         .iter()
@@ -724,7 +729,10 @@ mod tests {
             "- parent\n\n      - [ ] code",
             "<pre>\n- [ ] literal",
         ] {
-            enter_at_end(source, &format!("{source}\n"));
+            // Code keeps the last line's indentation, as in any code file.
+            let last = source.rsplit('\n').next().unwrap();
+            let indent = &last[..last.len() - last.trim_start().len()];
+            enter_at_end(source, &format!("{source}\n{indent}"));
             assert!(
                 Document::new(source).markdown().tasks.is_empty(),
                 "{source:?}"
@@ -967,13 +975,15 @@ mod tests {
                 doc.set_caret(caret).unwrap();
                 for count in 1..=5 {
                     doc.enter();
-                    assert_eq!(
-                        doc.text(),
-                        format!(
-                            "{before}{newline}{blank}{}{newline}{after}",
-                            newline.repeat(count)
-                        )
-                    );
+                    let newlines = newline.repeat(count);
+                    // Auto-indent moves a whitespace-only line's indentation
+                    // down rather than leaving it behind.
+                    let expected = if !blank.is_empty() && blank.trim().is_empty() {
+                        format!("{before}{newline}{newlines}{blank}{newline}{after}")
+                    } else {
+                        format!("{before}{newline}{blank}{newlines}{newline}{after}")
+                    };
+                    assert_eq!(doc.text(), expected);
                     assert_eq!(
                         doc.selection(),
                         Selection::caret(caret + count * newline.len())
@@ -1030,12 +1040,16 @@ mod tests {
                 ];
                 assert_later_prose_is_outside_lists(assert_enter_sequence(&source, &states));
             }
-            for source in [
-                format!("```md{newline}- [x] literal"),
-                format!("- parent{newline}{newline}      - literal"),
+            for (source, indent) in [
+                (format!("```md{newline}- [x] literal"), ""),
+                (
+                    format!("- parent{newline}{newline}      - literal"),
+                    "      ",
+                ),
             ] {
+                // Indented code carries its indentation down blank lines.
                 let states: Vec<_> = (1..=5)
-                    .map(|count| format!("{source}{}", newline.repeat(count)))
+                    .map(|count| format!("{source}{}{indent}", newline.repeat(count)))
                     .collect();
                 assert_enter_sequence(&source, &states);
             }

@@ -46,7 +46,12 @@ impl Fingerprint {
 }
 
 pub struct FileState {
+    /// The path as opened, which names the document. A symbolic link stays a
+    /// link: saves replace the file it pointed to when it was opened.
     pub path: PathBuf,
+    /// The link's fully resolved target, recorded at open. Every read, check
+    /// and replacement uses it; `path` is only verified to still lead here.
+    link_target: Option<PathBuf>,
     baseline: Option<Vec<u8>>,
     observed: Option<Fingerprint>,
     external: ExternalChange,
@@ -55,19 +60,42 @@ pub struct FileState {
 impl FileState {
     #[cfg(test)]
     pub fn open(path: PathBuf) -> io::Result<(String, Self)> {
-        let baseline = read_optional(&path)?;
-        Self::from_baseline(path, baseline)
+        Self::open_with_limit(path, None)
     }
 
     /// Open like `open`, accepting at most `max_bytes` of UTF-8 source. The
     /// bounded read probes at most one extra byte, even if the file grows after
     /// metadata inspection. Missing paths retain the new-empty-file behavior.
     pub fn open_bounded(path: PathBuf, max_bytes: usize) -> io::Result<(String, Self)> {
-        let baseline = read_optional_with_limit(&path, Some(max_bytes))?;
-        Self::from_baseline(path, baseline)
+        Self::open_with_limit(path, Some(max_bytes))
     }
 
-    fn from_baseline(path: PathBuf, baseline: Option<Vec<u8>>) -> io::Result<(String, Self)> {
+    /// A symbolic link is resolved once, here, and its target read. A link
+    /// to nothing is refused rather than opened as a new file.
+    fn open_with_limit(path: PathBuf, max_bytes: Option<usize>) -> io::Result<(String, Self)> {
+        let link_target = resolve_link(&path)?;
+        let baseline = match &link_target {
+            Some(target) => {
+                let baseline =
+                    read_optional_with_limit(target, max_bytes)?.ok_or_else(dangling_link_error)?;
+                verify_link(&path, target)?;
+                Some(baseline)
+            }
+            None => read_optional_with_limit(&path, max_bytes)?,
+        };
+        Self::from_baseline(path, link_target, baseline)
+    }
+
+    /// Where reads and writes happen: the link's recorded target, or the path.
+    fn file_path(&self) -> &Path {
+        self.link_target.as_deref().unwrap_or(&self.path)
+    }
+
+    fn from_baseline(
+        path: PathBuf,
+        link_target: Option<PathBuf>,
+        baseline: Option<Vec<u8>>,
+    ) -> io::Result<(String, Self)> {
         let text = String::from_utf8(baseline.clone().unwrap_or_default()).map_err(|_| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -84,6 +112,7 @@ impl FileState {
             text,
             Self {
                 path,
+                link_target,
                 baseline,
                 observed: None,
                 external: ExternalChange::Unchanged,
@@ -100,6 +129,7 @@ impl FileState {
         }
         Ok(Self {
             path,
+            link_target: None,
             baseline: None,
             observed: None,
             external: ExternalChange::Unchanged,
@@ -110,7 +140,23 @@ impl FileState {
     /// always compares exact bytes regardless of this cache. Read errors are
     /// retried so access can recover without a detectable metadata change.
     pub fn external_change(&mut self) -> ExternalChange {
-        let metadata = match fs::metadata(&self.path) {
+        if let Some(target) = &self.link_target {
+            let status = match verify_link(&self.path, target) {
+                Ok(()) => None,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                    Some(ExternalChange::Missing)
+                }
+                // Pointing elsewhere now: Reload follows the link afresh.
+                Err(error) if error.kind() == io::ErrorKind::Other => Some(ExternalChange::Changed),
+                Err(error) => Some(ExternalChange::Unreadable(error.to_string())),
+            };
+            if let Some(status) = status {
+                self.observed = None;
+                self.external = status;
+                return self.external.clone();
+            }
+        }
+        let metadata = match fs::metadata(self.file_path()) {
             Ok(metadata) if metadata.is_file() => metadata,
             Ok(_) => {
                 self.observed = None;
@@ -137,7 +183,7 @@ impl FileState {
         {
             return self.external.clone();
         }
-        self.external = match open_regular_file(&self.path) {
+        self.external = match open_regular_file(self.file_path()) {
             Ok(file) => match &self.baseline {
                 Some(baseline) => match matches_baseline(file, baseline) {
                     Ok(true) => ExternalChange::Unchanged,
@@ -162,29 +208,41 @@ impl FileState {
     /// Read an existing regular file and stage a replacement FileState. A failed
     /// reload never changes the accepted baseline. Detect replacement or writes
     /// during the read and ask the caller to retry rather than accepting a mix.
+    /// Reload is an explicit request, so a symbolic link is resolved afresh.
     pub fn reload_bounded(&self, max_bytes: usize) -> io::Result<(String, Self)> {
-        let mut file = open_regular_file(&self.path)?;
+        let link_target = resolve_link(&self.path)?;
+        let source = link_target.as_deref().unwrap_or(&self.path);
+        let mut file = open_regular_file(source)?;
         let before = Fingerprint::of(&file.metadata()?);
         let bytes = read_limited(&mut file, max_bytes)?;
         let after = Fingerprint::of(&file.metadata()?);
-        let path = fs::metadata(&self.path)?;
-        if !path.is_file() || before != after || after != Fingerprint::of(&path) {
+        let path = fs::metadata(source)?;
+        let relinked = match &link_target {
+            Some(target) => verify_link(&self.path, target).is_err(),
+            None => false,
+        };
+        if relinked || !path.is_file() || before != after || after != Fingerprint::of(&path) {
             return Err(io::Error::other(
                 "File changed while reloading; your text is intact. Try Reload again",
             ));
         }
-        Self::from_baseline(self.path.clone(), Some(bytes))
+        Self::from_baseline(self.path.clone(), link_target, Some(bytes))
     }
 
+    /// Replace the file atomically with `text`, after checking that it still
+    /// holds the accepted baseline. Through a symbolic link, the link must
+    /// still lead to the target recorded at open; that target is replaced,
+    /// keeping its metadata, and the link is left as it is.
     pub fn save(&mut self, text: &str) -> io::Result<()> {
+        self.check_link()?;
         self.check_baseline()?;
         // A no-edit save must preserve both bytes and file metadata.
         if self.baseline.as_deref() == Some(text.as_bytes()) {
             return Ok(());
         }
-        let metadata = writable_target_metadata(&self.path)?;
-        let parent = self
-            .path
+        let target = self.file_path().to_owned();
+        let metadata = writable_target_metadata(&target)?;
+        let parent = target
             .parent()
             .filter(|p| !p.as_os_str().is_empty())
             .unwrap_or(Path::new("."));
@@ -214,22 +272,21 @@ impl FileState {
             #[cfg(unix)]
             keep_owner(temporary.as_file(), &metadata)?;
             #[cfg(target_os = "macos")]
-            keep_attributes(&self.path, temporary.as_file());
+            keep_attributes(&target, temporary.as_file());
             temporary
                 .as_file()
                 .set_permissions(metadata.permissions())?;
         }
         temporary.as_file().sync_all()?;
+        self.check_link()?;
         self.check_baseline()?;
         // Permissions and link type can change while the temporary file is
         // written. Recheck them as well as bytes before replacing the target.
-        writable_target_metadata(&self.path)?;
+        writable_target_metadata(&target)?;
         if self.baseline.is_none() {
-            temporary
-                .persist_noclobber(&self.path)
-                .map_err(|e| e.error)?;
+            temporary.persist_noclobber(&target).map_err(|e| e.error)?;
         } else {
-            temporary.persist(&self.path).map_err(|e| e.error)?;
+            temporary.persist(&target).map_err(|e| e.error)?;
         }
         self.baseline = Some(text.as_bytes().to_vec());
         self.observed = None;
@@ -237,10 +294,24 @@ impl FileState {
         Ok(())
     }
 
+    /// A link opened to one file must not now lead to another, even one with
+    /// the same bytes: that would overwrite a file nobody opened.
+    fn check_link(&self) -> io::Result<()> {
+        let Some(target) = &self.link_target else {
+            return Ok(());
+        };
+        verify_link(&self.path, target).map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                format!("{error}. Your edits are intact; use Save As from Ctrl+E"),
+            )
+        })
+    }
+
     fn check_baseline(&self) -> io::Result<()> {
         // A file may have grown arbitrarily since opening it. Compare a bounded
         // stream with the accepted baseline instead of allocating the new file.
-        let unchanged = match open_regular_file(&self.path) {
+        let unchanged = match open_regular_file(self.file_path()) {
             Ok(file) => match &self.baseline {
                 Some(baseline) => matches_baseline(file, baseline)?,
                 None => false,
@@ -250,11 +321,85 @@ impl FileState {
         };
         if !unchanged {
             return Err(io::Error::other(
-                "File changed or was removed on disk. Your edits are intact; use Ctrl+Shift+S or F4 to Save As",
+                "File changed or was removed on disk. Your edits are intact; use Save As from Ctrl+E",
             ));
         }
         Ok(())
     }
+}
+
+/// The fully resolved target when `path` is a symbolic link, through any
+/// chain of links. A link to nothing is an error, not a new file.
+fn resolve_link(path: &Path) -> io::Result<Option<PathBuf>> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => match fs::canonicalize(path) {
+            Ok(target) => Ok(Some(target)),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Err(dangling_link_error()),
+            Err(error) => Err(error),
+        },
+        Ok(_) => Ok(None),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+/// `path` must still be a symbolic link that resolves to `target`. A missing
+/// link or target is `NotFound`; a link that now leads elsewhere is `Other`.
+fn verify_link(path: &Path, target: &Path) -> io::Result<()> {
+    let link = fs::symlink_metadata(path)?;
+    let resolved = fs::canonicalize(path).map_err(|error| {
+        if error.kind() == io::ErrorKind::NotFound {
+            dangling_link_error()
+        } else {
+            error
+        }
+    })?;
+    if !link.file_type().is_symlink() || resolved != target {
+        return Err(io::Error::other(
+            "The symbolic link now points to a different file",
+        ));
+    }
+    Ok(())
+}
+
+fn dangling_link_error() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::NotFound,
+        "This symbolic link points to a file that does not exist",
+    )
+}
+
+/// Read piped input, such as standard input, as UTF-8 text of at most
+/// `max_bytes` without NUL bytes. It never becomes a file's baseline.
+pub fn read_input(reader: impl Read, max_bytes: usize) -> io::Result<String> {
+    let bytes = read_limited(reader, max_bytes).map_err(|error| {
+        if error.kind() == io::ErrorKind::InvalidData {
+            let limit = if max_bytes.is_multiple_of(1024 * 1024) {
+                format!("{} MiB", max_bytes / (1024 * 1024))
+            } else {
+                format!("{max_bytes}-byte")
+            };
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Standard input exceeds the {limit} limit"),
+            )
+        } else {
+            error
+        }
+    })?;
+    let text = String::from_utf8(bytes).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Standard input is not valid UTF-8 text",
+        )
+    })?;
+    if text.contains('\0') {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Standard input contains binary NUL bytes; pipe UTF-8 text",
+        ));
+    }
+    Ok(text)
 }
 
 fn matches_baseline(mut reader: impl Read, baseline: &[u8]) -> io::Result<bool> {
@@ -273,11 +418,6 @@ fn matches_baseline(mut reader: impl Read, baseline: &[u8]) -> io::Result<bool> 
         Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => Ok(true),
         Err(error) => Err(error),
     }
-}
-
-#[cfg(test)]
-fn read_optional(path: &Path) -> io::Result<Option<Vec<u8>>> {
-    read_optional_with_limit(path, None)
 }
 
 fn read_optional_with_limit(path: &Path, max_bytes: Option<usize>) -> io::Result<Option<Vec<u8>>> {
@@ -355,7 +495,7 @@ fn writable_target_metadata(path: &Path) -> io::Result<Option<fs::Metadata>> {
     };
     if metadata.file_type().is_symlink() || !metadata.is_file() {
         return Err(io::Error::other(
-            "Saving through symbolic links or non-regular files is unsupported; use Save As",
+            "The file became a link or a non-regular file since it was opened. Your edits are intact; use Save As from Ctrl+E",
         ));
     }
     let read_only = || {
@@ -556,15 +696,20 @@ mod tests {
         let (_, linked) = FileState::open(link).unwrap();
         fs::write(&path, "fresh").unwrap();
         let (text, mut linked) = linked.reload_bounded(20).unwrap();
+        assert_eq!(text, "fresh");
         linked.save(&text).unwrap();
-        assert!(linked.save("changes").is_err());
+        // Reloading through a link keeps saving through it.
+        linked.save("changes").unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "changes");
         let hard = dir.path().join("hard.md");
         fs::hard_link(&path, &hard).unwrap();
         let (_, hard) = FileState::open(hard).unwrap();
         let (text, mut hard) = hard.reload_bounded(20).unwrap();
         hard.save(&text).unwrap();
-        assert!(hard.save("changes").is_err());
-        assert_eq!(fs::read_to_string(path).unwrap(), "fresh");
+        assert!(hard.save("more").is_err());
+        // The target now has two names, so the link refuses to break them.
+        assert!(linked.save("more").is_err());
+        assert_eq!(fs::read_to_string(path).unwrap(), "changes");
     }
 
     #[test]
@@ -599,6 +744,29 @@ mod tests {
         assert!(!matches_baseline(Cursor::new(b"different"), b"original!").unwrap());
         assert!(matches_baseline(io::empty(), b"").unwrap());
         assert!(!matches_baseline(Cursor::new(b"x"), b"").unwrap());
+    }
+
+    #[test]
+    fn piped_input_is_bounded_utf8_text_without_nul() {
+        use std::io::Cursor;
+        assert_eq!(
+            read_input(Cursor::new("é\r\nlog\n"), 8).unwrap(),
+            "é\r\nlog\n"
+        );
+        assert_eq!(read_input(io::empty(), 0).unwrap(), "");
+        let error = read_input(Cursor::new(vec![b'x'; 9]), 8).unwrap_err();
+        assert!(error.to_string().contains("8-byte limit"), "{error}");
+        let error = read_input(
+            Cursor::new(vec![b'x'; 2 * 1024 * 1024 + 1]),
+            2 * 1024 * 1024,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("2 MiB limit"), "{error}");
+        let error = read_input(Cursor::new(vec![0xff, b'a']), 8).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("UTF-8"), "{error}");
+        let error = read_input(Cursor::new("a\0b"), 8).unwrap_err();
+        assert!(error.to_string().contains("NUL"), "{error}");
     }
 
     #[test]
@@ -963,7 +1131,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn symlink_and_hardlink_saves_keep_conservative_behavior() {
+    fn symlinks_save_their_target_but_hard_links_are_still_refused() {
         use std::os::unix::fs::symlink;
 
         let dir = tempfile::tempdir().unwrap();
@@ -974,24 +1142,194 @@ mod tests {
         symlink(&target, &link).unwrap();
         let (text, mut linked) = FileState::open(link.clone()).unwrap();
         linked.save(&text).unwrap();
-        assert!(linked.save("edits").is_err());
-        assert!(
-            fs::symlink_metadata(&link)
-                .unwrap()
-                .file_type()
-                .is_symlink()
-        );
+        linked.save("edits").unwrap();
+        assert!(is_link(&link));
+        assert_eq!(fs::read(&target).unwrap(), b"edits");
         fs::hard_link(&target, &hardlink).unwrap();
         let (text, mut hardlinked) = FileState::open(hardlink.clone()).unwrap();
         hardlinked.save(&text).unwrap();
-        assert!(hardlinked.save("edits").is_err());
-        assert_eq!(fs::read(&target).unwrap(), b"original");
-        assert_eq!(fs::read(&hardlink).unwrap(), b"original");
+        assert!(hardlinked.save("more").is_err());
+        assert!(linked.save("more").is_err());
+        assert_eq!(fs::read(&target).unwrap(), b"edits");
+        assert_eq!(fs::read(&hardlink).unwrap(), b"edits");
 
         let fifo = dir.path().join("fifo");
         let fifo_link = dir.path().join("fifo-link");
         make_fifo(&fifo);
         symlink(&fifo, &fifo_link).unwrap();
         assert_rejected_promptly(move || FileState::open(fifo_link).map(|_| ()));
+    }
+
+    #[cfg(unix)]
+    fn is_link(path: &Path) -> bool {
+        fs::symlink_metadata(path).unwrap().file_type().is_symlink()
+    }
+
+    #[cfg(unix)]
+    fn names(dir: &Path) -> Vec<String> {
+        let mut names: Vec<_> = fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// A dotfile manager's layout: `home/.zshrc -> ../dotfiles/zshrc`.
+    #[cfg(unix)]
+    #[test]
+    fn saving_through_a_relative_link_replaces_its_target_and_keeps_metadata() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        let dotfiles = dir.path().join("dotfiles");
+        fs::create_dir_all(&home).unwrap();
+        fs::create_dir_all(&dotfiles).unwrap();
+        let target = dotfiles.join("zshrc");
+        fs::write(&target, "export A=1\n").unwrap();
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o640)).unwrap();
+        let link = home.join(".zshrc");
+        symlink("../dotfiles/zshrc", &link).unwrap();
+        let (text, mut file) = FileState::open_bounded(link.clone(), 1024).unwrap();
+        assert_eq!(text, "export A=1\n");
+        assert_eq!(file.path, link);
+        file.save("export A=2\n").unwrap();
+        assert_eq!(fs::read_to_string(&target).unwrap(), "export A=2\n");
+        assert!(is_link(&link));
+        assert_eq!(
+            fs::read_link(&link).unwrap(),
+            Path::new("../dotfiles/zshrc")
+        );
+        assert_eq!(
+            fs::metadata(&target).unwrap().permissions().mode() & 0o777,
+            0o640
+        );
+        // The replacement was written beside the target; nothing is left over.
+        assert_eq!(names(&home), [".zshrc"]);
+        assert_eq!(names(&dotfiles), ["zshrc"]);
+        assert_eq!(file.external_change(), ExternalChange::Unchanged);
+        fs::write(&target, "edited elsewhere\n").unwrap();
+        assert_eq!(file.external_change(), ExternalChange::Changed);
+        assert!(file.save("mine\n").is_err());
+        assert_eq!(fs::read_to_string(&target).unwrap(), "edited elsewhere\n");
+        // A chain of links resolves to the final file.
+        let second = home.join("chain");
+        symlink(&link, &second).unwrap();
+        let (_, mut chained) = FileState::open(second.clone()).unwrap();
+        chained.save("through two links\n").unwrap();
+        assert_eq!(fs::read_to_string(&target).unwrap(), "through two links\n");
+        assert!(is_link(&second) && is_link(&link));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_retargeted_link_is_never_saved_even_to_identical_bytes() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let first = dir.path().join("first.conf");
+        let second = dir.path().join("second.conf");
+        // Identical contents: a save-time canonicalization would accept both.
+        fs::write(&first, "same\n").unwrap();
+        fs::write(&second, "same\n").unwrap();
+        let link = dir.path().join("current.conf");
+        symlink(&first, &link).unwrap();
+        let (_, mut file) = FileState::open(link.clone()).unwrap();
+        fs::remove_file(&link).unwrap();
+        symlink(&second, &link).unwrap();
+        assert_eq!(file.external_change(), ExternalChange::Changed);
+        let error = file.save("edited\n").unwrap_err();
+        assert!(error.to_string().contains("different file"), "{error}");
+        assert!(file.save("same\n").is_err());
+        assert_eq!(fs::read_to_string(&first).unwrap(), "same\n");
+        assert_eq!(fs::read_to_string(&second).unwrap(), "same\n");
+        // Replacing the link with a regular file is a change of target too.
+        fs::remove_file(&link).unwrap();
+        fs::write(&link, "same\n").unwrap();
+        assert!(file.save("edited\n").is_err());
+        assert_eq!(fs::read_to_string(&link).unwrap(), "same\n");
+        // Pointing it back makes saving safe again.
+        fs::remove_file(&link).unwrap();
+        symlink(&first, &link).unwrap();
+        file.save("edited\n").unwrap();
+        assert_eq!(fs::read_to_string(&first).unwrap(), "edited\n");
+        // Reload follows the link to its new target and saves there.
+        fs::remove_file(&link).unwrap();
+        symlink(&second, &link).unwrap();
+        let (text, mut reloaded) = file.reload_bounded(64).unwrap();
+        assert_eq!(text, "same\n");
+        reloaded.save("second edit\n").unwrap();
+        assert_eq!(fs::read_to_string(&second).unwrap(), "second edit\n");
+        assert_eq!(fs::read_to_string(&first).unwrap(), "edited\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dangling_links_are_refused_at_open_and_at_save() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("missing.md");
+        let link = dir.path().join("dangling.md");
+        symlink(&missing, &link).unwrap();
+        let error = FileState::open_bounded(link.clone(), 1024).err().unwrap();
+        assert_eq!(error.kind(), io::ErrorKind::NotFound);
+        assert!(error.to_string().contains("does not exist"), "{error}");
+        assert!(!missing.exists());
+        // A link whose target disappears after opening becomes dangling.
+        fs::write(&missing, "here").unwrap();
+        let (_, mut file) = FileState::open(link.clone()).unwrap();
+        fs::remove_file(&missing).unwrap();
+        assert_eq!(file.external_change(), ExternalChange::Missing);
+        assert!(file.save("recreated").is_err());
+        assert!(!missing.exists());
+        assert!(is_link(&link));
+        assert!(file.reload_bounded(64).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn links_to_directories_are_refused() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().join("folder");
+        fs::create_dir(&folder).unwrap();
+        let link = dir.path().join("folder-link");
+        symlink(&folder, &link).unwrap();
+        let error = FileState::open(link.clone()).err().unwrap();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        // A file link retargeted to a folder after opening is refused too.
+        let note = dir.path().join("note.md");
+        fs::write(&note, "note").unwrap();
+        let file_link = dir.path().join("note-link.md");
+        symlink(&note, &file_link).unwrap();
+        let (_, mut file) = FileState::open(file_link.clone()).unwrap();
+        fs::remove_file(&file_link).unwrap();
+        symlink(&folder, &file_link).unwrap();
+        assert!(file.save("changed").is_err());
+        assert_eq!(fs::read_to_string(&note).unwrap(), "note");
+        assert!(fs::read_dir(&folder).unwrap().next().is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn links_to_read_only_targets_are_refused() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("locked.md");
+        fs::write(&target, "locked").unwrap();
+        let link = dir.path().join("link.md");
+        symlink(&target, &link).unwrap();
+        let (_, mut file) = FileState::open(link).unwrap();
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o444)).unwrap();
+        let saved = file.save("changed");
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o644)).unwrap();
+        if unsafe { libc::geteuid() } != 0 {
+            assert_eq!(saved.unwrap_err().kind(), io::ErrorKind::PermissionDenied);
+            assert_eq!(fs::read_to_string(&target).unwrap(), "locked");
+        }
     }
 }

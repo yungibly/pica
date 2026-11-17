@@ -1,4 +1,8 @@
-use std::{fs, process::Command};
+use std::{
+    fs,
+    io::Write,
+    process::{Command, Stdio},
+};
 
 fn binary() -> Command {
     Command::new(env!("CARGO_BIN_EXE_milli"))
@@ -176,4 +180,137 @@ fn milli_command_branding_does_not_initialize_user_state() {
     assert!(String::from_utf8_lossy(&output.stderr).starts_with("milli:"));
     assert!(!config.exists());
     assert!(!state.exists());
+}
+
+fn snapshot(arguments: &[&std::ffi::OsStr]) -> String {
+    let output = binary()
+        .args(["--snapshot", "--no-state", "--snapshot-size", "100x12"])
+        .args(arguments)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).unwrap()
+}
+
+fn piped(arguments: &[&str], input: &[u8]) -> std::process::Output {
+    let mut child = binary()
+        .args(["--snapshot", "--no-state", "--snapshot-size", "80x10"])
+        .args(arguments)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    // A rejected oversized input may close the pipe before it is all written.
+    let _ = stdin.write_all(input);
+    drop(stdin);
+    child.wait_with_output().unwrap()
+}
+
+#[test]
+fn several_files_open_as_tabs_with_the_first_active() {
+    let directory = tempfile::tempdir().unwrap();
+    let first = directory.path().join("first.md");
+    let second = directory.path().join("second.rs");
+    fs::write(&first, "# First\n").unwrap();
+    fs::write(&second, "fn main() {}\n").unwrap();
+    let text = snapshot(&[first.as_os_str(), second.as_os_str()]);
+    let tabs = text.lines().next().unwrap();
+    assert!(
+        tabs.contains("first.md") && tabs.contains("second.rs"),
+        "{text}"
+    );
+    assert!(tabs.find("first.md") < tabs.find("second.rs"));
+    assert!(text.contains(" markdown"), "{text}");
+}
+
+#[test]
+fn plus_line_and_file_colon_line_place_the_caret() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("lines.txt");
+    let source: String = (1..=40).map(|n| format!("line {n}\n")).collect();
+    fs::write(&path, &source).unwrap();
+    let plus = std::ffi::OsStr::new("+30:4");
+    for arguments in [vec![plus, path.as_os_str()], vec![path.as_os_str(), plus]] {
+        let text = snapshot(&arguments);
+        assert!(text.contains("Ln 30, Col 4"), "{text}");
+        assert!(text.contains("line 30"), "{text}");
+    }
+    let colon = format!("{}:12:2", path.display());
+    let text = snapshot(&[std::ffi::OsStr::new(&colon)]);
+    assert!(text.contains("Ln 12, Col 2"), "{text}");
+    assert!(!directory.path().join("lines.txt:12:2").exists());
+    assert_eq!(fs::read_to_string(path).unwrap(), source);
+}
+
+#[test]
+fn a_folder_opens_the_file_browser_there() {
+    let directory = tempfile::tempdir().unwrap();
+    fs::write(directory.path().join("inside.md"), "x").unwrap();
+    let text = snapshot(&[directory.path().as_os_str()]);
+    assert!(text.contains("Open file"), "{text}");
+    assert!(text.contains("inside.md"), "{text}");
+}
+
+#[test]
+fn piped_input_opens_as_unsaved_plain_text() {
+    let output = piped(&[], b"# not a heading\n  two\r\n");
+    assert!(output.status.success());
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(text.contains(" untitled \u{25cf}"), "{text}");
+    assert!(text.contains("# not a heading"), "{text}");
+    assert!(text.contains(" text"), "{text}");
+    assert!(!text.contains("markdown"), "{text}");
+    // `-` reads it explicitly, beside files, and takes a position.
+    let directory = tempfile::tempdir().unwrap();
+    let file = directory.path().join("file.md");
+    fs::write(&file, "file").unwrap();
+    let output = piped(&["-", "+2", file.to_str().unwrap()], b"one\ntwo\n");
+    let text = String::from_utf8(output.stdout).unwrap();
+    // The position binds to the file after it; the piped buffer is first.
+    assert!(text.contains("Ln 1, Col 1"), "{text}");
+    assert!(text.lines().next().unwrap().contains("untitled"), "{text}");
+    let output = piped(&["-", "+2"], b"one\ntwo\n");
+    assert!(
+        String::from_utf8(output.stdout)
+            .unwrap()
+            .contains("Ln 2, Col 1")
+    );
+}
+
+#[test]
+fn piped_input_rejects_binary_invalid_and_oversized_text() {
+    for (input, message) in [
+        (b"bad \xff byte".to_vec(), "UTF-8"),
+        (b"nul\0byte".to_vec(), "NUL"),
+        (vec![b'x'; 8 * 1024 * 1024 + 1], "8 MiB"),
+    ] {
+        let output = piped(&[], &input);
+        assert!(!output.status.success());
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            error.starts_with("milli:") && error.contains(message),
+            "{error}"
+        );
+    }
+    let output = piped(&["-", "-"], b"");
+    assert!(!output.status.success());
+}
+
+#[test]
+fn interactive_mode_still_needs_a_terminal_for_output() {
+    let directory = tempfile::tempdir().unwrap();
+    let output = binary()
+        .arg("--no-state")
+        .arg(directory.path().join("a.md"))
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("needs a terminal"));
+    assert!(!directory.path().join("a.md").exists());
 }

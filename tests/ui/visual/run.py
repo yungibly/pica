@@ -96,6 +96,20 @@ def check_matches(session):
     session.check(active[0][0]["bg"] != passive[0][0]["bg"], "Active/passive colors differ")
 
 
+def help_sheet(session, label):
+    """Ctrl+G opens the key reference, which never advertises function keys."""
+    before = session.state()["text"]
+    session.key("Ctrl+g")
+    state, _ = session.capture(label)
+    text = state["text"]
+    session.check("Help" in text and "Ctrl+E" in text and "Ctrl+Q" in text,
+                  "Ctrl+G opens the micro-aligned key reference: " + label, text=text)
+    session.check(not re.search(r"\bF(?:[1-9]|1[0-2])\b", text),
+                  "The key reference lists no function keys: " + label, text=text)
+    session.key("Ctrl+g")
+    session.check(session.state()["text"] == before, "Ctrl+G closes the reference again: " + label)
+
+
 def open_find(session):
     session.key("Ctrl+f")
     session.call("type", "probe")
@@ -113,6 +127,7 @@ def captures(session):
     wide = next(c for c in cells if c["char"] == "界")
     face = next(c for c in cells if c["char"] == "面")
     session.check(face["x"] == wide["x"] + 2 and face["y"] == wide["y"], "CJK glyphs occupy two cells")
+    help_sheet(session, "01b-help-80x24")
     session.key("Ctrl+f")
     session.capture("02-empty-find-80x24")
     session.call("type", "probe")
@@ -193,6 +208,10 @@ def protocol(session, expected):
     session.key("Shift+F3")
     expect_match(session, 2, "Legacy previous binding remains usable")
     session.capture("03-legacy-previous-fallback")
+    session.key("Ctrl+n")
+    expect_match(session, 3, "Ctrl+N selects the next match, as in micro")
+    session.key("Ctrl+p")
+    expect_match(session, 2, "Ctrl+P selects the previous match, as in micro")
 
 
 def unicode_and_edits(session):
@@ -237,6 +256,7 @@ def workspace(session):
     state, cells = session.capture("01-writing-160x45")
     session.check("DOCUMENTS" not in state["text"] and bool(outline_labels(cells)),
                   "Wide workspace exposes a heading-only outline")
+    help_sheet(session, "01b-help-160x45")
     heading = "Later, with confidence"
     target = outline_target(session, heading, cells)[1]
     session.call("mouse", "click", target["x"], target["y"])
@@ -250,14 +270,14 @@ def workspace(session):
     session.check(f"Ln {heading_line}, Col 1" in session.state()["text"],
                   "Sidebar is also keyboard accessible")
 
-    session.key("Ctrl+g")
+    session.key("Ctrl+l")
     session.call("type", "3")
     session.capture("03-go-to-line")
     session.key("Enter")
     session.check("Ln 3, Col 1" in session.state()["text"], "Go to line uses source lines")
 
     def command(query):
-        session.key("F2")
+        session.key("Ctrl+e")
         session.call("type", query)
         session.settle()
         session.key("Enter")
@@ -266,7 +286,7 @@ def workspace(session):
         session.key("Ctrl+s")
         session.check(session.saved(expected.encode()), message)
 
-    session.key("F2")
+    session.key("Ctrl+e")
     session.call("type", "theme")
     session.capture("04-filtered-command-palette")
     session.key("Escape")
@@ -300,7 +320,7 @@ def workspace(session):
     session.key("Ctrl+z")
     save_expected(source, "Contiguous keyboard typing undoes as a group")
     session.call("type", "first")
-    session.key("F8")
+    session.key("Alt+.")
     session.call("type", "second")
     session.key("Ctrl+z")
     save_expected(source + "first", "A one-tab navigation command ends the preceding typing group")
@@ -311,9 +331,9 @@ def workspace(session):
     session.key("Ctrl+z")
     save_expected(source, "Pasted text remains one undo transaction")
 
-    command("New document")
+    command("New tab")
     session.check("Untitled 2.md" in session.state()["text"], "Palette creates an independent document tab")
-    session.key("F7")
+    session.key("Alt+,")
     session.key("Ctrl+Home")
     session.capture("07-document-tabs")
     for width, height in [(120, 36), (80, 24), (42, 16), (20, 10)]:
@@ -322,7 +342,7 @@ def workspace(session):
         session.check(bool(outline_labels(session.cells())) == (width >= 110),
                       f"Sidebar adapts to {width}x{height}")
 
-    session.key("F2")
+    session.key("Ctrl+e")
     session.call("resize", 20, 4)
     session.key("Enter")
     session.capture("09-tiny-palette")
@@ -469,7 +489,7 @@ def chrome(session):
     session.capture("03-outline-pointer-focus")
     saved_exact("Pointer outline navigation preserves exact source")
 
-    session.key("Ctrl+g")
+    session.key("Ctrl+l")
     session.call("type", "3")
     session.key("Enter")
     before = session.cells()
@@ -480,7 +500,7 @@ def chrome(session):
         catalog = Path(__file__).with_name("palettes.json")
     palettes = {theme["name"]: theme for theme in json.loads(catalog.read_text())["themes"]}
     for index, theme in enumerate(["Sage Dark", "Sage Light", "Dracula", "Catppuccin Latte", "Nord"]):
-        session.key("F2")
+        session.key("Ctrl+e")
         session.call("type", "theme")
         session.key("Enter")
         session.call("type", theme)
@@ -499,7 +519,7 @@ def chrome(session):
     saved_exact("One undo after theme changes restores the original source bytes")
 
     for number in range(2, 10):
-        session.key("Ctrl+n")
+        session.key("Ctrl+t")
         session.call("type", f"Tab{number}")
     active_name = "Untitled 9.md"
     for width, height in [(160, 45), (120, 36), (80, 24), (42, 16)]:
@@ -514,17 +534,18 @@ def chrome(session):
         session.check(bool(dirty), f"Active dirty marker survives tab overflow at {width} columns")
         session.check(not re.search(r"\b(?:DOCUMENTS|Live|F1|F2|F9)\b", state["text"]),
                       f"Tab overflow does not introduce repeated chrome hints at {width} columns")
-    session.key("F7")
+    session.key("Alt+,")
     session.check("Untitled 8.md" in session.state()["text"] and "Tab8" in session.state()["text"],
                   "Previous tab remains independently editable during overflow")
-    session.key("F8")
+    session.key("Alt+.")
     session.call("resize", 20, 10)
     state, cells = session.capture("06-compact-dirty-tab-20x10")
     session.check("Tab9" in state["text"] and any(c["char"] == "●" for c in cells),
                   "Compact header preserves the current buffer and its dirty marker")
     session.call("resize", 160, 45)
     for _ in range(8):
-        session.key("Ctrl+w")
+        # Ctrl+Q closes the current tab, asking first when it is unsaved.
+        session.key("Ctrl+q")
         session.call("expect", "text", "Unsaved document", "--timeout", 3000)
         session.key("n")
     session.key("Ctrl+Home")
@@ -539,7 +560,8 @@ def reliability(session):
     external = source + "\nFirst external edit\n"
     session.fixture.write_text(external)
     session.call("expect", "text", "Disk file changed", "--timeout", 4000)
-    session.check("F5" in session.state()["text"], "External file changes offer a reload action")
+    session.check("Reload" in session.state()["text"] and "F5" not in session.state()["text"],
+                  "External file changes offer a reload action without advertising function keys")
     session.capture("01-external-change")
     session.key("F5")
     session.key("Ctrl+End")
@@ -581,7 +603,7 @@ def themes(session):
         return next(c["bg"] for c in session.cells() if (c["x"], c["y"]) == (159, 3))
     for index, name in enumerate(names):
         before = background()
-        session.key("F2")
+        session.key("Ctrl+e")
         session.call("type", "theme")
         session.key("Enter")
         session.call("type", name)
@@ -591,7 +613,7 @@ def themes(session):
         session.capture(f"{index+1:02d}-" + palettes[name]["id"] + "-preview")
         session.key("Escape")
         session.check(background() == before, f"Escape from {name} restores the previous theme")
-        session.key("F2")
+        session.key("Ctrl+e")
         session.call("type", "theme")
         session.key("Enter")
         session.call("type", name)
@@ -600,7 +622,7 @@ def themes(session):
         session.check(background().lower() == expected, f"{name} remains applied after accepting")
         session.capture(f"{index+1:02d}-" + palettes[name]["id"])
     session.check(session.saved(session.original_bytes), "Theme previews and acceptance never change the source")
-    session.key("F2")
+    session.key("Ctrl+e")
     session.call("type", "theme")
     session.key("Enter")
     session.call("type", "Catppuccin")
@@ -634,7 +656,7 @@ def workflows(session):
         session.settle()
 
     def go(line):
-        session.key("Ctrl+g")
+        session.key("Ctrl+l")
         session.call("type", str(line))
         session.key("Enter")
 
@@ -771,7 +793,7 @@ def workflows(session):
         save(source, f"Tiny {title} picker cannot switch or edit the source")
 
     # Source mode gives line selection an unambiguous physical-row boundary.
-    session.key("Ctrl+e")
+    session.key("Ctrl+r")
     session.check("SOURCE" in session.state()["text"], "Line workflows run in source mode")
 
     def edited_lines(operation, selected):
@@ -800,7 +822,7 @@ def workflows(session):
             if selected:
                 session.key("Shift+Down")
                 session.key("Shift+Down")
-                session.key("F2")
+                session.key("Ctrl+e")
                 session.call("type", command)
                 session.key("Enter")
             else:
@@ -816,18 +838,18 @@ def workflows(session):
     chooser("F10", "unt2")
     session.key("Enter")
     session.check(draft in session.state()["text"], "Unsaved draft survives all navigation and source editing")
-    session.key("Ctrl+w")
+    session.key("Ctrl+q")
     session.call("expect", "text", "Unsaved document", "--timeout", 3000)
     session.key("n")
     chooser("F10", "pjbt nmd")
     session.key("Enter")
-    session.key("Ctrl+w")
+    session.key("Ctrl+q")
     chooser("F10")
     count("Open documents", 1)
     session.key("Escape")
     save(source, "All workflows finish with the exact original fixture bytes")
     session.check(other.read_bytes() == other_source, "Path-filtered secondary scratch document is unchanged")
-    session.key("Ctrl+e")
+    session.key("Ctrl+r")
     session.key("Ctrl+Home")
     session.call("resize", 160, 45)
     session.capture("08-finished-workflows-160x45")
@@ -884,14 +906,14 @@ def rendering(session):
     session.check("| apples | 42 |" in session.state()["text"], "Clicking a table cell reveals its source")
     session.check(not any(c["char"] == "╭" for c in cells), "Disclosed table draws no grid")
 
-    session.key("Ctrl+e")
+    session.key("Ctrl+r")
     _, cells = session.capture("03-source-view")
     text = session.state()["text"]
     session.check("# Rendering acceptance" in text and "```rust" in text, "Source view shows exact Markdown")
     session.check(any(row.strip().startswith("1 # Rendering") for row in document_rows(cells)),
                   "Source view numbers its lines")
     session.check("SOURCE" in text, "Status line names source view")
-    session.key("Ctrl+e")
+    session.key("Ctrl+r")
     session.call("resize", 80, 24)
     session.key("Ctrl+End")
     session.capture("04-rendered-80x24")
@@ -951,7 +973,12 @@ def main():
             else:
                 unicode_and_edits(session)
             session.key("Escape")
-            session.key("Ctrl+q")
+            # Like micro, Ctrl+Q closes one tab at a time and quits after the
+            # last; every suite leaves only clean tabs behind.
+            for _ in range(10):
+                session.key("Ctrl+q")
+                if b"\x1b[?1049l" in session.traffic("READ"):
+                    break
             output = session.traffic("READ")
             if args.keyboard == "enhanced":
                 session.check(output.count(b"\x1b[<1u") == 1 and output.index(b"\x1b[<1u") < output.index(b"\x1b[?1049l"),

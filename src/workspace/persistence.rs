@@ -50,7 +50,7 @@ impl Workspace {
                 }
                 if let Some(name) = settings.unknown_theme() {
                     warnings.push(format!(
-                        "Unknown saved theme {name:?}; choose a theme with F2"
+                        "Unknown saved theme {name:?}; choose a theme with Ctrl+E"
                     ));
                 }
                 Some(settings)
@@ -91,7 +91,7 @@ impl Workspace {
             warnings.insert(
                 0,
                 format!(
-                    "{} recoverable document(s). F2 → Recover documents",
+                    "{} recoverable document(s). Ctrl+E → Recover documents",
                     candidates.len()
                 ),
             );
