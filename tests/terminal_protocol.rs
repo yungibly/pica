@@ -374,8 +374,8 @@ fn recovery_restart(legacy: bool) {
         fs::create_dir_all(state.path().join("state/marklane")).unwrap();
     }
     let mut crashed = Session::start_with_state("disk baseline\n", Some(state.path()));
-    // Apply a familiar built-in theme through both searchable pickers.
-    crashed.send(b"\x10theme\r");
+    // Apply a familiar built-in theme from the command palette (Ctrl+E).
+    crashed.send(b"\x05theme\r");
     crashed.until("theme picker", |s| count(&s.transcript, b"preview") > 0);
     crashed.send(b"\x1b[200~Catppuccin Mocha\x1b[201~\r");
     let settings = state
@@ -425,7 +425,7 @@ fn recovery_restart(legacy: bool) {
     restored.until("recovery notice", |s| {
         count(&s.transcript, b"recoverable") > 0
     });
-    restored.send(b"\x10recover\r");
+    restored.send(b"\x05recover\r");
     restored.until("recovery picker", |s| {
         count(&s.transcript, b"recover copy") > 0
     });
@@ -447,6 +447,9 @@ fn recovery_restart(legacy: bool) {
         fs::read_to_string(&crashed.fixture).unwrap(),
         "newer disk contents\n"
     );
+    // Ctrl+Q closes one tab at a time, as in micro: first the saved copy,
+    // then (in finish) the last tab, which quits.
+    restored.send(QUIT);
     restored.finish();
     if legacy {
         assert!(!state.path().join("config/milli").exists());
