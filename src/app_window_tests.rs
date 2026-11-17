@@ -518,11 +518,16 @@ fn probe_frame_costs() {
     terminal.draw(|frame| app.draw(frame)).unwrap();
     let lines = app.editor().document.line_count();
     let fraction: usize = std::env::var("AT").map_or(2, |at| at.parse().unwrap());
-    let middle = app
-        .editor()
-        .document
-        .line_start(lines * fraction / 4)
-        .min(app.editor().document.text().len());
+    // AT=0..4 picks a line a quarter apart; AT=5 is the end of the text.
+    let length = app.editor().document.text().len();
+    let middle = if fraction > 4 {
+        length
+    } else {
+        app.editor()
+            .document
+            .line_start(lines * fraction / 4)
+            .min(length)
+    };
     app.editor_mut().jump_to_source(middle);
     terminal.draw(|frame| app.draw(frame)).unwrap();
     let mut total = Vec::new();
