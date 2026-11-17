@@ -45,6 +45,8 @@ pub struct MarkdownSnapshot {
     pub revision: u64,
     pub blocks: Vec<Block>,
     pub tasks: Vec<Task>,
+    /// Inline code spans, delimiters included, in source order.
+    pub code_spans: Vec<Range<usize>>,
 }
 
 /// GFM adds only alert kinds (`> [!NOTE]`) to block quotes; front matter
@@ -139,6 +141,10 @@ pub fn analyze(text: &str, revision: u64) -> MarkdownSnapshot {
             }
             Event::End(TagEnd::Item) => {
                 items.pop();
+                None
+            }
+            Event::Code(_) => {
+                snapshot.code_spans.push(range.clone());
                 None
             }
             Event::Start(Tag::CodeBlock(_)) => Some(BlockKind::Code),

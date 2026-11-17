@@ -312,10 +312,16 @@ impl Projection {
             .then(|| self.cursor(offset))
     }
 
-    /// The first row starting at or after `offset`.
+    /// The row where the line starting at `offset` begins, or else the first
+    /// row starting after it. A table's closing border shares its start
+    /// with the line that follows it, so restart rows win.
     pub fn first_row_at(&self, offset: usize) -> usize {
-        self.rows
-            .partition_point(|row| row.start < offset)
+        let first = self.rows.partition_point(|row| row.start < offset);
+        self.rows[first..]
+            .iter()
+            .take_while(|row| row.start == offset)
+            .position(|row| row.restart)
+            .map_or(first, |at| first + at)
             .min(self.rows.len() - 1)
     }
 

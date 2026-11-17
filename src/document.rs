@@ -1250,6 +1250,13 @@ impl Document {
         self.break_undo_group();
         crate::editing::enter(self)
     }
+
+    /// `enter`, reusing `snapshot` when it is from the current revision
+    /// rather than parsing the document again.
+    pub fn enter_with(&mut self, snapshot: &MarkdownSnapshot) -> bool {
+        self.break_undo_group();
+        crate::editing::enter_with(self, Some(snapshot))
+    }
     pub fn literal_newline(&mut self) -> bool {
         let newline =
             crate::editing::preferred_newline(self.text(), self.selection().range().start);

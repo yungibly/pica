@@ -162,11 +162,13 @@ impl Workspace {
     }
 
     pub fn tick(&mut self) -> bool {
+        // Work deferred from typing, such as the word count, runs in pauses.
+        let idle = self.editor_mut().idle();
         if self.last_tick.elapsed() < Duration::from_secs(1) {
-            return false;
+            return idle;
         }
         self.last_tick = Instant::now();
-        let mut changed = self.editor_mut().check_external_change();
+        let mut changed = self.editor_mut().check_external_change() || idle;
         let Some(mut state) = self.persistence.take() else {
             return changed;
         };
