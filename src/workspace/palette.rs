@@ -2,7 +2,7 @@
 use super::clipped;
 use crate::ui;
 use crossterm::event::{Event, KeyCode, KeyModifiers, MouseButton, MouseEventKind};
-use eymi::Document;
+use milli::Document;
 use ratatui::{
     Frame,
     layout::Rect,
@@ -94,7 +94,7 @@ impl Command {
             Self::Documents => "Switch document…",
             Self::Headings => "Go to heading…",
             Self::Help => "Help / keyboard shortcuts",
-            Self::Quit => "Quit Eymi",
+            Self::Quit => "Quit milli",
             Self::Undo => "Undo edit",
             Self::Redo => "Redo edit",
             Self::Bold => "Format bold",

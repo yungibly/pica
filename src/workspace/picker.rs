@@ -1,7 +1,7 @@
 //! Searchable choices with geometry-gated acceptance and a separate query document.
 use crate::ui;
 use crossterm::event::{Event, KeyCode, KeyModifiers, MouseButton, MouseEventKind};
-use eymi::Document;
+use milli::Document;
 use ratatui::{
     Frame,
     layout::Rect,

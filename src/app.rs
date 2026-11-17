@@ -11,7 +11,7 @@ use crate::{
 use crossterm::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
-use eymi::{Document, InlineStyle, Selection};
+use milli::{Document, InlineStyle, Selection};
 use ratatui::{
     Frame,
     layout::Rect,
@@ -2068,7 +2068,7 @@ impl App {
         let length = self.document.text().len();
         let head = self.document.selection().head;
         let percent = head.saturating_mul(100).checked_div(length).unwrap_or(100);
-        let newline = match eymi::editing::preferred_newline(self.document.text(), 0) {
+        let newline = match milli::editing::preferred_newline(self.document.text(), 0) {
             "\r\n" => "CRLF",
             "\r" => "CR",
             _ => "LF",
@@ -2189,7 +2189,7 @@ impl App {
             width,
             height,
         );
-        let inner = ui::panel(frame, rect, "Eymi · Help", None);
+        let inner = ui::panel(frame, rect, "milli · Help", None);
         let visible = usize::from(inner.height);
         let scroll = self.help_scroll.min(sheet.len().saturating_sub(visible));
         let column_width = inner.width.saturating_sub(2) / columns as u16;
@@ -2806,7 +2806,9 @@ mod tests {
         assert!(footer.contains("Ln 2, Col 3"));
         assert!(footer.contains("100%"));
         assert!(footer.contains("UTF-8"));
-        for redundant in ["Live", "Source", "Untitled", "Eymi", "F1", "^S", "Commands"] {
+        for redundant in [
+            "Live", "Source", "Untitled", "milli", "F1", "^S", "Commands",
+        ] {
             assert!(!footer.contains(redundant), "{footer}");
         }
         key(&mut app, KeyCode::F(6), KeyModifiers::NONE);
@@ -3190,7 +3192,7 @@ mod tests {
             if dirty {
                 app.document.insert("local ");
             }
-            app.document.set_history_limits(eymi::HistoryLimits {
+            app.document.set_history_limits(milli::HistoryLimits {
                 max_entries: 0,
                 max_bytes: 0,
             });

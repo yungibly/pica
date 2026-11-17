@@ -23,7 +23,7 @@ class HomebrewTests(unittest.TestCase):
                 homebrew.version_from_tag(tag)
         manifest = self.manifest()
         for text in [manifest + manifest, manifest.splitlines()[0],
-                     manifest + "0" * 64 + "  ../eymi.tar.gz\n",
+                     manifest + "0" * 64 + "  ../milli.tar.gz\n",
                      manifest.replace("x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu")]:
             with self.assertRaises(homebrew.ReleaseError):
                 homebrew.checksums(text, self.tag)
@@ -59,7 +59,7 @@ class HomebrewTests(unittest.TestCase):
 
     def test_update_rejects_formula_code_changes_before_any_network_access(self):
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "eymi.rb"
+            path = Path(directory) / "milli.rb"
             path.write_text(homebrew.render_formula(self.tag, self.hashes()) + '\nsystem "bad"\n')
             with patch.object(homebrew, "request_bytes") as request:
                 with self.assertRaisesRegex(homebrew.ReleaseError, "exact generated"):

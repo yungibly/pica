@@ -6,7 +6,7 @@ use crate::{
     syntax::{self, Language, Token},
     theme::{self, Palette, Theme},
 };
-use eymi::{
+use milli::{
     Selection,
     markdown::{self, BlockKind, MarkdownSnapshot},
 };

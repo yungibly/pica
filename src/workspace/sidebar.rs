@@ -22,8 +22,8 @@ pub(super) fn headings(source: &str) -> Vec<Heading> {
     let bom = if source.starts_with('\u{feff}') { 3 } else { 0 };
     let mut result = Vec::new();
     let mut heading: Option<Heading> = None;
-    let input = eymi::markdown::parser_input(&source[bom..]);
-    for (event, range) in Parser::new_ext(&input, eymi::markdown::options()).into_offset_iter() {
+    let input = milli::markdown::parser_input(&source[bom..]);
+    for (event, range) in Parser::new_ext(&input, milli::markdown::options()).into_offset_iter() {
         match event {
             Event::Start(Tag::Heading { level, .. }) => {
                 heading = Some(Heading {

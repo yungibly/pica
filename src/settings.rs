@@ -46,10 +46,11 @@ fn directories_under(config: &Path, state: &Path) -> io::Result<(PathBuf, PathBu
 }
 
 /// Select existing roots without creating, migrating, or deleting anything.
-/// A new-name root wins even when empty. Only a genuinely absent path permits
+/// The newest name wins even when empty, then each earlier product name
+/// (`eymi`, then `marklane`) in turn. Only a genuinely absent path permits
 /// fallback; errors and non-directory entries must not silently split user data.
 fn app_directory(base: &Path) -> io::Result<PathBuf> {
-    for name in ["eymi", "marklane"] {
+    for name in ["milli", "eymi", "marklane"] {
         let path = base.join(name);
         match fs::symlink_metadata(&path) {
             Ok(metadata) if metadata.file_type().is_dir() => return Ok(path),
@@ -63,7 +64,7 @@ fn app_directory(base: &Path) -> io::Result<PathBuf> {
             Err(error) => return Err(error),
         }
     }
-    Ok(base.join("eymi"))
+    Ok(base.join("milli"))
 }
 
 fn read(path: &Path) -> io::Result<Option<Vec<u8>>> {
@@ -261,13 +262,13 @@ fn writable_permissions(path: &Path) -> io::Result<Option<fs::Permissions>> {
 mod tests {
     use super::*;
     #[test]
-    fn absent_roots_select_eymi_without_creating_directories() {
+    fn absent_roots_select_milli_without_creating_directories() {
         let directory = tempfile::tempdir().unwrap();
         let config = directory.path().join("config");
         let state = directory.path().join("state");
         assert_eq!(
             directories_under(&config, &state).unwrap(),
-            (config.join("eymi"), state.join("eymi"))
+            (config.join("milli"), state.join("milli"))
         );
         assert!(!config.exists());
         assert!(!state.exists());
@@ -287,19 +288,19 @@ mod tests {
                 fs::write(&preferences, "version=1\ntheme=light\nicons=nerd\n").unwrap();
                 fs::write(&snapshot, b"legacy snapshot remains untouched").unwrap();
                 if config_new {
-                    fs::create_dir(config.join("eymi")).unwrap();
+                    fs::create_dir(config.join("milli")).unwrap();
                 }
                 if state_new {
-                    fs::create_dir(state.join("eymi")).unwrap();
+                    fs::create_dir(state.join("milli")).unwrap();
                 }
                 let (chosen_config, chosen_state) = directories_under(&config, &state).unwrap();
                 assert_eq!(
                     chosen_config,
-                    config.join(if config_new { "eymi" } else { "marklane" })
+                    config.join(if config_new { "milli" } else { "marklane" })
                 );
                 assert_eq!(
                     chosen_state,
-                    state.join(if state_new { "eymi" } else { "marklane" })
+                    state.join(if state_new { "milli" } else { "marklane" })
                 );
                 let settings = Settings::load(&chosen_config).unwrap();
                 assert_eq!(
@@ -322,11 +323,30 @@ mod tests {
                     fs::read(&snapshot).unwrap(),
                     b"legacy snapshot remains untouched"
                 );
-                assert_eq!(config.join("eymi").exists(), config_new);
-                assert_eq!(state.join("eymi").exists(), state_new);
-                assert!(!config.join("eymi/settings.conf").exists());
+                assert_eq!(config.join("milli").exists(), config_new);
+                assert_eq!(state.join("milli").exists(), state_new);
+                assert!(!config.join("milli/settings.conf").exists());
             }
         }
+    }
+
+    #[test]
+    fn earlier_names_are_found_in_order_and_the_newest_name_wins() {
+        let directory = tempfile::tempdir().unwrap();
+        let base = directory.path();
+        fs::create_dir(base.join("marklane")).unwrap();
+        assert_eq!(app_directory(base).unwrap(), base.join("marklane"));
+        fs::create_dir(base.join("eymi")).unwrap();
+        fs::write(base.join("eymi/settings.conf"), "version=1\ntheme=nord\n").unwrap();
+        assert_eq!(app_directory(base).unwrap(), base.join("eymi"));
+        assert_eq!(
+            Settings::load(&base.join("eymi")).unwrap().theme(),
+            Theme::from_name("nord")
+        );
+        fs::create_dir(base.join("milli")).unwrap();
+        assert_eq!(app_directory(base).unwrap(), base.join("milli"));
+        assert!(base.join("eymi/settings.conf").exists());
+        assert!(base.join("marklane").exists());
     }
 
     #[test]
@@ -334,15 +354,15 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let base = directory.path();
         fs::create_dir(base.join("marklane")).unwrap();
-        fs::write(base.join("eymi"), "keep file").unwrap();
+        fs::write(base.join("milli"), "keep file").unwrap();
         assert!(app_directory(base).is_err());
-        assert_eq!(fs::read_to_string(base.join("eymi")).unwrap(), "keep file");
-        assert!(app_directory(&base.join("eymi/child")).is_err());
-        fs::remove_file(base.join("eymi")).unwrap();
+        assert_eq!(fs::read_to_string(base.join("milli")).unwrap(), "keep file");
+        assert!(app_directory(&base.join("milli/child")).is_err());
+        fs::remove_file(base.join("milli")).unwrap();
         fs::remove_dir(base.join("marklane")).unwrap();
         fs::write(base.join("marklane"), "keep legacy file").unwrap();
         assert!(app_directory(base).is_err());
-        assert!(!base.join("eymi").exists());
+        assert!(!base.join("milli").exists());
         assert_eq!(
             fs::read_to_string(base.join("marklane")).unwrap(),
             "keep legacy file"
@@ -353,7 +373,7 @@ mod tests {
     #[test]
     fn root_symlinks_are_not_followed_or_treated_as_absent() {
         use std::os::unix::fs::symlink;
-        for name in ["eymi", "marklane"] {
+        for name in ["milli", "marklane"] {
             for dangling in [false, true] {
                 let directory = tempfile::tempdir().unwrap();
                 let base = directory.path().join("base");
@@ -363,7 +383,7 @@ mod tests {
                     fs::create_dir(&target).unwrap();
                 }
                 symlink(&target, base.join(name)).unwrap();
-                if name == "eymi" {
+                if name == "milli" {
                     fs::create_dir(base.join("marklane")).unwrap();
                 }
                 assert!(app_directory(&base).is_err());

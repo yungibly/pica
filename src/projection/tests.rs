@@ -1,5 +1,5 @@
 use super::*;
-use eymi::Document;
+use milli::Document;
 use ratatui::style::Modifier;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build and verify Eymi release archives using Python 3.11+ standard libraries."""
+"""Build and verify milli release archives using Python 3.11+ standard libraries."""
 
 import argparse
 import gzip
@@ -32,8 +32,8 @@ def regular(path):
 def version(root, tag):
     package = tomllib.loads(regular(root / "Cargo.toml").decode())["package"]
     value = package["version"]
-    if package["name"] != "eymi" or not re.fullmatch(r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?", value):
-        raise ValueError("Expected the Eymi package with a literal SemVer version")
+    if package["name"] != "milli" or not re.fullmatch(r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?", value):
+        raise ValueError("Expected the milli package with a literal SemVer version")
     if tag != "v" + value:
         raise ValueError(f"Tag {tag!r} does not match Cargo version v{value}")
     for required in ["README.md", "LICENSE", f"{THEMES}/LICENSE", f"{THEMES}/CREDITS.md",
@@ -96,7 +96,7 @@ def verify_notices(files, target, lock_sha256):
 def archive_name(value, target):
     if target not in TARGETS:
         raise ValueError(f"Unsupported target: {target}")
-    return f"eymi-{value}-{target}.tar.gz"
+    return f"milli-{value}-{target}.tar.gz"
 
 
 def package(root, binary, notices, output, tag, target, epoch):
@@ -106,7 +106,7 @@ def package(root, binary, notices, output, tag, target, epoch):
     data = regular(binary)
     if architecture(data) != target:
         raise ValueError("Binary architecture does not match the requested target")
-    files = {"eymi": data, "README.md": regular(root / "README.md"), "LICENSE": regular(root / "LICENSE")}
+    files = {"milli": data, "README.md": regular(root / "README.md"), "LICENSE": regular(root / "LICENSE")}
     files.update({f"{THEMES}/{name}": content for name, content in tree(root / THEMES).items()})
     files.update({f"{RUST}/{name}": content for name, content in tree(notices).items()})
     verify_notices(files, target, digest(regular(root / "Cargo.lock")))
@@ -120,7 +120,7 @@ def package(root, binary, notices, output, tag, target, epoch):
                     for name, content in sorted(files.items()):
                         info = tarfile.TarInfo(name)
                         info.size, info.mtime = len(content), epoch
-                        info.mode = 0o755 if name == "eymi" else 0o644
+                        info.mode = 0o755 if name == "milli" else 0o644
                         info.uid = info.gid = 0
                         info.uname = info.gname = ""
                         archive.addfile(info, io.BytesIO(content))
@@ -140,17 +140,17 @@ def verify_archive(root, archive_path, target):
                 raise ValueError(f"Unsafe archive member: {member.name}")
             if member.name in files:
                 raise ValueError(f"Duplicate archive member: {member.name}")
-            if member.mode != (0o755 if member.name == "eymi" else 0o644):
+            if member.mode != (0o755 if member.name == "milli" else 0o644):
                 raise ValueError(f"Unexpected archive file mode: {member.name}")
             files[member.name] = archive.extractfile(member).read()
-    if architecture(files["eymi"]) != target:
+    if architecture(files["milli"]) != target:
         raise ValueError("Archive contains the wrong binary architecture")
     expected = {"README.md": regular(root / "README.md"), "LICENSE": regular(root / "LICENSE")}
     expected.update({f"{THEMES}/{name}": data for name, data in tree(root / THEMES).items()})
     for name, data in expected.items():
         if files.get(name) != data:
             raise ValueError(f"Missing or modified release attribution: {name}")
-    allowed = set(expected) | {"eymi"}
+    allowed = set(expected) | {"milli"}
     if any(name not in allowed and not name.startswith(RUST + "/") for name in files):
         raise ValueError("Archive contains unexpected files")
     verify_notices(files, target, digest(regular(root / "Cargo.lock")))

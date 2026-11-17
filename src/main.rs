@@ -20,7 +20,7 @@ use std::io::{self, IsTerminal};
 
 fn main() {
     if let Err(error) = run() {
-        eprintln!("eymi: {error}");
+        eprintln!("milli: {error}");
         std::process::exit(1);
     }
 }
@@ -32,7 +32,7 @@ fn run() -> io::Result<()> {
             return Ok(());
         }
         cli::Action::Version => {
-            println!("eymi {}", env!("CARGO_PKG_VERSION"));
+            println!("milli {}", env!("CARGO_PKG_VERSION"));
             return Ok(());
         }
         cli::Action::ListThemes => {

@@ -1,6 +1,6 @@
-# Eymi
+# milli
 
-[![CI](https://github.com/yungibly/eymi/actions/workflows/ci.yml/badge.svg)](https://github.com/yungibly/eymi/actions/workflows/ci.yml)
+[![CI](https://github.com/yungibly/milli/actions/workflows/ci.yml/badge.svg)](https://github.com/yungibly/milli/actions/workflows/ci.yml)
 
 A terminal editor for writing, reading, and reviewing Markdown, with familiar shortcuts and support for other UTF-8 text files.
 
@@ -9,17 +9,17 @@ The central idea: make a Markdown document pleasant to work in directly, with de
 ## Install
 
 ```sh
-brew install yungibly/tap/eymi
-eymi note.md
+brew install yungibly/tap/milli
+milli note.md
 ```
 
-[Release archives](https://github.com/yungibly/eymi/releases) include prebuilt binaries for macOS on Apple Silicon and Intel, and Linux x86_64 with glibc 2.35 or newer. Extract an archive and put `eymi` on your PATH. All themes are included; a Nerd Font is optional. Linux ARM and Windows release binaries are not provided.
+[Release archives](https://github.com/yungibly/milli/releases) include prebuilt binaries for macOS on Apple Silicon and Intel, and Linux x86_64 with glibc 2.35 or newer. Extract an archive and put `milli` on your PATH. All themes are included; a Nerd Font is optional. Linux ARM and Windows release binaries are not provided.
 
-Press **F1** for help or **F2** for searchable commands. Use **Ctrl+S** to save and **Ctrl+Q** to quit. With no filename, `eymi` starts an untitled Markdown document.
+Press **F1** for help or **F2** for searchable commands. Use **Ctrl+S** to save and **Ctrl+Q** to quit. With no filename, `milli` starts an untitled Markdown document.
 
 ## Development
 
-Building from source requires **Rust 1.89 or newer**. The [release guide](docs/releases.md) describes CI, package verification, and the Homebrew update process. Eymi's code is [MIT licensed](LICENSE); bundled themes and Rust dependencies retain their own notices in release archives.
+Building from source requires **Rust 1.89 or newer**. The [release guide](docs/releases.md) describes CI, package verification, and the Homebrew update process. milli's code is [MIT licensed](LICENSE); bundled themes and Rust dependencies retain their own notices in release archives.
 
 - [Product and interaction plan](docs/product-plan.md): live editing, rendering, controls, tabs, themes, and ideas for working alongside agents.
 - [Technical plan and milestones](docs/technical-plan.md): proposed Rust stack, source mapping, file safety, compatibility, and the first prototype.
@@ -36,9 +36,9 @@ cargo run --locked -- --snapshot --snapshot-size 160x45 --theme "Catppuccin Moch
 cargo run --locked -- --list-themes
 ```
 
-To edit a file in your terminal, run `cargo run --locked -- --theme "Catppuccin Mocha" path/to/note.md`. A saved theme is used by default, falling back to Sage Dark. `--theme` overrides the saved preference for that launch. With no filename, Eymi opens an untitled Markdown document. Use a [scratch copy of a fixture](docs/prototype-checks.md#manual-smoke-check-once-the-build-is-ready) for experimenting.
+To edit a file in your terminal, run `cargo run --locked -- --theme "Catppuccin Mocha" path/to/note.md`. A saved theme is used by default, falling back to Sage Dark. `--theme` overrides the saved preference for that launch. With no filename, milli opens an untitled Markdown document. Use a [scratch copy of a fixture](docs/prototype-checks.md#manual-smoke-check-once-the-build-is-ready) for experimenting.
 
-Eymi has document tabs, live/source views, clickable rendered task boxes, automatic list continuation, selection, undo/redo, and save. Checkbox clicks include the space immediately on either side. Leaving a list keeps subsequent Enter presses in ordinary text. Live view reveals the active block's source. Ctrl+E or F6 changes view, Ctrl+S saves, F4 opens Save As, and F1 shows controls.
+milli has document tabs, live/source views, clickable rendered task boxes, automatic list continuation, selection, undo/redo, and save. Checkbox clicks include the space immediately on either side. Leaving a list keeps subsequent Enter presses in ordinary text. Live view reveals the active block's source. Ctrl+E or F6 changes view, Ctrl+S saves, F4 opens Save As, and F1 shows controls.
 
 F2 or Ctrl+P opens a filterable command palette with shortcut hints. It includes file, search, formatting, history, view, sidebar, theme, and icon actions. Ctrl+G jumps to a source line. An outline sidebar appears automatically for Markdown at 110 columns and above, drawing the heading tree and highlighting the current section. Click a heading to jump, or press F9 to focus the sidebar and use arrows/Enter. A jump from the outline, **Go to heading**, or Ctrl+G places its target a third of the way down the window, with what follows in view. Escape returns to the editor; F9 while focused hides it. The sidebar hides in small windows and can be shown explicitly when at least 60 columns are available. Headings come from the Markdown parser, so fenced-code examples do not appear as headings.
 
@@ -54,11 +54,11 @@ A single tab row holds each document's name, icon, and a dot for unsaved changes
 
 **624 built-in themes** include Catppuccin, Dracula, Nord, Gruvbox, Solarized, Tokyo Night, One Dark, and many more. Press F2, choose **Choose theme**, and type to filter. Arrow keys preview the highlighted theme throughout the editor; Enter or a visible row click applies and remembers it. Escape cancels the preview. Theme changes preserve source, selection, and undo history.
 
-`eymi --list-themes` lists stable IDs and display names. `--theme nord`, `--theme catppuccin-mocha`, and quoted display names work; `dark` and `light` retain the original Sage palettes. The 622 imported palettes are pinned color data from iTerm2-Color-Schemes; builds and runtime need no theme downloads. [Provenance, licenses, exclusions, and the reproducible importer](third_party/iterm2-themes/README.md) accompany the catalog.
+`milli --list-themes` lists stable IDs and display names. `--theme nord`, `--theme catppuccin-mocha`, and quoted display names work; `dark` and `light` retain the original Sage palettes. The 622 imported palettes are pinned color data from iTerm2-Color-Schemes; builds and runtime need no theme downloads. [Provenance, licenses, exclusions, and the reproducible importer](third_party/iterm2-themes/README.md) accompany the catalog.
 
-**Nerd Font icons** mark documents, languages, heading levels, tasks, and callouts, and round the status line's badges. Ghostty, Kitty, and WezTerm draw these symbols from built-in fallback fonts, so Eymi turns icons on there by default, except inside tmux. Elsewhere the default is plain text, which needs no special font. Choose **Toggle Nerd Font icons** in F2, or launch with `--icons nerd` or `--icons plain`. A saved choice overrides detection, and the flag overrides both for that launch. No font is bundled or downloaded.
+**Nerd Font icons** mark documents, languages, heading levels, tasks, and callouts, and round the status line's badges. Ghostty, Kitty, and WezTerm draw these symbols from built-in fallback fonts, so milli turns icons on there by default, except inside tmux. Elsewhere the default is plain text, which needs no special font. Choose **Toggle Nerd Font icons** in F2, or launch with `--icons nerd` or `--icons plain`. A saved choice overrides detection, and the flag overrides both for that launch. No font is bundled or downloaded.
 
-Explicit theme, sidebar, and icon choices are saved to `$XDG_CONFIG_HOME/eymi/settings.conf`, or `~/.config/eymi/settings.conf`. If the `eymi` config directory is absent and an existing `marklane` directory is present, Eymi uses those preferences in place. No files are migrated or deleted. Concurrent edits, read-only settings, and invalid files are reported and preserved. `--no-state` disables preferences and recovery. Help, version, theme listing, and headless snapshots never read or write user settings or recovery files.
+Explicit theme, sidebar, and icon choices are saved to `$XDG_CONFIG_HOME/milli/settings.conf`, or `~/.config/milli/settings.conf`. If the `milli` config directory is absent and an existing `marklane` directory is present, milli uses those preferences in place. No files are migrated or deleted. Concurrent edits, read-only settings, and invalid files are reported and preserved. `--no-state` disables preferences and recovery. Help, version, theme listing, and headless snapshots never read or write user settings or recovery files.
 
 ## Editing controls
 
@@ -93,7 +93,7 @@ Ctrl+F opens a compact Find row; Ctrl+R expands it with a replacement field whil
 
 Tab / Shift+Tab switches directly between Find and With, selecting the destination field's existing text. Enter in Find advances; Enter in With replaces the current result and advances. Alt+R replaces one result; Alt+A replaces all. Replace All is one document undo step. Press Escape before Ctrl+Z to undo document changes; within a search field, Ctrl+Z undoes field input.
 
-On supporting Unix terminals, Eymi requests disambiguated keyboard input so Shift+Enter can navigate backward. The protocol is restored on exit; Shift+F3 and the Previous button remain available. The [executable test runner](tools/tui-test/README.md) verifies the negotiated input bytes and captures the actual application without opening a native terminal window.
+On supporting Unix terminals, milli requests disambiguated keyboard input so Shift+Enter can navigate backward. The protocol is restored on exit; Shift+F3 and the Previous button remain available. The [executable test runner](tools/tui-test/README.md) verifies the negotiated input bytes and captures the actual application without opening a native terminal window.
 
 Ctrl+C/X/V uses the native clipboard locally, with a reported internal fallback on backend errors or SSH. The terminal's own paste shortcut also accepts external text. Empty paste preserves the selection. Automated clipboard tests use fake backends; the user reports the follow-up build works, without a per-platform compatibility record. Native Wayland and OSC 52 are not implemented.
 
@@ -107,7 +107,7 @@ Hostile or unusual Markdown cannot stall the editor: deeply nested quotes and em
 
 Interactive sessions checkpoint dirty named and untitled documents about once a second. After an interrupted session, a startup notice offers **F2 → Recover documents**. Each chosen copy opens in a new, explicitly unsaved tab—even when its recovered text is empty. Save As chooses a new filename; recovery never overwrites a newer disk version. A recovered tab is durably checkpointed before its old recovery record is consumed.
 
-Private snapshots live in `$XDG_STATE_HOME/eymi/recovery`, or `~/.local/state/eymi/recovery`. The state directory independently falls back to an existing `marklane` directory when `eymi` is absent, preserving access to older snapshots without migration. Session locks isolate simultaneous editors. Save and confirmed discard remove the corresponding checkpoint; a canceled quit retains the remaining dirty tabs. Corrupt or unreadable records stay on disk with a diagnostic. Ordinary clean shutdown removes only that session's owned snapshots. Recovery is implemented for Unix and tested on macOS; unsupported platforms report that recovery is unavailable while editing remains usable.
+Private snapshots live in `$XDG_STATE_HOME/milli/recovery`, or `~/.local/state/milli/recovery`. The state directory independently falls back to an existing `marklane` directory when `milli` is absent, preserving access to older snapshots without migration. Session locks isolate simultaneous editors. Save and confirmed discard remove the corresponding checkpoint; a canceled quit retains the remaining dirty tabs. Corrupt or unreadable records stay on disk with a diagnostic. Ordinary clean shutdown removes only that session's owned snapshots. Recovery is implemented for Unix and tested on macOS; unsupported platforms report that recovery is unavailable while editing remains usable.
 
 Recovery is a safety net with a roughly one-second checkpoint interval, so edits since the last successful checkpoint can be lost. Each snapshot accepts up to 16 MiB; discovery is bounded to 64 records / 64 MiB and 128 state entries, reporting skipped records. Original documents are never written by recovery. `--no-state` disables all preference and recovery storage.
 

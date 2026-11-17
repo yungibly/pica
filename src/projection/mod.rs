@@ -6,7 +6,7 @@ mod parse;
 #[cfg(test)]
 mod tests;
 
-use eymi::{Selection, markdown::Task};
+use milli::{Selection, markdown::Task};
 pub use parse::Parsed;
 use ratatui::style::{Color, Style};
 use std::ops::Range;

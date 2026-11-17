@@ -16,7 +16,7 @@ class PackagingTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
-        (self.root / 'Cargo.toml').write_text('[package]\nname="eymi"\nversion="0.1.0"\n')
+        (self.root / 'Cargo.toml').write_text('[package]\nname="milli"\nversion="0.1.0"\n')
         (self.root / 'Cargo.lock').write_text('locked dependency bytes\n')
         for name in ['README.md', 'LICENSE', *[f'{package.THEMES}/{name}' for name in
                      ['LICENSE', 'CREDITS.md', 'README.md', 'additional-licenses.json', 'licenses/extra.txt']]]:
@@ -48,8 +48,8 @@ class PackagingTests(unittest.TestCase):
         first, second = self.pack(), self.pack('second')
         self.assertEqual(first.read_bytes(), second.read_bytes())
         with tarfile.open(first) as archive:
-            self.assertEqual(archive.getmember('eymi').mode, 0o755)
-            self.assertEqual(archive.extractfile('eymi').read(), self.binary.read_bytes())
+            self.assertEqual(archive.getmember('milli').mode, 0o755)
+            self.assertEqual(archive.extractfile('milli').read(), self.binary.read_bytes())
             for name, data in package.tree(self.root / package.THEMES).items():
                 self.assertEqual(archive.extractfile(package.THEMES + '/' + name).read(), data)
             self.assertEqual(archive.extractfile('third_party/rust/example-1.0/LICENSE').read(),
@@ -119,14 +119,14 @@ class PackagingTests(unittest.TestCase):
 
     def test_duplicate_and_unsafe_archive_members_are_rejected(self):
         original = self.pack()
-        for name in ['eymi', '../outside']:
-            output = self.root / ('duplicate.tar.gz' if name == 'eymi' else 'unsafe.tar.gz')
+        for name in ['milli', '../outside']:
+            output = self.root / ('duplicate.tar.gz' if name == 'milli' else 'unsafe.tar.gz')
             raw = gzip.decompress(original.read_bytes())
             with tarfile.open(fileobj=io.BytesIO(raw)) as source, tarfile.open(output, 'w:gz') as destination:
                 for member in source:
                     destination.addfile(member, source.extractfile(member))
                 item = tarfile.TarInfo(name)
-                item.mode, item.size = 0o755 if name == 'eymi' else 0o644, 1
+                item.mode, item.size = 0o755 if name == 'milli' else 0o644, 1
                 destination.addfile(item, io.BytesIO(b'x'))
             with self.assertRaisesRegex(ValueError, 'Duplicate|Unsafe'):
                 package.verify_archive(self.root, output, self.target)

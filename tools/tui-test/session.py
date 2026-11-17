@@ -46,7 +46,7 @@ class Session:
         self.tool, self.binary = Path(tool).resolve(), Path(binary).resolve()
         self.output = Path(output).resolve()
         self.output.mkdir(parents=True, exist_ok=False)
-        self.runtime = Path(tempfile.mkdtemp(prefix="eymi-tui-"))
+        self.runtime = Path(tempfile.mkdtemp(prefix="milli-tui-"))
         self.name = "acceptance"
         self.log = self.runtime / (self.name + ".log")
         self.actions, self.assertions, self.captures = [], [], []
@@ -66,7 +66,7 @@ class Session:
         self.env.update(TUI_TEST_HOME=str(self.runtime), TERM="xterm-256color",
                         XDG_CONFIG_HOME=str(self.runtime / "config"),
                         XDG_STATE_HOME=str(self.runtime / "state"),
-                        SSH_CONNECTION="eymi-visual-test",
+                        SSH_CONNECTION="milli-visual-test",
                         COLORTERM="truecolor", TUI_TEST_RECORDING_FONT_FAMILIES=font)
         colors = {"dark": ("#171a21", "#d6dce8"), "light": ("#f5f3ed", "#242932")}
         background, foreground = colors[palette]

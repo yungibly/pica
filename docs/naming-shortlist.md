@@ -1,17 +1,20 @@
-# Naming shortlist — September 22, 2026
+# Naming: milli — November 16, 2026
 
-The confirmed product name is **Eymi**, with **`eymi`** as the command. The user chose it for its typing feel and because it sounds like a name without claiming an existing word. The four-character command meets the original length preference. The repository directory can remain `md-term-editor`; it is not part of the installed command.
+The product is now **milli**, with **`milli`** as the command. The owner asked for a name "in line with nano and micro" that feels at home beside them, replacing the coined **Eymi** (September 2026), which proved forgettable.
 
-| Candidate / command | Rationale | Observed overlap |
+The lineage explains itself: pico → nano → micro → milli, each prefix a thousand times larger. "A little more than micro" is the product: micro's keys and launch behavior, nano's quiet, and Markdown rendered as you write. It also reads as a name ("Milly"). Two Claude Opus instances and Codex debated the choice; all three settled on `milli`.
+
+| Candidate | Rationale | Outcome |
 | --- | --- | --- |
-| Tyyn / `tyyn` | Distinctive and short; inspired by Finnish `tyyni` (calm), rather than presented as a dictionary word itself. The repeated letter did not match the user's typing preference. | An exact-name GitHub repository described as content, with no direct terminal-editor product found in the reviewed results. Pronunciation needs introduction. |
-| Nivu / `nivu` | A coined, soft-sounding name that is easy to say. | Some personal/test repositories and a React SQL query builder; no direct terminal-editor product found in the reviewed results. |
-| **Eymi / `eymi` — chosen** | A coined, dreamlike name with a four-character command; the user's preferred typing feel. | Small content repositories and a project-management SaaS project; no direct terminal-editor product found in the reviewed results. |
+| **`milli` — chosen** | Self-explanatory in the nano/micro family; five familiar letters | No Homebrew formula or cask. An archived Meilisearch crate holds the crates.io name, irrelevant to a Homebrew binary. A small hobby C project, `winterrdog/milli_editor`, shares the word. |
+| `pica` | A typographic unit that sounds like pico; fits writing | Fallback if the doubled `l` grates. The popular `pica` JS image library shares the name. |
+| `ronto` | 2022 SI prefix; types cleanly and ends in -o | Too obscure: it would need the same explanation Eymi did. |
+| `nib`, `mote` | Small and writerly | Weak family tie. |
 
-The research checked the current official [Homebrew formula catalog](https://formulae.brew.sh/api/formula.json), [cask catalog](https://formulae.brew.sh/api/cask.json), exact crates.io API names, GitHub project/editor searches, and the development host's executable PATH. None of the three had an exact Homebrew or crates.io entry or an installed command in that scope. GitHub is not empty for any of them: representative existing projects are [n-abry/tyyn](https://github.com/n-abry/tyyn), [Frans6/NIVU](https://github.com/Frans6/NIVU), and [AngelesMicky/Eymi](https://github.com/AngelesMicky/Eymi). This is a practical collision screen, not a reservation or a claim of universal or legal availability. Domains, trademarks, other package registries, and third-party taps were not comprehensively checked.
+Taken in the family: `nano`, `micro`, `pico` (Pine), `femto`, `atto`, `kilo` (antirez), `iota`, and `jot` (BSD `/usr/bin/jot`; also a Homebrew formula). `quill`, `tiny`, and `nub` are Homebrew formulae.
 
-The Finnish association is supported by the [Finnish National Agency for Education glossary](https://www04.edu.fi/suomeaolehyva/sanasto_soh1/Suomi-Ranska_soh_1.pdf), which translates `tyyni` as `calme`. No meaning is claimed for the coined alternatives.
+The check covered the official [Homebrew formula catalog](https://formulae.brew.sh/api/formula.json) and [cask catalog](https://formulae.brew.sh/api/cask.json), crates.io and npm exact names, and web/GitHub searches. It is a practical collision screen, not a trademark or legal clearance.
 
-Rejected candidates include Nemi (an existing terminal editor module), Nuvy (an Android IDE), Aery (an existing Rust crate), Lumo (a CLI product), Nylo (a Flutter framework), and Aeru (an established app). A short name without a package entry can still have an existing software identity.
+## Compatibility with earlier names
 
-The user's earlier ideas `aia` and `aea` were also checked. `aia` is already used by [MadBomber's CLI](https://github.com/MadBomber/aia), [another AI assistant CLI](https://github.com/Antosser/aia), and a Rust crate. `aea` is Apple's existing `/usr/bin/aea` command on the development Mac and the command for [Open AEA](https://github.com/valory-xyz/open-aea). These overlaps made Eymi a better practical choice among the reviewed candidates.
+Preferences and recovery snapshots are looked up under `milli`, then `eymi`, then `marklane`, without migrating or deleting anything; the newest existing directory wins even when empty. The Homebrew tap maps `eymi` to `milli` through `formula_renames.json`, so `brew upgrade` follows the rename. GitHub redirects the old `yungibly/eymi` repository URLs.
