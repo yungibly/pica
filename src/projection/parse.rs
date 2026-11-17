@@ -13,7 +13,6 @@ use milli::{
 use pulldown_cmark::{Alignment, BlockQuoteKind, CodeBlockKind, Event, Parser, Tag, TagEnd};
 use ratatui::style::{Modifier, Style};
 use std::ops::Range;
-use unicode_segmentation::GraphemeCursor;
 
 /// Quote markers become a rail, repeated on wrapped rows.
 pub(super) const RAIL: &str = "▎";
@@ -65,10 +64,21 @@ pub(super) struct TableRow {
     pub cells: Vec<Range<usize>>,
 }
 
+/// A heading as the outline lists it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OutlineEntry {
+    /// Plain, terminal-safe text; never empty.
+    pub title: String,
+    pub level: u8,
+    pub offset: usize,
+}
+
 pub struct Parsed {
     pub snapshot: MarkdownSnapshot,
     pub theme: Theme,
     pub icons: IconSet,
+    /// Headings in source order, from the same parse.
+    pub outline: Vec<OutlineEntry>,
     pub(super) markdown: bool,
     /// Sorted by start; later spans refine earlier ones.
     pub(super) styles: Vec<(Range<usize>, Style)>,
@@ -91,10 +101,31 @@ impl Parsed {
         markdown: bool,
         language: Option<&'static Language>,
     ) -> Self {
+        Self::assemble(source, snapshot, false, markdown, language)
+    }
+
+    /// Markdown analysis whose snapshot comes from the same parse, as
+    /// `Document::markdown` would give it for `revision`.
+    pub fn markdown(source: &str, revision: u64) -> Self {
+        let snapshot = MarkdownSnapshot {
+            revision,
+            ..MarkdownSnapshot::default()
+        };
+        Self::assemble(source, snapshot, true, true, None)
+    }
+
+    fn assemble(
+        source: &str,
+        snapshot: MarkdownSnapshot,
+        build_snapshot: bool,
+        markdown: bool,
+        language: Option<&'static Language>,
+    ) -> Self {
         let mut parsed = Self {
             snapshot,
             theme: theme::current_theme(),
             icons: icons::current(),
+            outline: Vec::new(),
             markdown,
             styles: Vec::new(),
             reach: Vec::new(),
@@ -106,7 +137,7 @@ impl Parsed {
         };
         let colors = theme::palette();
         if markdown {
-            parsed.analyze(source, &colors);
+            parsed.analyze(source, &colors, build_snapshot);
         } else if let Some(language) = language {
             let whole = markdown::bom_len(source)..source.len();
             parsed.highlight(language, source, std::slice::from_ref(&whole), &colors);
@@ -184,7 +215,7 @@ impl Parsed {
         })
     }
 
-    fn analyze(&mut self, source: &str, colors: &Palette) {
+    fn analyze(&mut self, source: &str, colors: &Palette, build_snapshot: bool) {
         let bom = markdown::bom_len(source);
         let muted = Style::default().fg(colors.muted);
         let mut lists: Vec<bool> = Vec::new();
@@ -195,9 +226,16 @@ impl Parsed {
         let mut in_head = false;
         let mut html: Option<Vec<Range<usize>>> = None;
         let mut quotes: Vec<(Range<usize>, Option<BlockQuoteKind>)> = Vec::new();
+        let mut snapshot =
+            build_snapshot.then(|| markdown::SnapshotBuilder::new(source, self.snapshot.revision));
+        let mut title: Option<OutlineEntry> = None;
         let input = markdown::parser_input(&source[bom..]);
         for (event, range) in Parser::new_ext(&input, markdown::options()).into_offset_iter() {
             let range = range.start + bom..range.end + bom;
+            if let Some(snapshot) = &mut snapshot {
+                snapshot.event(&event, range.clone());
+            }
+            self.outline_event(&event, &range, &mut title);
             // A bullet waits only for a task marker that would replace it.
             if let Some((start, depth)) = bullet
                 && !matches!(
@@ -504,6 +542,9 @@ impl Parsed {
         if let Some((start, depth)) = bullet {
             self.bullet(start, depth, colors);
         }
+        if let Some(snapshot) = snapshot {
+            self.snapshot = snapshot.finish();
+        }
         self.rails(source, &quotes, colors);
         self.tasks(source, colors);
         self.decorations
@@ -520,6 +561,44 @@ impl Parsed {
             }
             keep
         });
+    }
+
+    /// Collect heading text for the outline, as plain text.
+    fn outline_event(
+        &mut self,
+        event: &Event,
+        range: &Range<usize>,
+        title: &mut Option<OutlineEntry>,
+    ) {
+        match event {
+            Event::Start(Tag::Heading { level, .. }) => {
+                *title = Some(OutlineEntry {
+                    title: String::new(),
+                    level: *level as u8,
+                    offset: range.start,
+                });
+            }
+            Event::Text(text) | Event::Code(text) => {
+                if let Some(title) = title {
+                    title.title.push_str(text);
+                }
+            }
+            Event::SoftBreak | Event::HardBreak => {
+                if let Some(title) = title {
+                    title.title.push(' ');
+                }
+            }
+            Event::End(TagEnd::Heading(_)) => {
+                if let Some(mut entry) = title.take() {
+                    entry.title = super::safe_text(entry.title.trim());
+                    if entry.title.is_empty() {
+                        entry.title = "Untitled heading".into();
+                    }
+                    self.outline.push(entry);
+                }
+            }
+            _ => {}
+        }
     }
 
     fn highlight(
@@ -879,10 +958,5 @@ fn closing_fence(source: &str, range: &Range<usize>) -> Option<Range<usize>> {
 }
 
 fn boundary(source: &str, offset: usize) -> bool {
-    offset == 0
-        || offset == source.len()
-        || (source.is_char_boundary(offset)
-            && GraphemeCursor::new(offset, source.len(), true)
-                .is_boundary(source, 0)
-                .unwrap_or(false))
+    milli::document::is_boundary(source, offset)
 }

@@ -9,7 +9,7 @@ mod tests;
 #[cfg(test)]
 use milli::Selection;
 use milli::markdown::Task;
-pub use parse::Parsed;
+pub use parse::{OutlineEntry, Parsed};
 use ratatui::style::{Color, Style};
 use std::{fmt, ops::Range};
 

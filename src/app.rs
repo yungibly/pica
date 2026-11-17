@@ -123,8 +123,11 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
     ),
 ];
 
+/// A document and one of its revisions: `(Document::id, revision)`.
+type Version = (u64, u64);
+
 type LayoutKey = (
-    u64,
+    Version,
     Vec<std::ops::Range<usize>>,
     usize,
     bool,
@@ -180,8 +183,12 @@ pub struct App {
     /// Large-file mode, which overrides `live` without changing it.
     large: bool,
     parsed: Parsed,
+    /// The document and revision `parsed` describes.
+    analyzed: Version,
     /// Highlights the visible window of a code file.
     highlighter: Option<Highlighter>,
+    /// The document whose lexer states `highlighter` holds.
+    highlighted: u64,
     /// Laid out for the rows around the viewport only.
     pub projection: Projection,
     pub viewport: Rect,
@@ -205,9 +212,9 @@ pub struct App {
     help_scroll: usize,
     reload_prompt_visible: Cell<bool>,
     last_disk_change: Option<ExternalChange>,
-    word_count: Cell<Option<(u64, usize)>>,
+    word_count: Cell<Option<(Version, usize)>>,
     /// The smallest indentation step of a revision, for indent guides.
-    indent_unit: Cell<Option<(u64, Option<usize>)>>,
+    indent_unit: Cell<Option<(Version, Option<usize>)>>,
     last_input: std::time::Instant,
     pub should_exit: bool,
     message: String,
@@ -462,23 +469,26 @@ impl App {
         self.markdown && !self.large
     }
 
-    /// Code highlighting comes from `highlighter`, a window at a time.
+    /// One parse per revision gives rendering, the snapshot, and the
+    /// outline. Code highlighting comes from `highlighter`, a window at a time.
     fn analysis(&self) -> Parsed {
         let revision = self.document.revision();
-        let snapshot = if self.markdown_analysis() {
-            self.document.markdown()
-        } else {
-            MarkdownSnapshot {
-                revision,
-                ..MarkdownSnapshot::default()
-            }
+        if self.markdown_analysis() {
+            return Parsed::markdown(self.document.text(), revision);
+        }
+        let snapshot = MarkdownSnapshot {
+            revision,
+            ..MarkdownSnapshot::default()
         };
-        Parsed::new(
-            self.document.text(),
-            snapshot,
-            self.markdown_analysis(),
-            None,
-        )
+        Parsed::new(self.document.text(), snapshot, false, None)
+    }
+
+    /// The headings of the current revision, from the shared analysis; `None`
+    /// when the document has no Markdown analysis.
+    pub(crate) fn outline(&mut self) -> Option<&[crate::projection::OutlineEntry]> {
+        self.ensure_parsed();
+        self.markdown_analysis()
+            .then_some(self.parsed.outline.as_slice())
     }
 
     /// Re-evaluate large-file mode, highlighting, and analysis after the
@@ -503,6 +513,7 @@ impl App {
             _ => None,
         };
         self.parsed = self.analysis();
+        self.analyzed = self.version();
         self.layout_key = None;
     }
 
@@ -512,12 +523,18 @@ impl App {
         if (self.large && length < LARGE_FILE_EXIT) || (!self.large && length > LARGE_FILE) {
             self.refresh_mode();
         }
-        if self.parsed.snapshot.revision != self.document.revision()
+        if self.analyzed != self.version()
             || self.parsed.theme != theme::current_theme()
             || self.parsed.icons != crate::icons::current()
         {
             self.parsed = self.analysis();
+            self.analyzed = self.version();
         }
+    }
+
+    /// Identifies the text: the document and its revision.
+    fn version(&self) -> Version {
+        (self.document.id(), self.document.revision())
     }
 
     fn new(text: String, file: Option<FileState>, markdown: bool) -> Self {
@@ -530,7 +547,9 @@ impl App {
             language: None,
             large: false,
             parsed: Parsed::stale(),
+            analyzed: (u64::MAX, u64::MAX),
             highlighter: None,
+            highlighted: u64::MAX,
             projection: Projection::default(),
             viewport: Rect::default(),
             scroll: 0,
@@ -689,7 +708,7 @@ impl App {
             Vec::new()
         };
         (
-            self.document.revision(),
+            self.version(),
             disclosed,
             self.layout_width(),
             live,
@@ -717,6 +736,11 @@ impl App {
         }
         let start = document.line_start(line);
         if let Some(highlighter) = &mut self.highlighter {
+            if self.highlighted != document.id() {
+                // Saved lexer states belong to another document.
+                *highlighter = Highlighter::new(highlighter.language());
+                self.highlighted = document.id();
+            }
             // Every source line is at least one row in code views.
             let last = document
                 .line_index(through.min(text.len()))
@@ -732,7 +756,7 @@ impl App {
                 .and_then(|revision| document.first_change_since(revision))
                 .unwrap_or(usize::MAX);
             let skip = milli::markdown::bom_len(text);
-            let spans = highlighter.window(text, skip, key.0, unchanged, start, end);
+            let spans = highlighter.window(text, skip, key.0.1, unchanged, start, end);
             self.parsed.set_code_spans(spans);
         }
         self.projection = Projection::window(
@@ -1065,7 +1089,7 @@ impl App {
                 if shift || alt || !self.markdown_analysis() {
                     self.document.literal_newline();
                 } else {
-                    self.document.enter_with(&self.parsed.snapshot);
+                    self.markdown_enter();
                 }
                 self.preferred_column = None;
             }
@@ -1097,6 +1121,12 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    /// Markdown Enter, reusing this revision's analysis instead of parsing.
+    fn markdown_enter(&mut self) -> bool {
+        self.ensure_parsed();
+        self.document.enter_with(&self.parsed.snapshot)
     }
 
     fn finish_gesture(&mut self) {
@@ -1960,7 +1990,7 @@ impl App {
 
     /// The document's smallest indentation, as a guide step from 2 to 8.
     fn indent_unit(&self) -> Option<usize> {
-        let revision = self.document.revision();
+        let revision = self.version();
         if let Some((cached, unit)) = self.indent_unit.get()
             && cached == revision
         {
@@ -2271,7 +2301,7 @@ impl App {
     /// a small size the count from an earlier revision stands while typing;
     /// `idle` brings it up to date when input pauses.
     fn source_word_count(&self) -> usize {
-        let revision = self.document.revision();
+        let revision = self.version();
         match self.word_count.get() {
             Some((cached, count))
                 if cached == revision || self.document.text().len() > EAGER_WORD_COUNT =>
@@ -2291,7 +2321,7 @@ impl App {
         if self.last_input.elapsed() < std::time::Duration::from_millis(250) {
             return false;
         }
-        let revision = self.document.revision();
+        let revision = self.version();
         if self.large
             || !self
                 .word_count

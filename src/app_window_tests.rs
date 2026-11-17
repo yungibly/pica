@@ -385,6 +385,40 @@ fn enter_reuses_the_drawn_analysis() {
 
 #[test]
 #[ignore]
+fn probe_parse_costs() {
+    use std::time::Instant;
+    let path = std::env::var("PROBE").unwrap();
+    let text = std::fs::read_to_string(&path).unwrap();
+    let time = |label: &str, f: &mut dyn FnMut()| {
+        f();
+        let t = Instant::now();
+        for _ in 0..10 {
+            f();
+        }
+        eprintln!("{label}: {:?}", t.elapsed() / 10);
+    };
+    time("snapshot", &mut || {
+        std::hint::black_box(milli::markdown::analyze(&text, 0));
+    });
+    let snapshot = milli::markdown::analyze(&text, 0);
+    time("parsed", &mut || {
+        std::hint::black_box(Parsed::new(&text, snapshot.clone(), true, None));
+    });
+    time("parsed with snapshot", &mut || {
+        std::hint::black_box(Parsed::markdown(&text, 0));
+    });
+    time("pulldown", &mut || {
+        let input = milli::markdown::parser_input(&text);
+        let parser = pulldown_cmark::Parser::new_ext(&input, milli::markdown::options());
+        std::hint::black_box(parser.into_offset_iter().count());
+    });
+    time("words", &mut || {
+        std::hint::black_box(text.unicode_words().count());
+    });
+}
+
+#[test]
+#[ignore]
 fn probe_frame_costs() {
     use std::time::Instant;
     let path = std::env::var("PROBE").unwrap();

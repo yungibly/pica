@@ -835,12 +835,15 @@ pub struct Document {
     lines: LineIndex,
     /// The first changed byte of each recent revision, oldest first.
     edits: VecDeque<(u64, usize)>,
+    id: u64,
 }
 
 impl Document {
     pub fn new(text: impl Into<String>) -> Self {
+        static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let text = text.into();
         Self {
+            id: NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             saved_text: text.clone(),
             has_saved_baseline: true,
             state: State {
@@ -914,6 +917,11 @@ impl Document {
     }
     pub fn revision(&self) -> u64 {
         self.revision
+    }
+    /// Distinguishes documents, whose revisions each start at zero, so a
+    /// cache keyed by `(id, revision)` never mistakes one for another.
+    pub fn id(&self) -> u64 {
+        self.id
     }
     pub fn is_dirty(&self) -> bool {
         !self.has_saved_baseline || self.state.text != self.saved_text
@@ -1531,15 +1539,26 @@ fn delta(old: &str, new: &str) -> (usize, usize, usize) {
     (prefix, old.len() - suffix, new.len() - suffix)
 }
 
-/// Grapheme boundaries come from local context, so finding one costs the
-/// same anywhere in a document.
-fn is_boundary(text: &str, offset: usize) -> bool {
-    offset == text.len()
-        || (offset < text.len()
-            && text.is_char_boundary(offset)
-            && GraphemeCursor::new(offset, text.len(), true)
-                .is_boundary(text, 0)
-                .unwrap_or(false))
+/// Whether `offset` is an extended grapheme boundary of `text`. Boundaries
+/// come from local context, so finding one costs the same anywhere in a
+/// document; between two ASCII characters other than CRLF there always is
+/// one.
+pub fn is_boundary(text: &str, offset: usize) -> bool {
+    let bytes = text.as_bytes();
+    if offset == 0 || offset == bytes.len() {
+        return true;
+    }
+    if offset > bytes.len() {
+        return false;
+    }
+    let (before, after) = (bytes[offset - 1], bytes[offset]);
+    if before.is_ascii() && after.is_ascii() {
+        return !(before == b'\r' && after == b'\n');
+    }
+    text.is_char_boundary(offset)
+        && GraphemeCursor::new(offset, text.len(), true)
+            .is_boundary(text, 0)
+            .unwrap_or(false)
 }
 
 fn floor_boundary(text: &str, offset: usize) -> usize {

@@ -309,10 +309,11 @@ impl Workspace {
         }
     }
 
-    /// Parse headings for the visible outline. Large files have none unless
-    /// `requested`, as by the heading picker; a hidden outline is not parsed.
+    /// Headings for the visible outline, from the editor's own analysis.
+    /// Large files have none unless `requested`, as by the heading picker,
+    /// which parses them once; a hidden outline is not refreshed.
     fn refresh_outline(&mut self, requested: bool) {
-        let tab = &self.tabs[self.active];
+        let tab = &mut self.tabs[self.active];
         if !requested && !self.sidebar.visible(self.area, tab.editor.is_markdown()) {
             // Forget the outline rather than keep one for another revision.
             self.sidebar.headings.clear();
@@ -324,12 +325,21 @@ impl Workspace {
         } else {
             tab.editor.markdown_analysis()
         };
-        self.sidebar.refresh(
-            tab.number,
-            tab.editor.document.revision(),
-            markdown,
-            tab.editor.document.text(),
-        );
+        let (number, revision) = (tab.number, tab.editor.document.revision());
+        let editor = &mut tab.editor;
+        self.sidebar.refresh(number, revision, markdown, || {
+            if let Some(outline) = editor.outline() {
+                return outline
+                    .iter()
+                    .map(|entry| sidebar::Heading {
+                        title: entry.title.clone(),
+                        level: entry.level,
+                        offset: entry.offset,
+                    })
+                    .collect();
+            }
+            sidebar::headings(editor.document.text())
+        });
     }
 
     fn open_palette(&mut self, line_mode: bool) {

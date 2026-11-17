@@ -123,28 +123,51 @@ pub fn parser_input(text: &str) -> Cow<'_, str> {
 }
 
 pub fn analyze(text: &str, revision: u64) -> MarkdownSnapshot {
-    let mut snapshot = MarkdownSnapshot {
-        revision,
-        ..Default::default()
-    };
-    let mut items = Vec::<Range<usize>>::new();
+    let mut builder = SnapshotBuilder::new(text, revision);
     let bom_len = bom_len(text);
     let input = parser_input(&text[bom_len..]);
     for (event, raw_range) in Parser::new_ext(&input, options()).into_offset_iter() {
-        let range = raw_range.start + bom_len..raw_range.end + bom_len;
+        builder.event(&event, raw_range.start + bom_len..raw_range.end + bom_len);
+    }
+    builder.finish()
+}
+
+/// Builds a snapshot from parser events, so another pass over the same
+/// events can produce one without parsing again.
+pub struct SnapshotBuilder<'a> {
+    text: &'a str,
+    snapshot: MarkdownSnapshot,
+    items: Vec<Range<usize>>,
+}
+
+impl<'a> SnapshotBuilder<'a> {
+    pub fn new(text: &'a str, revision: u64) -> Self {
+        Self {
+            text,
+            snapshot: MarkdownSnapshot {
+                revision,
+                ..Default::default()
+            },
+            items: Vec::new(),
+        }
+    }
+
+    /// One event from `Parser::new_ext(parser_input(..), options())`, with
+    /// its range rebased past any BOM.
+    pub fn event(&mut self, event: &Event, range: Range<usize>) {
         let kind = match event {
             Event::Start(Tag::Paragraph) => Some(BlockKind::Paragraph),
-            Event::Start(Tag::Heading { level, .. }) => Some(BlockKind::Heading(level as u8)),
+            Event::Start(Tag::Heading { level, .. }) => Some(BlockKind::Heading(*level as u8)),
             Event::Start(Tag::Item) => {
-                items.push(range.clone());
+                self.items.push(range.clone());
                 Some(BlockKind::ListItem)
             }
             Event::End(TagEnd::Item) => {
-                items.pop();
+                self.items.pop();
                 None
             }
             Event::Code(_) => {
-                snapshot.code_spans.push(range.clone());
+                self.snapshot.code_spans.push(range.clone());
                 None
             }
             Event::Start(Tag::CodeBlock(_)) => Some(BlockKind::Code),
@@ -154,19 +177,19 @@ pub fn analyze(text: &str, revision: u64) -> MarkdownSnapshot {
             Event::Start(Tag::MetadataBlock(_)) => Some(BlockKind::Metadata),
             Event::Rule => Some(BlockKind::Rule),
             Event::TaskListMarker(checked) => {
-                if let Some(item_range) = items.last() {
-                    let raw = &text[range.clone()];
+                if let Some(item_range) = self.items.last() {
+                    let raw = &self.text[range.clone()];
                     if let Some(index) = raw
                         .as_bytes()
                         .windows(3)
                         .position(|w| matches!(w, b"[ ]" | b"[x]" | b"[X]"))
                     {
                         let marker = range.start + index + 1;
-                        snapshot.tasks.push(Task {
+                        self.snapshot.tasks.push(Task {
                             marker_range: marker..marker + 1,
                             item_range: item_range.clone(),
-                            checked,
-                            revision,
+                            checked: *checked,
+                            revision: self.snapshot.revision,
                         });
                     }
                 }
@@ -175,10 +198,13 @@ pub fn analyze(text: &str, revision: u64) -> MarkdownSnapshot {
             _ => None,
         };
         if let Some(kind) = kind {
-            snapshot.blocks.push(Block { range, kind });
+            self.snapshot.blocks.push(Block { range, kind });
         }
     }
-    snapshot
+
+    pub fn finish(self) -> MarkdownSnapshot {
+        self.snapshot
+    }
 }
 
 pub fn bom_len(text: &str) -> usize {

@@ -84,13 +84,21 @@ impl Sidebar {
         self.hits.clear();
     }
 
-    pub fn refresh(&mut self, number: usize, revision: u64, markdown: bool, source: &str) {
+    /// Replace the outline when the document, revision, or mode changed;
+    /// `headings` supplies a Markdown document's headings.
+    pub fn refresh(
+        &mut self,
+        number: usize,
+        revision: u64,
+        markdown: bool,
+        headings: impl FnOnce() -> Vec<Heading>,
+    ) {
         let key = (number, revision, markdown);
         if self.key != Some(key) {
             if self.key.is_none_or(|old| old.0 != number) {
                 self.scroll = 0;
             }
-            self.headings = if markdown { headings(source) } else { vec![] };
+            self.headings = if markdown { headings() } else { vec![] };
             self.key = Some(key);
             self.hits.clear();
         }
