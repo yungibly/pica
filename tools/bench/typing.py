@@ -2,7 +2,7 @@
 """Keystroke latency in a real pseudo-terminal.
 
 Each edit is timed from the write of its key bytes to the first output byte
-and to the completed redraw: the end of the synchronized update that milli
+and to the completed redraw: the end of the synchronized update that pica
 wraps around every frame (CSI ? 2026 l). Typing, Enter, Backspace, and undo
 are measured at the start, middle, and end of every file, on a scratch copy.
 
@@ -232,7 +232,7 @@ def measure(binary, path, label, args, ops, positions, samples, warmup, size, rs
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument(
-        "--binary", help="default: target/release/pica, else target/release/milli"
+        "--binary", help="default: target/release/pica, else target/release/pica"
     )
     parser.add_argument("--size", default="120x40", help="COLUMNSxROWS")
     parser.add_argument("--samples", type=int, default=15, help="rounds per position")
@@ -248,15 +248,15 @@ def main():
     binary = options.binary or next(
         (
             path
-            for path in ("target/release/pica", "target/release/milli")
+            for path in ("target/release/pica", "target/release/pica")
             if os.path.exists(path)
         ),
-        "target/release/milli",
+        "target/release/pica",
     )
     binary = os.path.abspath(binary)
     ops = options.ops.split(",")
     positions = options.positions.split(",")
-    scratch = tempfile.mkdtemp(prefix="milli-bench-")
+    scratch = tempfile.mkdtemp(prefix="pica-bench-")
     print(f"binary {binary} · {columns}x{rows} · {options.samples} rounds · ms p50 p95")
     print(f"{'file':<22}{'where':<8}{'operation':<11}{'first byte':>14}{'redraw':>14}")
     try:

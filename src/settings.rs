@@ -45,26 +45,20 @@ fn directories_under(config: &Path, state: &Path) -> io::Result<(PathBuf, PathBu
     Ok((app_directory(config)?, app_directory(state)?))
 }
 
-/// Select existing roots without creating, migrating, or deleting anything.
-/// The newest name wins even when empty, then each earlier product name
-/// (`eymi`, then `marklane`) in turn. Only a genuinely absent path permits
-/// fallback; errors and non-directory entries must not silently split user data.
+/// The `pica` root, existing or not; nothing is created, migrated, or
+/// deleted. Directories of earlier product names are left alone. A path that
+/// exists but is not a real directory is an error rather than a silent split.
 fn app_directory(base: &Path) -> io::Result<PathBuf> {
-    for name in ["milli", "eymi", "marklane"] {
-        let path = base.join(name);
-        match fs::symlink_metadata(&path) {
-            Ok(metadata) if metadata.file_type().is_dir() => return Ok(path),
-            Ok(_) => {
-                return Err(io::Error::other(format!(
-                    "Preferences and recovery path must be a real directory: {}",
-                    path.display()
-                )));
-            }
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error),
-        }
+    let path = base.join("pica");
+    match fs::symlink_metadata(&path) {
+        Ok(metadata) if metadata.file_type().is_dir() => Ok(path),
+        Ok(_) => Err(io::Error::other(format!(
+            "Preferences and recovery path must be a real directory: {}",
+            path.display()
+        ))),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(path),
+        Err(error) => Err(error),
     }
-    Ok(base.join("milli"))
 }
 
 fn read(path: &Path) -> io::Result<Option<Vec<u8>>> {
@@ -280,143 +274,70 @@ fn writable_permissions(path: &Path) -> io::Result<Option<fs::Permissions>> {
 mod tests {
     use super::*;
     #[test]
-    fn absent_roots_select_milli_without_creating_directories() {
+    fn earlier_product_directories_are_ignored_and_left_untouched() {
+        let directory = tempfile::tempdir().unwrap();
+        let config = directory.path().join("config");
+        let state = directory.path().join("state");
+        for name in ["eymi", "marklane"] {
+            fs::create_dir_all(config.join(name)).unwrap();
+            fs::create_dir_all(state.join(name).join("recovery")).unwrap();
+            fs::write(
+                config.join(name).join("settings.conf"),
+                "version=1\ntheme=nord\n",
+            )
+            .unwrap();
+        }
+        let (chosen_config, chosen_state) = directories_under(&config, &state).unwrap();
+        assert_eq!(
+            (chosen_config.clone(), chosen_state),
+            (config.join("pica"), state.join("pica"))
+        );
+        assert_eq!(Settings::load(&chosen_config).unwrap().theme(), None);
+        for name in ["eymi", "marklane"] {
+            assert_eq!(
+                fs::read_to_string(config.join(name).join("settings.conf")).unwrap(),
+                "version=1\ntheme=nord\n"
+            );
+        }
+        assert!(!config.join("pica").exists());
+    }
+
+    #[test]
+    fn a_root_that_is_not_a_real_directory_is_an_error() {
+        let directory = tempfile::tempdir().unwrap();
+        let base = directory.path();
+        fs::write(base.join("pica"), "keep file").unwrap();
+        assert!(app_directory(base).is_err());
+        assert_eq!(fs::read_to_string(base.join("pica")).unwrap(), "keep file");
+        assert!(app_directory(&base.join("pica/child")).is_err());
+        fs::remove_file(base.join("pica")).unwrap();
+        #[cfg(unix)]
+        for dangling in [false, true] {
+            let target = base.join("target");
+            if !dangling {
+                fs::create_dir(&target).unwrap();
+            }
+            std::os::unix::fs::symlink(&target, base.join("pica")).unwrap();
+            assert!(app_directory(base).is_err());
+            fs::remove_file(base.join("pica")).unwrap();
+            if !dangling {
+                assert_eq!(fs::read_dir(&target).unwrap().count(), 0);
+                fs::remove_dir(&target).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn absent_roots_select_pica_without_creating_directories() {
         let directory = tempfile::tempdir().unwrap();
         let config = directory.path().join("config");
         let state = directory.path().join("state");
         assert_eq!(
             directories_under(&config, &state).unwrap(),
-            (config.join("milli"), state.join("milli"))
+            (config.join("pica"), state.join("pica"))
         );
         assert!(!config.exists());
         assert!(!state.exists());
-    }
-
-    #[test]
-    fn legacy_roots_are_selected_independently_without_migration() {
-        for config_new in [false, true] {
-            for state_new in [false, true] {
-                let directory = tempfile::tempdir().unwrap();
-                let config = directory.path().join("config");
-                let state = directory.path().join("state");
-                fs::create_dir_all(config.join("marklane")).unwrap();
-                fs::create_dir_all(state.join("marklane/recovery")).unwrap();
-                let preferences = config.join("marklane/settings.conf");
-                let snapshot = state.join("marklane/recovery/retained.snapshot");
-                fs::write(&preferences, "version=1\ntheme=light\nicons=nerd\n").unwrap();
-                fs::write(&snapshot, b"legacy snapshot remains untouched").unwrap();
-                if config_new {
-                    fs::create_dir(config.join("milli")).unwrap();
-                }
-                if state_new {
-                    fs::create_dir(state.join("milli")).unwrap();
-                }
-                let (chosen_config, chosen_state) = directories_under(&config, &state).unwrap();
-                assert_eq!(
-                    chosen_config,
-                    config.join(if config_new { "milli" } else { "marklane" })
-                );
-                assert_eq!(
-                    chosen_state,
-                    state.join(if state_new { "milli" } else { "marklane" })
-                );
-                let settings = Settings::load(&chosen_config).unwrap();
-                assert_eq!(
-                    settings.theme(),
-                    if config_new { None } else { Some(Theme::Light) }
-                );
-                assert_eq!(
-                    settings.icons(),
-                    if config_new {
-                        None
-                    } else {
-                        Some(IconSet::Nerd)
-                    }
-                );
-                assert_eq!(
-                    fs::read_to_string(&preferences).unwrap(),
-                    "version=1\ntheme=light\nicons=nerd\n"
-                );
-                assert_eq!(
-                    fs::read(&snapshot).unwrap(),
-                    b"legacy snapshot remains untouched"
-                );
-                assert_eq!(config.join("milli").exists(), config_new);
-                assert_eq!(state.join("milli").exists(), state_new);
-                assert!(!config.join("milli/settings.conf").exists());
-            }
-        }
-    }
-
-    #[test]
-    fn earlier_names_are_found_in_order_and_the_newest_name_wins() {
-        let directory = tempfile::tempdir().unwrap();
-        let base = directory.path();
-        fs::create_dir(base.join("marklane")).unwrap();
-        assert_eq!(app_directory(base).unwrap(), base.join("marklane"));
-        fs::create_dir(base.join("eymi")).unwrap();
-        fs::write(base.join("eymi/settings.conf"), "version=1\ntheme=nord\n").unwrap();
-        assert_eq!(app_directory(base).unwrap(), base.join("eymi"));
-        assert_eq!(
-            Settings::load(&base.join("eymi")).unwrap().theme(),
-            Theme::from_name("nord")
-        );
-        fs::create_dir(base.join("milli")).unwrap();
-        assert_eq!(app_directory(base).unwrap(), base.join("milli"));
-        assert!(base.join("eymi/settings.conf").exists());
-        assert!(base.join("marklane").exists());
-    }
-
-    #[test]
-    fn conflicting_root_files_and_lookup_errors_do_not_trigger_fallback() {
-        let directory = tempfile::tempdir().unwrap();
-        let base = directory.path();
-        fs::create_dir(base.join("marklane")).unwrap();
-        fs::write(base.join("milli"), "keep file").unwrap();
-        assert!(app_directory(base).is_err());
-        assert_eq!(fs::read_to_string(base.join("milli")).unwrap(), "keep file");
-        assert!(app_directory(&base.join("milli/child")).is_err());
-        fs::remove_file(base.join("milli")).unwrap();
-        fs::remove_dir(base.join("marklane")).unwrap();
-        fs::write(base.join("marklane"), "keep legacy file").unwrap();
-        assert!(app_directory(base).is_err());
-        assert!(!base.join("milli").exists());
-        assert_eq!(
-            fs::read_to_string(base.join("marklane")).unwrap(),
-            "keep legacy file"
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn root_symlinks_are_not_followed_or_treated_as_absent() {
-        use std::os::unix::fs::symlink;
-        for name in ["milli", "marklane"] {
-            for dangling in [false, true] {
-                let directory = tempfile::tempdir().unwrap();
-                let base = directory.path().join("base");
-                let target = directory.path().join("target");
-                fs::create_dir(&base).unwrap();
-                if !dangling {
-                    fs::create_dir(&target).unwrap();
-                }
-                symlink(&target, base.join(name)).unwrap();
-                if name == "milli" {
-                    fs::create_dir(base.join("marklane")).unwrap();
-                }
-                assert!(app_directory(&base).is_err());
-                assert!(
-                    fs::symlink_metadata(base.join(name))
-                        .unwrap()
-                        .file_type()
-                        .is_symlink()
-                );
-                assert_eq!(target.exists(), !dangling);
-                if !dangling {
-                    assert_eq!(fs::read_dir(&target).unwrap().count(), 0);
-                }
-            }
-        }
     }
 
     #[test]

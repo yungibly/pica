@@ -58,9 +58,9 @@ Use a copy of the fixture so experiments do not modify the repository's example:
 
 ```sh
 cargo build --locked
-milli_demo_dir="$(mktemp -d)"
-cp tests/ui/demo.md "$milli_demo_dir/demo.md"
-./target/debug/milli "$milli_demo_dir/demo.md"
+pica_demo_dir="$(mktemp -d)"
+cp tests/ui/demo.md "$pica_demo_dir/demo.md"
+./target/debug/pica "$pica_demo_dir/demo.md"
 ```
 
 Record the terminal name/version and whether a multiplexer or SSH is involved. A single initial local terminal is enough to start; additional combinations remain unverified until tried.
@@ -72,7 +72,7 @@ Record the terminal name/version and whether a multiplexer or SSH is involved. A
 5. **Wrapping and Unicode.** Resize to a narrow pane. Check Home/End and Up/Down on a wrapped paragraph, and place the caret around `界`, combining accents, and emoji. The caret should remain visible and match the source position being edited.
 6. **Save and exit.** Ctrl+S saves the scratch copy. Ctrl+Q exits; with unsaved changes, Y saves and exits, N discards and exits, and Escape returns to editing. After exit, the shell should echo input normally and show its cursor, with mouse capture disabled.
 
-For an untitled document, run `./target/debug/milli`. Ctrl+S opens Save As; F4 also opens Save As. This prototype requires a new filename for Save As and protects existing targets from overwrite.
+For an untitled document, run `./target/debug/pica`. Ctrl+S opens Save As; F4 also opens Save As. This prototype requires a new filename for Save As and protects existing targets from overwrite.
 
 Alt+Enter inserts a literal newline in Markdown. Ctrl+T toggles the task containing the caret. F1 shows current controls. Native terminal bindings can intercept a shortcut; report the terminal and the exact key that failed rather than assuming the editor received it.
 
@@ -83,7 +83,7 @@ Use the scratch file above after rebuilding. The initial manual pass need not be
 1. Click the spaces immediately beside a rendered checkbox, then its label. Repeat Enter after exiting a bullet, number, or task list; type a plain paragraph afterward.
 2. Ctrl+F opens Find. Search for text in a link destination: the selected result should reveal its Markdown source. Enter/F3 advances, Shift+Enter/Shift+F3 goes backward, and Escape returns to the document. Matching is literal and case-sensitive.
 3. Ctrl+R opens Find/Replace. Tab switches between Find and With and selects that field's text. Enter in Find navigates; Enter in With replaces one result and advances. Click Replace All or press Alt+A to replace all. Press Escape then Ctrl+Z: one undo restores the original document. Ctrl+Z while a text field is focused undoes that field's input.
-4. In a local session, copy a harmless selected sentence with Ctrl+C and paste into another app. Copy a different harmless sentence there and use Ctrl+V in milli. Check cut/paste/undo as well. Empty or nontext clipboard content must leave selected document text intact. A native backend error switches the session to an explicitly reported internal clipboard; terminal paste still works. Restart to retry native access. SSH sessions use the internal clipboard and terminal paste.
+4. In a local session, copy a harmless selected sentence with Ctrl+C and paste into another app. Copy a different harmless sentence there and use Ctrl+V in pica. Check cut/paste/undo as well. Empty or nontext clipboard content must leave selected document text intact. A native backend error switches the session to an explicitly reported internal clipboard; terminal paste still works. Restart to retry native access. SSH sessions use the internal clipboard and terminal paste.
 
 Native clipboard delivery is a manual check. Automated fake-backend tests exercise failures, timeouts, source fidelity, and no-op empty paste without accessing the user's actual clipboard. Native Wayland clipboard support and OSC 52 are deferred; the selected Linux backend uses X11, where availability also depends on the desktop session.
 
@@ -131,19 +131,19 @@ Include the starting fixture or a minimal text sample, the exact input sequence,
 ## Verification record
 
 - **Public release `v0.2.1`**, September 24, 2026, ships commit `2f80e97`.
-  [CI](https://github.com/yungibly/milli/actions/runs/35973616461) passes all four
+  [CI](https://github.com/yungibly/pica/actions/runs/35973616461) passes all four
   Linux/macOS × stable/1.89 jobs. The
-  [native release workflow](https://github.com/yungibly/milli/actions/runs/35973817712)
+  [native release workflow](https://github.com/yungibly/pica/actions/runs/35973817712)
   passes on Apple Silicon, Intel macOS, and Linux x86_64, including the 377 Rust
   tests on macOS and 376 on Linux, 19 package/Homebrew regressions, attribution
   checks, optimized builds, and extracted-archive smoke tests. Before
   publication, the downloaded draft archives matched `SHA256SUMS` and passed
-  `package.py verify`, and the Apple Silicon binary reported `milli 0.2.1` and
+  `package.py verify`, and the Apple Silicon binary reported `pica 0.2.1` and
   rendered a headerless table with wrapped rows and a code block without
   changing the file's bytes.
-- [Homebrew verification](https://github.com/yungibly/milli/actions/runs/35974597706)
+- [Homebrew verification](https://github.com/yungibly/pica/actions/runs/35974597706)
   passes `brew install` and `brew test` on macOS arm64, macOS Intel, and Linux
-  x86_64 before updating the tap. The live `Formula/milli.rb` matches a locally
+  x86_64 before updating the tap. The live `Formula/pica.rb` matches a locally
   generated formula byte-for-byte, and its checksums match the release's
   `SHA256SUMS`. Dependency notices still cover 70 macOS or 68 Linux locked
   packages; no dependency changed since `v0.1.0`.
@@ -167,19 +167,19 @@ Include the starting fixture or a minimal text sample, the exact input sequence,
   exports fail. The workflows suite now recognizes its fixture by a sentence
   that stays in view after a heading jump.
 - **Public release `v0.2.0`**, September 22, 2026, ships commit `2c5fadb`.
-  [CI](https://github.com/yungibly/milli/actions/runs/35808147599) passes all four
+  [CI](https://github.com/yungibly/pica/actions/runs/35808147599) passes all four
   Linux/macOS × stable/1.89 jobs. The
-  [native release workflow](https://github.com/yungibly/milli/actions/runs/35808271377)
+  [native release workflow](https://github.com/yungibly/pica/actions/runs/35808271377)
   passes on Apple Silicon, Intel macOS, and Linux x86_64, including the 368 Rust
   tests, 19 package/Homebrew regressions, attribution checks, optimized builds,
   and extracted-archive version/help/theme/snapshot smoke tests. Before
   publication, the downloaded draft archives matched `SHA256SUMS` and passed
-  `package.py verify`, and the Apple Silicon binary reported `milli 0.2.0` and
+  `package.py verify`, and the Apple Silicon binary reported `pica 0.2.0` and
   rendered a table and code block without changing the file's bytes.
-- [Homebrew verification](https://github.com/yungibly/milli/actions/runs/35808607212)
+- [Homebrew verification](https://github.com/yungibly/pica/actions/runs/35808607212)
   installs the published archives anonymously and passes `brew install` and
   `brew test` on macOS arm64, macOS Intel, and Linux x86_64 before updating the
-  tap. The live `Formula/milli.rb` matches a locally generated formula
+  tap. The live `Formula/pica.rb` matches a locally generated formula
   byte-for-byte, and its checksums match the release's `SHA256SUMS`. Dependency
   notices still cover 70 macOS or 68 Linux locked packages; no dependency
   changed since `v0.1.0`.
@@ -223,37 +223,37 @@ Include the starting fixture or a minimal text sample, the exact input sequence,
   optimized build. Native Ghostty rendering, IME, and native clipboard
   remain manual checks.
 - **Public release `v0.1.0`**, September 22, 2026, ships commit `306dd12`.
-  [CI](https://github.com/yungibly/milli/actions/runs/35737489994) passes all four
+  [CI](https://github.com/yungibly/pica/actions/runs/35737489994) passes all four
   Linux/macOS × stable/1.89 jobs. The
-  [native release workflow](https://github.com/yungibly/milli/actions/runs/35737769797)
+  [native release workflow](https://github.com/yungibly/pica/actions/runs/35737769797)
   passes on Apple Silicon, Intel macOS, and Linux x86_64, including the 307 Rust
   tests, 19 package/Homebrew regressions, attribution checks, optimized builds,
   and extracted-archive version/help/theme/snapshot smoke tests. The three
   uploaded archives and their exact contents/checksums were independently
   verified before publication.
-- [Homebrew verification](https://github.com/yungibly/milli/actions/runs/35738337830)
+- [Homebrew verification](https://github.com/yungibly/pica/actions/runs/35738337830)
   downloads the published archives anonymously, passes `brew install` and
   `brew test` on macOS arm64, macOS Intel, and Linux x86_64, then updates the tap.
-  The live `Formula/milli.rb` matches the locally generated, checked formula
-  byte-for-byte. Install with `brew install yungibly/tap/milli`.
+  The live `Formula/pica.rb` matches the locally generated, checked formula
+  byte-for-byte. Install with `brew install yungibly/tap/pica`.
 - Release dependency notice bundles cover 70 macOS or 68 Linux locked packages.
   An independent audit compared every bundled notice with its crate source or
   checksum-pinned override. macOS binaries report deployment target 11.0;
   the GNU/Linux binary was built and tested on Ubuntu 22.04. Native older-macOS
   and additional Linux distribution coverage remain outside these runs.
-  [Release assets and SHA256SUMS](https://github.com/yungibly/milli/releases/tag/v0.1.0)
+  [Release assets and SHA256SUMS](https://github.com/yungibly/pica/releases/tag/v0.1.0)
   are the authoritative distributed bytes.
-- milli feature and rename checkpoint, September 22, 2026: **307 tests** pass
+- pica feature and rename checkpoint, September 22, 2026: **307 tests** pass
   on macOS with both Rust 1.89.0 and Rust 1.98.0 (69 core, 227 app/helpers,
   6 CLI, 5 real-process PTY). Formatting, strict all-target Clippy, whitespace
   checks, and debug/release builds pass. New coverage includes fuzzy document
   and parsed-heading navigation, source-preserving line move/duplicate and
   undo, the clickable new-document button, legacy preference-root selection,
   byte-compatible recovery records, and recovery through an actual restarted
-  milli process using legacy state.
+  pica process using legacy state.
 - The renamed executable passes **245 terminal assertions with 32 PNGs and
-  no export failures**: 77 in `target/visual-milli-workflows/workflows/` and
-  168 in `target/visual-milli-chrome/chrome/`. Compact and wide captures were
+  no export failures**: 77 in `target/visual-pica-workflows/workflows/` and
+  168 in `target/visual-pica-chrome/chrome/`. Compact and wide captures were
   inspected, including the document picker and the single-row tab/status
   layout. Both runs use debug SHA-256
   `25d18a50ec0d9c9f9112af1da28fa7ce1a3b199f929e7400c067c01932c74e23`.

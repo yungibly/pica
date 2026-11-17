@@ -1023,11 +1023,11 @@ mod tests {
             assert!(output.status.success(), "{output:?}");
             String::from_utf8(output.stdout).unwrap()
         };
-        xattr(&["-w", "org.milli.test", "kept"]);
+        xattr(&["-w", "org.pica.test", "kept"]);
         let (_, mut file) = FileState::open(path.clone()).unwrap();
         file.save("changed").unwrap();
         assert_eq!(fs::read(&path).unwrap(), b"changed");
-        assert_eq!(xattr(&["-p", "org.milli.test"]).trim(), "kept");
+        assert_eq!(xattr(&["-p", "org.pica.test"]).trim(), "kept");
     }
 
     #[test]

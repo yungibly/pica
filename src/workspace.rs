@@ -1120,7 +1120,7 @@ impl Workspace {
             } else {
                 body.push(Line::from(Span::styled(
                     if self.tabs.len() == 1 {
-                        "This is the last tab; milli quits after it closes."
+                        "This is the last tab; pica quits after it closes."
                     } else {
                         "Only this document will close."
                     },
@@ -1773,7 +1773,7 @@ mod tests {
         assert!(app.pending.is_none());
         assert!(!app.should_exit);
         assert_eq!(app.editor().document.text(), "draft");
-        // A browser opened over nothing, as `milli folder/` does, quits.
+        // A browser opened over nothing, as `pica folder/` does, quits.
         let mut app = Workspace::open(None).unwrap();
         ctrl(&mut app, 'o');
         assert!(app.browser.is_some());
@@ -1915,7 +1915,7 @@ mod tests {
     #[test]
     fn sidebar_defaults_are_responsive_without_stealing_editor_input() {
         let mut app = Workspace::open(None).unwrap();
-        app.editor_mut().document = milli::Document::new("# First\n\n## Second\n");
+        app.editor_mut().document = pica::Document::new("# First\n\n## Second\n");
         // The outline is opt-in at every size.
         for (width, height) in [(42, 16), (80, 24), (120, 36), (160, 45)] {
             draw(&mut app, width, height);
@@ -1959,7 +1959,7 @@ mod tests {
             "a paragraph\n\n".repeat(80)
         );
         let target = source.find("最後").unwrap();
-        app.editor_mut().document = milli::Document::new(source.clone());
+        app.editor_mut().document = pica::Document::new(source.clone());
         draw(&mut app, 120, 36);
         key(&mut app, KeyCode::F(9), KeyModifiers::NONE);
         key(&mut app, KeyCode::End, KeyModifiers::NONE);
@@ -1990,7 +1990,7 @@ mod tests {
         let mut app = Workspace::open(None).unwrap();
         let filler = "a paragraph\n\n".repeat(40);
         let source = format!("# One\n\n{filler}## Two\n\n{filler}");
-        app.editor_mut().document = milli::Document::new(source.clone());
+        app.editor_mut().document = pica::Document::new(source.clone());
         app.sidebar.preference = Some(true);
         draw(&mut app, 120, 36);
         let two = app
@@ -2046,7 +2046,7 @@ mod tests {
     #[test]
     fn sidebar_explicit_toggle_and_resize_discard_stale_hits() {
         let mut app = Workspace::open(None).unwrap();
-        app.editor_mut().document = milli::Document::new("# One\n\n## Two\n");
+        app.editor_mut().document = pica::Document::new("# One\n\n## Two\n");
         draw(&mut app, 80, 24);
         key(&mut app, KeyCode::F(9), KeyModifiers::NONE);
         draw(&mut app, 80, 24);
@@ -2189,7 +2189,7 @@ mod tests {
     fn go_to_line_handles_all_newlines_clamps_eof_and_preserves_source() {
         let mut app = Workspace::open(None).unwrap();
         let source = "one\r\n界 two\rthree\nfour";
-        app.editor_mut().document = milli::Document::new(source);
+        app.editor_mut().document = pica::Document::new(source);
         for (line, offset) in [(1, 0), (2, 5), (3, 13), (4, 19), (999, source.len())] {
             ctrl(&mut app, 'l');
             app.handle_event(Event::Paste(line.to_string()));
@@ -2209,7 +2209,7 @@ mod tests {
     #[test]
     fn palette_theme_changes_both_chrome_and_body_without_editing_source() {
         let mut app = Workspace::open(None).unwrap();
-        app.editor_mut().document = milli::Document::new("# Theme\n");
+        app.editor_mut().document = pica::Document::new("# Theme\n");
         let old_theme = crate::theme::current_theme();
         let before = draw(&mut app, 120, 36).backend().buffer()[(0, 0)].bg;
         palette_query(&mut app, "theme", 120, 36);
@@ -2265,7 +2265,7 @@ mod tests {
     #[test]
     fn modal_draws_over_sidebar_and_blocks_hidden_targets() {
         let mut app = Workspace::open(None).unwrap();
-        app.editor_mut().document = milli::Document::new("# One\n\n## Two\n");
+        app.editor_mut().document = pica::Document::new("# One\n\n## Two\n");
         app.sidebar.preference = Some(true);
         draw(&mut app, 120, 36);
         let target = app
@@ -2277,7 +2277,7 @@ mod tests {
             .0;
         key(&mut app, KeyCode::F(1), KeyModifiers::NONE);
         let text = crate::simulation::snapshot(&mut app, 120, 36).unwrap();
-        assert!(text.contains("milli · Help"));
+        assert!(text.contains("pica · Help"));
         assert!(app.sidebar.hits.is_empty());
         assert!(app.tab_hits.is_empty());
         click_rect(&mut app, target);
@@ -2306,7 +2306,7 @@ mod tests {
     #[test]
     fn scrolling_sidebar_does_not_capture_keyboard_focus() {
         let mut app = Workspace::open(None).unwrap();
-        app.editor_mut().document = milli::Document::new("# Heading\n\n".repeat(30));
+        app.editor_mut().document = pica::Document::new("# Heading\n\n".repeat(30));
         draw(&mut app, 120, 16);
         app.handle_event(Event::Mouse(MouseEvent {
             kind: MouseEventKind::ScrollDown,

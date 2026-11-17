@@ -22,9 +22,9 @@ fixture limit. Paths and the executable hash are in the
 Variable-size headings remain deferred: Kitty renders the OSC 66 text
 sizing protocol, but Ghostty 1.3.1 only parses it.
 
-## September 22 milli release checkpoint
+## September 22 pica release checkpoint
 
-The renamed milli executable adds a clickable new-document button, fuzzy
+The renamed pica executable adds a clickable new-document button, fuzzy
 document/heading navigation, and source-preserving line move/duplicate commands.
 The new workflows suite passes 77 assertions with 16 PNGs; the final chrome
 suite adds 168 assertions and 16 PNGs. Compact and wide captures were inspected

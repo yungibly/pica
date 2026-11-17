@@ -23,7 +23,7 @@ const MAX_BYTES: usize = 8 * 1024 * 1024;
 
 fn main() {
     if let Err(error) = run() {
-        eprintln!("milli: {error}");
+        eprintln!("pica: {error}");
         std::process::exit(1);
     }
 }
@@ -35,7 +35,7 @@ fn run() -> io::Result<()> {
             return Ok(());
         }
         cli::Action::Version => {
-            println!("milli {}", env!("CARGO_PKG_VERSION"));
+            println!("pica {}", env!("CARGO_PKG_VERSION"));
             return Ok(());
         }
         cli::Action::ListThemes => {
@@ -69,7 +69,7 @@ fn run() -> io::Result<()> {
             }
         });
     }
-    // Like micro, piped input with no file opens as a buffer: `cmd | milli`.
+    // Like micro, piped input with no file opens as a buffer: `cmd | pica`.
     if items.is_empty() && stdin_is_piped() {
         read_stdin = true;
         items.push(workspace::Launch::Piped(stdin_text()?, options.position));

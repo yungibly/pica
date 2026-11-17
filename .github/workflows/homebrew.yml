@@ -33,12 +33,12 @@ jobs:
           RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
         run: |
           python3 tools/release/homebrew.py fetch --tag "$RELEASE_TAG" --output release-assets
-          python3 tools/release/homebrew.py render --tag "$RELEASE_TAG" --archives release-assets --output formula/milli.rb
-          ruby -c formula/milli.rb
+          python3 tools/release/homebrew.py render --tag "$RELEASE_TAG" --archives release-assets --output formula/pica.rb
+          ruby -c formula/pica.rb
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: homebrew-formula
-          path: formula/milli.rb
+          path: formula/pica.rb
           if-no-files-found: error
 
   install:
@@ -66,10 +66,10 @@ jobs:
         run: |
           tap="$(brew --repository)/Library/Taps/yungibly/homebrew-release-test"
           mkdir -p "$tap/Formula"
-          cp formula/milli.rb "$tap/Formula/milli.rb"
+          cp formula/pica.rb "$tap/Formula/pica.rb"
           git -C "$tap" init
-          brew install yungibly/release-test/milli
-          brew test yungibly/release-test/milli
+          brew install yungibly/release-test/pica
+          brew test yungibly/release-test/pica
 
   update:
     name: Update yungibly/tap
@@ -89,4 +89,4 @@ jobs:
         env:
           RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
           BREW_TAP_TOKEN: ${{ secrets.BREW_TAP_TOKEN }}
-        run: python3 tools/release/homebrew.py update --tag "$RELEASE_TAG" --formula formula/milli.rb
+        run: python3 tools/release/homebrew.py update --tag "$RELEASE_TAG" --formula formula/pica.rb

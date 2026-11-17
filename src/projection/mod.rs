@@ -6,10 +6,10 @@ mod parse;
 #[cfg(test)]
 mod tests;
 
-#[cfg(test)]
-use milli::Selection;
-use milli::markdown::Task;
 pub use parse::{OutlineEntry, Parsed, code_styles};
+#[cfg(test)]
+use pica::Selection;
+use pica::markdown::Task;
 use ratatui::style::{Color, Style};
 use std::{fmt, ops::Range};
 

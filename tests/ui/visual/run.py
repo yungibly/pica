@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Replay milli's bounded real-executable visual/protocol scenarios.
+"""Replay pica's bounded real-executable visual/protocol scenarios.
 
-python3 tests/ui/visual/run.py --tool /path/to/tui-test --binary /path/to/milli \
+python3 tests/ui/visual/run.py --tool /path/to/tui-test --binary /path/to/pica \
     --output target/visual-baseline --keyboard baseline
 
 Use --keyboard enhanced for the terminal fix; --suite captures lets the UI
@@ -439,7 +439,7 @@ def chrome(session):
         session.check(len(in_footer) == 1 and len(filenames) == 1 + len(in_header) and len(in_header) == int(header),
                       "The status line names the document once; tabs repeat it only beside the outline: " + label,
                       filename=name, occurrences=len(filenames))
-        wordmarks = list(find_cells(cells, "milli", casefold=True))
+        wordmarks = list(find_cells(cells, "pica", casefold=True))
         session.check(not wordmarks, "No wordmark competes with the document: " + label)
         if labels:
             session.check(labels[0][0]["y"] == 0 and (not in_header or labels[0][-1]["x"] < in_header[0][0]["x"]),

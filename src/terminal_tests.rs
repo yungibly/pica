@@ -172,7 +172,7 @@ fn panic_cleanup_and_previous_hook_are_isolated_from_other_tests() {
                 "terminal::tests::panic_hook_probe",
                 "--nocapture",
             ])
-            .env("MILLI_TERMINAL_HOOK_PROBE", mode)
+            .env("PICA_TERMINAL_HOOK_PROBE", mode)
             .output()
             .unwrap();
         assert!(result.status.success(), "{mode}: {result:?}");
@@ -187,7 +187,7 @@ fn panic_cleanup_and_previous_hook_are_isolated_from_other_tests() {
 // interfere with concurrently running application tests.
 #[test]
 fn panic_hook_probe() {
-    let Ok(mode) = std::env::var("MILLI_TERMINAL_HOOK_PROBE") else {
+    let Ok(mode) = std::env::var("PICA_TERMINAL_HOOK_PROBE") else {
         return;
     };
     std::panic::set_hook(Box::new(|_| {

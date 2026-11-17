@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify published milli archives, render the formula, and update one tap file.
+"""Verify published pica archives, render the formula, and update one tap file.
 
 Fetching is anonymous. Only the update command reads BREW_TAP_TOKEN, and that
 credential is sent solely to the fixed GitHub API endpoint for our tap.
@@ -18,7 +18,7 @@ import sys
 import urllib.error
 import urllib.request
 
-REPOSITORY = "yungibly/milli"
+REPOSITORY = "yungibly/pica"
 TAP = "yungibly/homebrew-tap"
 TARGETS = (
     "aarch64-apple-darwin",
@@ -40,7 +40,7 @@ def version_from_tag(tag: str) -> str:
 
 def archive_names(tag: str) -> list[str]:
     version = version_from_tag(tag)
-    return [f"milli-{version}-{target}.tar.gz" for target in TARGETS]
+    return [f"pica-{version}-{target}.tar.gz" for target in TARGETS]
 
 
 def checksums(text: str, tag: str) -> dict[str, str]:
@@ -75,12 +75,12 @@ def render_formula(tag: str, hashes: dict[str, str]) -> str:
     hashes = checksums("\n".join(f"{value}  {key}" for key, value in hashes.items()), tag)
 
     def download(target: str, indent: int) -> str:
-        name = f"milli-{version}-{target}.tar.gz"
+        name = f"pica-{version}-{target}.tar.gz"
         prefix = " " * indent
         url = f"https://github.com/{REPOSITORY}/releases/download/{tag}/{name}"
         return f'{prefix}url "{url}"\n{prefix}sha256 "{hashes[name]}"'
 
-    return f'''class Milli < Formula
+    return f'''class Pica < Formula
   desc "Small terminal text editor with micro-style keys and live Markdown"
   homepage "https://github.com/{REPOSITORY}"
   version "{version}"
@@ -101,19 +101,19 @@ def render_formula(tag: str, hashes: dict[str, str]) -> str:
   end
 
   def install
-    bin.install "milli"
+    bin.install "pica"
     doc.install "README.md", "LICENSE"
     (pkgshare/"third_party").install "third_party/iterm2-themes", "third_party/rust"
   end
 
   test do
-    assert_equal "milli #{{version}}\\n", shell_output("#{{bin}}/milli --version")
+    assert_equal "pica #{{version}}\\n", shell_output("#{{bin}}/pica --version")
     source = "# Homebrew\\n\\n- [ ] Keep source.\\n"
     (testpath/"note.md").write(source)
-    output = shell_output("#{{bin}}/milli --no-state --snapshot --theme dark #{{testpath}}/note.md")
+    output = shell_output("#{{bin}}/pica --no-state --snapshot --theme dark #{{testpath}}/note.md")
     assert_match "Homebrew", output
     assert_equal source, (testpath/"note.md").read
-    assert_match "Catppuccin Mocha", shell_output("#{{bin}}/milli --list-themes")
+    assert_match "Catppuccin Mocha", shell_output("#{{bin}}/pica --list-themes")
   end
 end
 '''
@@ -121,7 +121,7 @@ end
 
 def request_bytes(url: str, *, limit: int, data: bytes | None = None,
                   token: str | None = None) -> bytes:
-    headers = {"User-Agent": "milli-release", "Accept": "application/vnd.github+json"}
+    headers = {"User-Agent": "pica-release", "Accept": "application/vnd.github+json"}
     if token:
         headers["Authorization"] = f"Bearer {token}"
         headers["X-GitHub-Api-Version"] = "2022-11-28"
@@ -180,11 +180,11 @@ def update_tap(formula: Path, tag: str) -> None:
     urls = re.findall(r'url "([^"\n]+)"\n +sha256 "([0-9a-f]{64})"', proposed)
     hashes = {url.rsplit("/", 1)[-1]: digest for url, digest in urls}
     if proposed != render_formula(tag, hashes):
-        raise ReleaseError("Tap update requires the exact generated milli formula")
+        raise ReleaseError("Tap update requires the exact generated pica formula")
     token = os.environ.get("BREW_TAP_TOKEN")
     if not token:
         raise ReleaseError("BREW_TAP_TOKEN is required for a tap update")
-    endpoint = f"https://api.github.com/repos/{TAP}/contents/Formula/milli.rb"
+    endpoint = f"https://api.github.com/repos/{TAP}/contents/Formula/pica.rb"
     for attempt in range(3):
         try:
             item = json.loads(request_bytes(endpoint + "?ref=main", limit=256 * 1024, token=token))
@@ -200,7 +200,7 @@ def update_tap(formula: Path, tag: str) -> None:
             print("Tap already contains this release or a newer version.")
             return
         payload = {
-            "message": f"milli v{version}", "branch": "main",
+            "message": f"pica v{version}", "branch": "main",
             "content": base64.b64encode(proposed.encode()).decode("ascii"),
             "committer": {"name": "github-actions[bot]",
                           "email": "41898282+github-actions[bot]@users.noreply.github.com"},
@@ -210,7 +210,7 @@ def update_tap(formula: Path, tag: str) -> None:
         try:
             request_bytes(endpoint, limit=256 * 1024, token=token,
                           data=json.dumps(payload).encode())
-            print(f"Updated {TAP}/Formula/milli.rb to {version}.")
+            print(f"Updated {TAP}/Formula/pica.rb to {version}.")
             return
         except urllib.error.HTTPError as error:
             # Compare-and-swap protects concurrent tap releases without rewriting history.
@@ -225,7 +225,7 @@ def main() -> int:
     fetch = commands.add_parser("fetch", help="Download and verify a public stable release")
     fetch.add_argument("--tag", required=True)
     fetch.add_argument("--output", type=Path, required=True)
-    render = commands.add_parser("render", help="Verify local archives and render Formula/milli.rb")
+    render = commands.add_parser("render", help="Verify local archives and render Formula/pica.rb")
     render.add_argument("--tag", required=True)
     render.add_argument("--archives", type=Path, required=True)
     render.add_argument("--output", type=Path, required=True)

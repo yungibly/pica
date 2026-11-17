@@ -1,14 +1,14 @@
-# Releasing milli
+# Releasing pica
 
-The product and executable are **milli** / **`milli`**. The source repository is
-[`yungibly/milli`](https://github.com/yungibly/milli), and the binary formula lives
+The product and executable are **pica** / **`pica`**. The source repository is
+[`yungibly/pica`](https://github.com/yungibly/pica), and the binary formula lives
 in [`yungibly/homebrew-tap`](https://github.com/yungibly/homebrew-tap).
 The source uses the MIT license. Theme and dependency licenses accompany every
-binary archive and are installed by the formula under milli's shared data directory.
+binary archive and are installed by the formula under pica's shared data directory.
 
 Releases through `v0.2.1` shipped as **Eymi** from `yungibly/eymi`; GitHub
 redirects those URLs to this repository, and their archives keep the `eymi-`
-prefix. `v0.3.0` is the first release named milli.
+prefix. `v0.3.0` is the first release named pica.
 
 ## CI and supported packages
 
@@ -51,8 +51,8 @@ outside this compatibility claim. Linux ARM and Windows have no release asset.
    does not trigger a second release workflow; use the maintainer account or
    dispatch **Homebrew** explicitly afterward.
 
-Each archive is named `milli-{version}-{target}.tar.gz`, without the tag's `v`.
-Its root contains `milli`, `README.md`, `LICENSE`, the full
+Each archive is named `pica-{version}-{target}.tar.gz`, without the tag's `v`.
+Its root contains `pica`, `README.md`, `LICENSE`, the full
 `third_party/iterm2-themes/` provenance tree, and `third_party/rust/` with the
 dependency notice manifest and texts. Packaging normalizes tar/gzip metadata
 and refuses to overwrite existing output. This does not claim byte-identical
@@ -65,7 +65,7 @@ python3 -m unittest discover -s tools/release -p 'test_*.py'
 python3 tools/release/package.py validate --tag v0.1.0
 python3 tools/release/notices.py --target aarch64-apple-darwin --output target/rust-notices
 python3 tools/release/package.py pack --tag v0.1.0 --target aarch64-apple-darwin \
-  --binary target/release/milli --notices target/rust-notices \
+  --binary target/release/pica --notices target/rust-notices \
   --output-dir target/packages --epoch 0
 ```
 
@@ -80,18 +80,18 @@ dispatch accepts an already published stable tag and is suitable for retrying
 a failed tap update.
 
 First it downloads the three archives and `SHA256SUMS` anonymously from the
-fixed milli repository. It validates the exact asset names and archive bytes,
-then generates `Formula/milli.rb`. Separate native Homebrew jobs install the
+fixed pica repository. It validates the exact asset names and archive bytes,
+then generates `Formula/pica.rb`. Separate native Homebrew jobs install the
 public archives and run the formula's version/theme/snapshot test. Only after
 all three pass does the updater receive `BREW_TAP_TOKEN`.
 
-The updater changes only `Formula/milli.rb` on the tap's `main` branch. GitHub's
+The updater changes only `Formula/pica.rb` on the tap's `main` branch. GitHub's
 Contents API performs a bounded compare-and-swap retry for concurrent changes;
 it does not replace tap history. Repeating the same formula is a no-op. An
 older release cannot roll back a newer formula, and changed contents for an
 already released version are rejected.
 
-Configure `BREW_TAP_TOKEN` as an Actions secret in the milli repository, with
+Configure `BREW_TAP_TOKEN` as an Actions secret in the pica repository, with
 contents-write access to `yungibly/homebrew-tap`. The root `.env` is a local,
 ignored setup input; workflows never read or upload it. PR jobs receive no tap
 credential. Do not put the token in commands, logs, formulae, or archives.
@@ -104,20 +104,16 @@ The platform DSL follows the [Homebrew Formula Cookbook](https://docs.brew.sh/Fo
 GitHub documents [release events](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#release)
 and [workflow-token event behavior](https://docs.github.com/en/actions/how-tos/writing-workflows/choosing-when-your-workflow-runs/triggering-a-workflow#triggering-a-workflow-from-a-workflow).
 
-## Renaming a formula
+## Renaming the formula
 
-The tap renames a formula in one commit that deletes the old file, keeps the
-new one, and maps the old name in `formula_renames.json` at the tap root, as
-[Homebrew documents](https://docs.brew.sh/Rename-A-Formula). `brew upgrade`
-then migrates existing installations to the new name. For the Eymi rename:
+`v0.3.0` renamed Eymi to pica without a migration. After the **Homebrew**
+workflow publishes `Formula/pica.rb`, a maintainer removes `Formula/eymi.rb`
+from `yungibly/homebrew-tap` in a separate commit; the workflow itself only
+ever writes the current formula. Installations move by hand:
+`brew uninstall eymi && brew install yungibly/tap/pica`. A future rename with
+users to carry along should instead map the old name in the tap's
+`formula_renames.json`, as [Homebrew documents](https://docs.brew.sh/Rename-A-Formula),
+so `brew upgrade` migrates installations.
 
-1. Let the **Homebrew** workflow verify and publish `Formula/milli.rb` for the
-   first milli release; it never touches other files.
-2. In `yungibly/homebrew-tap`, commit `milli: renamed from eymi`, deleting
-   `Formula/eymi.rb` and adding `formula_renames.json` containing
-   `{"eymi": "milli"}`. Keep earlier names mapped directly to the newest one if
-   the formula is ever renamed again.
-
-Preferences and recovery snapshots need no migration: milli reads an existing
-`eymi`, then `marklane`, directory when its own is absent.
-
+pica reads preferences and recovery snapshots only from its own `pica`
+directories; Eymi's are left untouched.

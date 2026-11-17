@@ -1,12 +1,12 @@
 [package]
-name = "milli"
+name = "pica"
 version = "0.3.0"
 edition = "2024"
 rust-version = "1.89"
 description = "A small terminal text editor in the nano and micro family, with Markdown rendered as you write"
 license = "MIT"
-repository = "https://github.com/yungibly/milli"
-homepage = "https://github.com/yungibly/milli"
+repository = "https://github.com/yungibly/pica"
+homepage = "https://github.com/yungibly/pica"
 
 [dependencies]
 arboard = { version = "3.6", default-features = false }

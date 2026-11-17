@@ -4,7 +4,7 @@
 //! their Candidates are dropped. Snapshot generations are published and synced
 //! before older generations are retired, so failed updates retain the last good
 //! checkpoint. Drop deliberately preserves snapshots; use finish_clean explicitly.
-use milli::Selection;
+use pica::Selection;
 use std::{
     collections::{BTreeMap, HashMap},
     ffi::OsString,
@@ -1242,7 +1242,7 @@ mod tests {
 
     #[test]
     fn crash_writer_subprocess() {
-        let Some(root) = std::env::var_os("MILLI_RECOVERY_TEST_ROOT") else {
+        let Some(root) = std::env::var_os("PICA_RECOVERY_TEST_ROOT") else {
             return;
         };
         let mut store = Store::open(root).unwrap();
@@ -1250,7 +1250,7 @@ mod tests {
             .checkpoint(8, &snapshot("survives an abrupt exit"))
             .unwrap();
         fs::write(
-            std::env::var_os("MILLI_RECOVERY_TEST_READY").unwrap(),
+            std::env::var_os("PICA_RECOVERY_TEST_READY").unwrap(),
             b"ready",
         )
         .unwrap();
@@ -1282,8 +1282,8 @@ mod tests {
                     "recovery::tests::crash_writer_subprocess",
                     "--nocapture",
                 ])
-                .env("MILLI_RECOVERY_TEST_ROOT", &root)
-                .env("MILLI_RECOVERY_TEST_READY", &ready)
+                .env("PICA_RECOVERY_TEST_ROOT", &root)
+                .env("PICA_RECOVERY_TEST_READY", &ready)
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
                 .spawn()

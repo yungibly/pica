@@ -1,5 +1,5 @@
 //! Search panel state; authoritative matching/replacement stays in Document.
-use milli::{Document, Selection};
+use pica::{Document, Selection};
 use ratatui::layout::Rect;
 use std::ops::Range;
 

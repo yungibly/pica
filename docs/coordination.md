@@ -1,17 +1,17 @@
-# milli implementation coordination
+# pica implementation coordination
 
-Confirmed product name: **milli**. Command and Cargo package/binary name: **`milli`**. The older checkpoints below retain their historical names and decisions.
+Confirmed product name: **pica**. Command and Cargo package/binary name: **`pica`**. The older checkpoints below retain their historical names and decisions.
 
 ## Final features and distribution — September 22, 2026
 
-The user confirmed milli and the MIT license after a final usability pass.
+The user confirmed pica and the MIT license after a final usability pass.
 Three agents again used isolated worktrees, with the coordinator integrating
 reviewed commits into the main checkout.
 
 | Owner | Integrated scope |
 | --- | --- |
 | Editor surface | Clickable new-document button; native CI and release packaging |
-| Editing core | Source-preserving line movement/duplication; milli rename and legacy settings/recovery compatibility |
+| Editing core | Source-preserving line movement/duplication; pica rename and legacy settings/recovery compatibility |
 | Workspace review | Neovim workflow research, navigation review, tap and package attribution audit |
 | Coordinator | Fuzzy open-document/heading pickers, MIT metadata, Homebrew integration, final verification and release |
 

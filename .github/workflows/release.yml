@@ -100,29 +100,29 @@ jobs:
       - name: Package without overwriting assets
         run: |
           python3 tools/release/package.py pack --tag "$RELEASE_TAG" --target "$RELEASE_TARGET" \
-            --binary "target/$RELEASE_TARGET/release/milli" --notices "$RUNNER_TEMP/rust-notices" \
+            --binary "target/$RELEASE_TARGET/release/pica" --notices "$RUNNER_TEMP/rust-notices" \
             --output-dir dist --epoch "$(git show -s --format=%ct HEAD)"
       - name: Smoke-test the extracted final package
         run: |
-          unpack="$RUNNER_TEMP/milli-package-smoke"
+          unpack="$RUNNER_TEMP/pica-package-smoke"
           mkdir "$unpack"
-          tar -xzf "dist/milli-$RELEASE_VERSION-$RELEASE_TARGET.tar.gz" -C "$unpack"
-          test "$("$unpack/milli" --version)" = "milli $RELEASE_VERSION"
-          "$unpack/milli" --help > "$RUNNER_TEMP/milli-help.txt"
-          "$unpack/milli" --list-themes > "$RUNNER_TEMP/milli-themes.txt"
-          test -s "$RUNNER_TEMP/milli-themes.txt"
+          tar -xzf "dist/pica-$RELEASE_VERSION-$RELEASE_TARGET.tar.gz" -C "$unpack"
+          test "$("$unpack/pica" --version)" = "pica $RELEASE_VERSION"
+          "$unpack/pica" --help > "$RUNNER_TEMP/pica-help.txt"
+          "$unpack/pica" --list-themes > "$RUNNER_TEMP/pica-themes.txt"
+          test -s "$RUNNER_TEMP/pica-themes.txt"
           printf '# Package smoke\n\nOriginal Markdown bytes.\n' > "$unpack/smoke.md"
-          cp "$unpack/smoke.md" "$RUNNER_TEMP/milli-smoke-original.md"
-          "$unpack/milli" --snapshot --snapshot-size 80x24 --theme dark "$unpack/smoke.md" > "$RUNNER_TEMP/milli-snapshot.txt"
-          grep -q 'Package smoke' "$RUNNER_TEMP/milli-snapshot.txt"
-          cmp "$unpack/smoke.md" "$RUNNER_TEMP/milli-smoke-original.md"
-          file "$unpack/milli"
+          cp "$unpack/smoke.md" "$RUNNER_TEMP/pica-smoke-original.md"
+          "$unpack/pica" --snapshot --snapshot-size 80x24 --theme dark "$unpack/smoke.md" > "$RUNNER_TEMP/pica-snapshot.txt"
+          grep -q 'Package smoke' "$RUNNER_TEMP/pica-snapshot.txt"
+          cmp "$unpack/smoke.md" "$RUNNER_TEMP/pica-smoke-original.md"
+          file "$unpack/pica"
           if [[ "$RUNNER_OS" == Linux ]]; then
-            ldd "$unpack/milli"
-            readelf --version-info "$unpack/milli" | grep 'GLIBC_'
+            ldd "$unpack/pica"
+            readelf --version-info "$unpack/pica" | grep 'GLIBC_'
           else
-            otool -L "$unpack/milli"
-            xcrun vtool -show-build "$unpack/milli"
+            otool -L "$unpack/pica"
+            xcrun vtool -show-build "$unpack/pica"
           fi
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -197,4 +197,4 @@ jobs:
             exit 1
           fi
           gh release create "$RELEASE_TAG" dist/*.tar.gz dist/SHA256SUMS \
-            --draft --verify-tag --title "milli $RELEASE_TAG" --generate-notes
+            --draft --verify-tag --title "pica $RELEASE_TAG" --generate-notes

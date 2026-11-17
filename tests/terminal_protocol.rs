@@ -21,7 +21,7 @@ const POP: &[u8] = b"\x1b[<1u";
 const LEAVE: &[u8] = b"\x1b[?1049l";
 const SAVE: &[u8] = b"\x1b[115;5u";
 const QUIT: &[u8] = b"\x1b[113;5u";
-const EXITED: &[u8] = b"MILLI_EXIT=0";
+const EXITED: &[u8] = b"PICA_EXIT=0";
 
 fn count(bytes: &[u8], sequence: &[u8]) -> usize {
     bytes
@@ -110,9 +110,9 @@ impl Session {
         let mut command = Command::new("/bin/sh");
         command.args([
             "-c",
-            "\"$@\"\neditor_status=$?\nprintf '\\nMILLI_EXIT=%s\\n' \"$editor_status\"\nIFS= read -r release_line\nexit \"$editor_status\"",
-            "milli-protocol",
-            env!("CARGO_BIN_EXE_milli"),
+            "\"$@\"\neditor_status=$?\nprintf '\\nPICA_EXIT=%s\\n' \"$editor_status\"\nIFS= read -r release_line\nexit \"$editor_status\"",
+            "pica-protocol",
+            env!("CARGO_BIN_EXE_pica"),
         ]);
         if let Some(state) = state {
             command
@@ -362,16 +362,18 @@ fn crash_recovery_and_saved_themes_survive_a_real_process_restart() {
 }
 
 #[test]
-fn existing_legacy_preferences_and_recovery_survive_an_milli_restart() {
+fn earlier_product_directories_do_not_capture_a_pica_restart() {
     recovery_restart(true);
 }
 
 fn recovery_restart(legacy: bool) {
     let state = tempfile::tempdir().unwrap();
-    let app_directory = if legacy { "marklane" } else { "milli" };
+    let app_directory = "pica";
     if legacy {
-        fs::create_dir_all(state.path().join("config/marklane")).unwrap();
-        fs::create_dir_all(state.path().join("state/marklane")).unwrap();
+        // Directories of earlier names are ignored, never read or changed.
+        for name in ["config/eymi", "state/eymi"] {
+            fs::create_dir_all(state.path().join(name)).unwrap();
+        }
     }
     let mut crashed = Session::start_with_state("disk baseline\n", Some(state.path()));
     // Apply a familiar built-in theme from the command palette (Ctrl+E).
@@ -452,8 +454,9 @@ fn recovery_restart(legacy: bool) {
     restored.send(QUIT);
     restored.finish();
     if legacy {
-        assert!(!state.path().join("config/milli").exists());
-        assert!(!state.path().join("state/milli").exists());
+        for name in ["config/eymi", "state/eymi"] {
+            assert_eq!(fs::read_dir(state.path().join(name)).unwrap().count(), 0);
+        }
     }
     assert!(
         fs::read_to_string(settings)

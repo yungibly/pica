@@ -6,7 +6,7 @@ use crate::{
     syntax::{self, Language, Token},
     theme::{self, Palette, Theme},
 };
-use milli::{
+use pica::{
     Selection,
     markdown::{self, BlockKind, MarkdownSnapshot},
 };
@@ -994,5 +994,5 @@ fn closing_fence(source: &str, range: &Range<usize>) -> Option<Range<usize>> {
 }
 
 fn boundary(source: &str, offset: usize) -> bool {
-    milli::document::is_boundary(source, offset)
+    pica::document::is_boundary(source, offset)
 }

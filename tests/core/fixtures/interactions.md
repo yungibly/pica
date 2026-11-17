@@ -1,4 +1,4 @@
-# milli interaction fixture
+# pica interaction fixture
 
 Write a **clear plan** with *careful edits* and a [local link](./notes.md).
 This second line belongs to the same paragraph and should disclose with it.

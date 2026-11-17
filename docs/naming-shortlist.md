@@ -18,6 +18,6 @@ Taken in the family: `nano`, `micro`, `pico` (Pine), `femto`, `atto`, `kilo` (an
 
 The check covered the official [Homebrew formula catalog](https://formulae.brew.sh/api/formula.json) and [cask catalog](https://formulae.brew.sh/api/cask.json), crates.io and npm exact names, executable PATH lookups, and web/GitHub searches. It is a practical collision screen, not a trademark or legal clearance.
 
-## Compatibility with earlier names
+## No migration from Eymi
 
-Preferences and recovery snapshots are looked up under `pica`, then `eymi`, then `marklane`, without migrating or deleting anything; the newest existing directory wins even when empty. The Homebrew tap maps `eymi` to `pica` through `formula_renames.json`, so `brew upgrade` follows the rename. GitHub redirects the old `yungibly/eymi` repository URLs.
+The owner is the only user, so nothing migrates. pica keeps its preferences and recovery snapshots under `pica` directories and ignores any `eymi` or `marklane` directories, leaving them untouched. The Homebrew tap gains `Formula/pica.rb` and drops `Formula/eymi.rb`; an existing installation is replaced with `brew uninstall eymi && brew install yungibly/tap/pica`. GitHub redirects the old `yungibly/eymi` repository URLs.

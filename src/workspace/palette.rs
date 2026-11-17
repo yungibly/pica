@@ -2,7 +2,7 @@
 use super::clipped;
 use crate::ui;
 use crossterm::event::{Event, KeyCode, KeyModifiers, MouseButton, MouseEventKind};
-use milli::Document;
+use pica::Document;
 use ratatui::{
     Frame,
     layout::Rect,
@@ -113,7 +113,7 @@ impl Command {
             Self::Documents => "Switch document…",
             Self::Headings => "Go to heading…",
             Self::Help => "Help / keyboard shortcuts",
-            Self::Quit => "Quit milli (all tabs)",
+            Self::Quit => "Quit pica (all tabs)",
             Self::Undo => "Undo edit",
             Self::Redo => "Redo edit",
             Self::CutLine => "Cut line",

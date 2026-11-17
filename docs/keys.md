@@ -1,6 +1,6 @@
 # Keys
 
-milli's default keys are micro-aligned: someone who uses micro with its
+pica's default keys are micro-aligned: someone who uses micro with its
 default settings should find the same keys doing the same things. It is not a
 clone of micro, and the differences are listed at the end. Ctrl+G shows this
 reference inside the editor, and Ctrl+E opens a searchable list of every
@@ -16,7 +16,7 @@ command with its key.
 | Alt+, / Alt+. | Previous / next tab |
 | Ctrl+PageUp / Ctrl+PageDown | Previous / next tab |
 | Ctrl+Q | Close the current tab, asking first if it has unsaved changes. Closing the last tab quits. |
-| Ctrl+E, then "Quit milli" | Quit, checking every unsaved tab |
+| Ctrl+E, then "Quit pica" | Quit, checking every unsaved tab |
 | Ctrl+E, then "Save as" | Save to a new filename |
 | Ctrl+E, then "Reload" | Reload the file from disk |
 
@@ -103,7 +103,7 @@ Ctrl+B and Alt+T do nothing in other kinds of file.
 | Ctrl+R | Line numbers on or off (micro's ruler) in code and plain text |
 
 The palette also holds the commands without a key of their own: Save as,
-Reload, Quit milli (all tabs), the outline sidebar, Switch document, Go to
+Reload, Quit pica (all tabs), the outline sidebar, Switch document, Go to
 heading, themes, icons and document recovery. In the palette, pickers and
 the go-to-line prompt, Esc or Ctrl+Q closes them without doing anything.
 
@@ -130,17 +130,17 @@ Find.
 ## Command line
 
 ```sh
-milli notes.md todo.md      # one tab each; the first is active
-milli +120 src/app.rs       # open at line 120 (also: src/app.rs +120)
-milli src/app.rs:120:5      # line and column, when no file has that name
-milli ~/projects            # open the file browser in a folder
-git log | milli             # read piped input into an unsaved buffer
-milli -                     # read standard input explicitly
+pica notes.md todo.md      # one tab each; the first is active
+pica +120 src/app.rs       # open at line 120 (also: src/app.rs +120)
+pica src/app.rs:120:5      # line and column, when no file has that name
+pica ~/projects            # open the file browser in a folder
+git log | pica             # read piped input into an unsaved buffer
+pica -                     # read standard input explicitly
 ```
 
 Saving a file opened through a symbolic link (as dotfile managers create)
 replaces the file the link pointed to when it was opened, keeping its
-permissions and the link. milli refuses to save if the link now points
+permissions and the link. pica refuses to save if the link now points
 somewhere else, if the file has other hard links, or if saving would hand
 another user's file to you.
 
@@ -149,9 +149,9 @@ another user's file to you.
 - Ctrl+E opens a command palette rather than micro's command line. It lists
   every command with its key; a number goes to that line.
 - Ctrl+B makes text bold in Markdown instead of opening a shell prompt.
-- Ctrl+W opens Find, as in nano; milli has no splits.
+- Ctrl+W opens Find, as in nano; pica has no splits.
 - Ctrl+C and Ctrl+X act on the selection only; use Ctrl+K to cut a line.
-- Alt+Shift+Up / Down duplicate lines; milli has no multiple cursors.
+- Alt+Shift+Up / Down duplicate lines; pica has no multiple cursors.
 - Ctrl+R toggles the live view in Markdown files, where the source view is
   the numbered one.
 - There are no macros (Ctrl+U, Ctrl+J), and keys cannot be rebound yet.

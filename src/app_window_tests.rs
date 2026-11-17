@@ -533,9 +533,9 @@ fn probe_parse_costs() {
         eprintln!("{label}: {:?}", t.elapsed() / 10);
     };
     time("snapshot", &mut || {
-        std::hint::black_box(milli::markdown::analyze(&text, 0));
+        std::hint::black_box(pica::markdown::analyze(&text, 0));
     });
-    let snapshot = milli::markdown::analyze(&text, 0);
+    let snapshot = pica::markdown::analyze(&text, 0);
     time("parsed", &mut || {
         std::hint::black_box(Parsed::new(&text, snapshot.clone(), true, None));
     });
@@ -543,8 +543,8 @@ fn probe_parse_costs() {
         std::hint::black_box(Parsed::markdown(&text, 0));
     });
     time("pulldown", &mut || {
-        let input = milli::markdown::parser_input(&text);
-        let parser = pulldown_cmark::Parser::new_ext(&input, milli::markdown::options());
+        let input = pica::markdown::parser_input(&text);
+        let parser = pulldown_cmark::Parser::new_ext(&input, pica::markdown::options());
         std::hint::black_box(parser.into_offset_iter().count());
     });
     time("words", &mut || {

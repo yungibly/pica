@@ -759,7 +759,7 @@ esac
 #[test]
 fn json_constructs() {
     let source = r#"{
-  "name": "milli", "version": 1.5e3, "ok": true, "none": null,
+  "name": "pica", "version": 1.5e3, "ok": true, "none": null,
   // jsonc comment
   "nested": { "list" : [1, -2, "three\n"] }, /* block */
   bare: 'single'
@@ -770,7 +770,7 @@ fn json_constructs() {
         source,
         &[
             ("\"name\"", "", PROPERTY),
-            ("\"milli\"", "", STRING),
+            ("\"pica\"", "", STRING),
             ("1.5e3", "", NUMBER),
             ("true", "", CONSTANT),
             ("null", "", CONSTANT),
@@ -792,7 +792,7 @@ fn yaml_constructs() {
     let source = r#"%YAML 1.2
 ---
 # comment
-name: milli
+name: pica
 version: 1.5
 enabled: yes
 empty: ~
@@ -825,7 +825,7 @@ flow: {a: 1, b: [x, y]}
             ("---", "", PUNCTUATION),
             ("# comment", "", COMMENT),
             ("name", "", PROPERTY),
-            ("milli", "", PLAIN),
+            ("pica", "", PLAIN),
             ("1.5", "", NUMBER),
             ("yes", "", CONSTANT),
             ("~", "", CONSTANT),

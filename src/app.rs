@@ -11,7 +11,7 @@ use crate::{
 use crossterm::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
-use milli::{BlockKind, Document, InlineStyle, MarkdownSnapshot, Selection};
+use pica::{BlockKind, Document, InlineStyle, MarkdownSnapshot, Selection};
 use ratatui::{
     Frame,
     layout::Rect,
@@ -991,7 +991,7 @@ impl App {
                 *highlighter = Highlighter::new(highlighter.language());
                 self.highlighted = id;
             }
-            let whole = milli::markdown::bom_len(text)..text.len();
+            let whole = pica::markdown::bom_len(text)..text.len();
             let changed = unchanged(highlighter);
             return crate::projection::code_styles(highlighter.window(
                 text,
@@ -1257,7 +1257,7 @@ impl App {
                 KeyCode::Char('p') => self.find_adjacent(true),
                 KeyCode::Char('k') => self.cut_line(),
                 KeyCode::Char('d') => {
-                    milli::editing::duplicate(&mut self.document);
+                    pica::editing::duplicate(&mut self.document);
                 }
                 // Legacy terminals send Ctrl+/ as 0x1F, which Crossterm reads
                 // as Ctrl+7; some send Ctrl+_. The enhanced protocol sends '/'.
@@ -1380,10 +1380,7 @@ impl App {
                 // Smart Home works on source lines: first non-blank, then
                 // column zero, alternating.
                 let head = self.document.selection().head;
-                self.move_to(
-                    milli::editing::smart_home(self.document.text(), head),
-                    shift,
-                );
+                self.move_to(pica::editing::smart_home(self.document.text(), head), shift);
                 self.preferred_column = None;
             }
             KeyCode::End => {
@@ -1402,7 +1399,7 @@ impl App {
                     self.markdown_enter();
                 } else {
                     // Code, plain text, and large-file mode never parse.
-                    milli::editing::indent_newline(&mut self.document);
+                    pica::editing::indent_newline(&mut self.document);
                 }
                 self.preferred_column = None;
             }
@@ -1460,7 +1457,7 @@ impl App {
     /// Place the caret at a 1-based line and grapheme column, clamped to the
     /// document, and bring it into view.
     pub(crate) fn go_to(&mut self, line: usize, column: usize) {
-        let offset = milli::editing::line_column_offset(self.document.text(), line, column);
+        let offset = pica::editing::line_column_offset(self.document.text(), line, column);
         self.jump_to_source(offset);
     }
 
@@ -1498,7 +1495,7 @@ impl App {
                 && selection.is_empty()
                 && *caret == selection.head
         });
-        let Some(removed) = milli::editing::cut_lines(&mut self.document) else {
+        let Some(removed) = pica::editing::cut_lines(&mut self.document) else {
             self.cut_chain = chained;
             return;
         };
@@ -1523,7 +1520,7 @@ impl App {
     fn toggle_comment(&mut self) {
         match self.comment_markers() {
             Some((open, close)) => {
-                milli::editing::toggle_comment(&mut self.document, open, close);
+                pica::editing::toggle_comment(&mut self.document, open, close);
             }
             None => self.inform("No comment syntax here"),
         }
@@ -1558,7 +1555,7 @@ impl App {
         if block.kind == BlockKind::Metadata {
             return Some(("#", ""));
         }
-        let fence = &source[milli::editing::line_range(source, block.range.start)];
+        let fence = &source[pica::editing::line_range(source, block.range.start)];
         let fence = fence.trim_start_matches(['\u{feff}', ' ', '\t', '>']);
         let marker = fence.chars().next().filter(|c| matches!(c, '`' | '~'))?;
         Language::for_fence(fence.trim_start_matches(marker)).and_then(Language::comment)
@@ -2972,7 +2969,7 @@ impl App {
         if !bar.push(Side::Left, &location, base, false) {
             bar.push(Side::Left, &format!("{line}:{col}"), base, false);
         }
-        let newline = match milli::editing::preferred_newline(self.document.text(), 0) {
+        let newline = match pica::editing::preferred_newline(self.document.text(), 0) {
             "\r\n" => "CRLF",
             "\r" => "CR",
             _ => "LF",
@@ -3097,7 +3094,7 @@ impl App {
             width,
             height,
         );
-        let inner = ui::panel(frame, rect, "milli · Help", None);
+        let inner = ui::panel(frame, rect, "pica · Help", None);
         let visible = usize::from(inner.height);
         let scroll = self.help_scroll.min(sheet.len().saturating_sub(visible));
         let column_width = inner.width.saturating_sub(2) / columns as u16;
@@ -3754,7 +3751,7 @@ mod tests {
         );
         assert!(footer.contains("Ln 2, Col 3"));
         assert!(footer.trim_end().ends_with("Ctrl+E commands · Ctrl+G help"));
-        for redundant in ["Live", "MARKDOWN", "milli", "F1", "F2", "^S", "%"] {
+        for redundant in ["Live", "MARKDOWN", "pica", "F1", "F2", "^S", "%"] {
             assert!(!footer.contains(redundant), "{footer}");
         }
         key(&mut app, KeyCode::F(6), KeyModifiers::NONE);
@@ -4146,7 +4143,7 @@ mod tests {
             if dirty {
                 app.document.insert("local ");
             }
-            app.document.set_history_limits(milli::HistoryLimits {
+            app.document.set_history_limits(pica::HistoryLimits {
                 max_entries: 0,
                 max_bytes: 0,
             });

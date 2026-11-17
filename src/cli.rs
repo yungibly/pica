@@ -5,16 +5,16 @@ use std::{
     path::{Path, PathBuf},
 };
 
-pub const HELP: &str = "milli — a small terminal text editor, at home with Markdown
+pub const HELP: &str = "pica — a small terminal text editor, at home with Markdown
 
-Usage: milli [OPTIONS] [+LINE[:COL]] [FILE]...
-       COMMAND | milli [OPTIONS]
-       milli --snapshot [--snapshot-size WxH] [OPTIONS] [FILE]...
+Usage: pica [OPTIONS] [+LINE[:COL]] [FILE]...
+       COMMAND | pica [OPTIONS]
+       pica --snapshot [--snapshot-size WxH] [OPTIONS] [FILE]...
 
 Each FILE opens in a tab; the first is active. +LINE[:COL] before or after
 a file puts the caret there, and so does FILE:LINE[:COL] when no file has
 that exact name. A folder opens the file browser there. \"-\", or input
-piped in, opens as an unsaved plain-text buffer. Without a FILE, milli
+piped in, opens as an unsaved plain-text buffer. Without a FILE, pica
 opens an untitled Markdown document. Files must be UTF-8 text, at most
 8 MiB. Put -- before names that start with a dash or a plus.
 

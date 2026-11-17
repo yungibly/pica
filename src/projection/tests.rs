@@ -1,5 +1,5 @@
 use super::*;
-use milli::Document;
+use pica::Document;
 use ratatui::style::Modifier;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;

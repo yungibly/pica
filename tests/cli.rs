@@ -5,7 +5,7 @@ use std::{
 };
 
 fn binary() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_milli"))
+    Command::new(env!("CARGO_BIN_EXE_pica"))
 }
 
 #[test]
@@ -124,8 +124,8 @@ fn icon_snapshots_use_explicit_flags_without_reading_or_changing_preferences() {
     let directory = tempfile::tempdir().unwrap();
     let config = directory.path().join("config");
     let state = directory.path().join("state");
-    fs::create_dir_all(config.join("milli")).unwrap();
-    let preferences = config.join("milli/settings.conf");
+    fs::create_dir_all(config.join("pica")).unwrap();
+    let preferences = config.join("pica/settings.conf");
     fs::write(&preferences, "version=1\nicons=nerd\n").unwrap();
     for (arguments, nerd) in [
         (vec!["--snapshot"], false),
@@ -150,13 +150,13 @@ fn icon_snapshots_use_explicit_flags_without_reading_or_changing_preferences() {
 }
 
 #[test]
-fn milli_command_branding_does_not_initialize_user_state() {
+fn pica_command_branding_does_not_initialize_user_state() {
     let directory = tempfile::tempdir().unwrap();
     let config = directory.path().join("config");
     let state = directory.path().join("state");
     for (argument, expected) in [
-        ("--help", "milli — a small terminal text editor".to_owned()),
-        ("--version", format!("milli {}", env!("CARGO_PKG_VERSION"))),
+        ("--help", "pica — a small terminal text editor".to_owned()),
+        ("--version", format!("pica {}", env!("CARGO_PKG_VERSION"))),
         ("--snapshot", " untitled ".to_owned()),
     ] {
         let output = binary()
@@ -177,7 +177,7 @@ fn milli_command_branding_does_not_initialize_user_state() {
         .output()
         .unwrap();
     assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).starts_with("milli:"));
+    assert!(String::from_utf8_lossy(&output.stderr).starts_with("pica:"));
     assert!(!config.exists());
     assert!(!state.exists());
 }
@@ -294,7 +294,7 @@ fn piped_input_rejects_binary_invalid_and_oversized_text() {
         assert!(!output.status.success());
         let error = String::from_utf8_lossy(&output.stderr);
         assert!(
-            error.starts_with("milli:") && error.contains(message),
+            error.starts_with("pica:") && error.contains(message),
             "{error}"
         );
     }

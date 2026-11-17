@@ -1,6 +1,6 @@
 # Local terminal test runner
 
-Use the pinned official standalone `tui-test` binary for bounded visual and protocol checks. It exercises the compiled application without adding dependencies to milli or requiring a Homebrew installation.
+Use the pinned official standalone `tui-test` binary for bounded visual and protocol checks. It exercises the compiled application without adding dependencies to pica or requiring a Homebrew installation.
 
 Pinned release: [`0.1.0-beta.5`](https://github.com/microsoft/tui-test/releases/tag/0.1.0-beta.5), reviewed source commit `6a991eea96d499689a875b7ee5781aa0c18b88d2`.
 
@@ -22,14 +22,14 @@ Bootstrap, SHA-256 verification, `--version`, and `--help` were checked on macOS
 
 ## Bounded executable acceptance runner
 
-The standard-library Python adapter in `session.py` drives the compiled program through a real PTY and the embedded Ghostty backend. milli's scenarios and fixtures live in `tests/ui/visual/`; the adapter contains no editor-specific behavior.
+The standard-library Python adapter in `session.py` drives the compiled program through a real PTY and the embedded Ghostty backend. pica's scenarios and fixtures live in `tests/ui/visual/`; the adapter contains no editor-specific behavior.
 
 ```sh
 cargo build --locked
-milli_tui_test="$(sh tools/tui-test/bootstrap.sh)"
+pica_tui_test="$(sh tools/tui-test/bootstrap.sh)"
 python3 tests/ui/visual/run.py \
-  --tool "$milli_tui_test" \
-  --binary target/debug/milli \
+  --tool "$pica_tui_test" \
+  --binary target/debug/pica \
   --output target/visual-current \
   --keyboard enhanced --theme dark --palette dark
 ```
@@ -60,7 +60,7 @@ The tests inspect actual cells for emphasis, wide-character placement, source se
 For a quick text-only geometry check without the PTY runner:
 
 ```sh
-./target/debug/milli --snapshot --snapshot-size 160x45 --theme light tests/ui/visual/writing.md
+./target/debug/pica --snapshot --snapshot-size 160x45 --theme light tests/ui/visual/writing.md
 ```
 
 Snapshot dimensions accept 1×1 through 400×160 and default to 80×24. Text snapshots omit colors; use the executable captures for appearance.

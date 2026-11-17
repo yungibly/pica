@@ -4,7 +4,7 @@ use crate::{
     projection::safe_text,
     theme::{chrome_palette, palette},
 };
-use milli::Document;
+use pica::Document;
 use ratatui::{
     Frame,
     layout::Rect,
