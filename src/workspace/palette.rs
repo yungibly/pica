@@ -17,8 +17,11 @@ pub(super) enum Command {
     SaveAs,
     Close,
     Find,
+    FindNext,
+    FindPrevious,
     Replace,
     View,
+    Ruler,
     Sidebar,
     NextTab,
     PreviousTab,
@@ -29,9 +32,13 @@ pub(super) enum Command {
     Quit,
     Undo,
     Redo,
+    CutLine,
+    Duplicate,
+    Comment,
     Bold,
     Italic,
     InlineCode,
+    Task,
     Indent,
     Outdent,
     MoveUp,
@@ -44,15 +51,18 @@ pub(super) enum Command {
     Recover,
 }
 impl Command {
-    pub const ALL: [Self; 31] = [
+    pub const ALL: [Self; 38] = [
         Self::New,
         Self::Open,
         Self::Save,
         Self::SaveAs,
         Self::Close,
         Self::Find,
+        Self::FindNext,
+        Self::FindPrevious,
         Self::Replace,
         Self::View,
+        Self::Ruler,
         Self::Sidebar,
         Self::NextTab,
         Self::PreviousTab,
@@ -63,9 +73,13 @@ impl Command {
         Self::Quit,
         Self::Undo,
         Self::Redo,
+        Self::CutLine,
+        Self::Duplicate,
+        Self::Comment,
         Self::Bold,
         Self::Italic,
         Self::InlineCode,
+        Self::Task,
         Self::Indent,
         Self::Outdent,
         Self::MoveUp,
@@ -79,27 +93,34 @@ impl Command {
     ];
     pub fn label(self) -> &'static str {
         match self {
-            Self::New => "New document",
+            Self::New => "New tab",
             Self::Open => "Open file…",
             Self::Save => "Save document",
             Self::SaveAs => "Save as…",
-            Self::Close => "Close document",
+            Self::Close => "Close tab",
             Self::Find => "Find in document",
+            Self::FindNext => "Find next match",
+            Self::FindPrevious => "Find previous match",
             Self::Replace => "Find and replace",
             Self::View => "Toggle live / source view",
-            Self::Sidebar => "Toggle sidebar",
-            Self::NextTab => "Next document tab",
-            Self::PreviousTab => "Previous document tab",
+            Self::Ruler => "Toggle line numbers",
+            Self::Sidebar => "Toggle outline sidebar",
+            Self::NextTab => "Next tab",
+            Self::PreviousTab => "Previous tab",
             Self::GoToLine => "Go to line…",
             Self::Documents => "Switch document…",
             Self::Headings => "Go to heading…",
             Self::Help => "Help / keyboard shortcuts",
-            Self::Quit => "Quit milli",
+            Self::Quit => "Quit milli (all tabs)",
             Self::Undo => "Undo edit",
             Self::Redo => "Redo edit",
+            Self::CutLine => "Cut line",
+            Self::Duplicate => "Duplicate line or selection",
+            Self::Comment => "Toggle comment",
             Self::Bold => "Format bold",
             Self::Italic => "Format italic",
             Self::InlineCode => "Format inline code",
+            Self::Task => "Toggle task",
             Self::Indent => "Indent selected lines",
             Self::Outdent => "Outdent selected lines",
             Self::MoveUp => "Move lines up",
@@ -112,64 +133,101 @@ impl Command {
             Self::Recover => "Recover documents…",
         }
     }
-    pub fn shortcut(self) -> &'static str {
+    /// The primary key, if any. Function keys are silent aliases and never
+    /// shown; Ctrl+R names whichever toggle it performs in this document.
+    pub fn shortcut(self, markdown: bool) -> &'static str {
         match self {
-            Self::New => "Ctrl+N",
+            Self::New => "Ctrl+T",
             Self::Open => "Ctrl+O",
             Self::Save => "Ctrl+S",
-            Self::SaveAs => "F4",
-            Self::Close => "Ctrl+W",
+            Self::Close => "Ctrl+Q",
             Self::Find => "Ctrl+F",
-            Self::Replace => "Ctrl+R",
-            Self::View => "F6",
-            Self::Sidebar => "F9 focus",
-            Self::NextTab => "F8",
-            Self::PreviousTab => "F7",
-            Self::GoToLine => "Ctrl+G",
-            Self::Documents => "F10",
-            Self::Headings => "F11",
-            Self::Help => "F1",
-            Self::Quit => "Ctrl+Q",
+            Self::FindNext => "Ctrl+N",
+            Self::FindPrevious => "Ctrl+P",
+            Self::View if markdown => "Ctrl+R",
+            Self::Ruler if !markdown => "Ctrl+R",
+            Self::NextTab => "Alt+.",
+            Self::PreviousTab => "Alt+,",
+            Self::GoToLine => "Ctrl+L",
+            Self::Help => "Ctrl+G",
             Self::Undo => "Ctrl+Z",
             Self::Redo => "Ctrl+Y",
+            Self::CutLine => "Ctrl+K",
+            Self::Duplicate => "Ctrl+D",
+            Self::Comment => "Ctrl+/",
             Self::Bold => "Ctrl+B",
             Self::Italic => "Alt+I",
             Self::InlineCode => "Alt+`",
+            Self::Task => "Alt+T",
             Self::Indent => "Ctrl+]",
             Self::Outdent => "Ctrl+[",
             Self::MoveUp => "Alt+Up",
             Self::MoveDown => "Alt+Down",
             Self::DuplicateUp => "Alt+Shift+Up",
             Self::DuplicateDown => "Alt+Shift+Down",
-            Self::Theme => "",
-            Self::Icons => "",
-            Self::Reload => "F5",
-            Self::Recover => "",
+            _ => "",
         }
     }
+}
+
+/// One row of the palette: a command, or a line typed as a bare number.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Entry {
+    Line(usize, usize),
+    Command(Command),
 }
 
 pub(super) enum Action {
     None,
     Close,
     Command(Command),
-    Line(usize),
+    Line(usize, usize),
+}
+
+/// `N` or `N:C`, as micro's `goto` accepts: a 1-based line and column.
+pub(super) fn parse_line(text: &str) -> Option<(usize, usize)> {
+    let (line, column) = match text.trim().split_once(':') {
+        Some((line, column)) => (line, Some(column)),
+        None => (text.trim(), None),
+    };
+    let digits = |text: &str| !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit());
+    if !digits(line) || column.is_some_and(|column| !digits(column)) {
+        return None;
+    }
+    let line = line.parse::<usize>().ok().filter(|line| *line > 0)?;
+    let column = match column {
+        Some(column) => column.parse::<usize>().ok().filter(|column| *column > 0)?,
+        None => 1,
+    };
+    Some((line, column))
+}
+
+impl Entry {
+    fn action(self) -> Action {
+        match self {
+            Self::Line(line, column) => Action::Line(line, column),
+            Self::Command(command) => Action::Command(command),
+        }
+    }
 }
 
 pub(super) struct Palette {
     pub query: Document,
     pub selected: usize,
     pub line_mode: bool,
-    pub hits: Vec<(Rect, Command)>,
+    /// Shortcut hints follow the active document's kind.
+    pub markdown: bool,
+    pub hits: Vec<(Rect, Entry)>,
     ready: bool,
     error: Option<&'static str>,
 }
 impl Palette {
-    pub fn new(line_mode: bool) -> Self {
+    pub fn new(line_mode: bool, markdown: bool) -> Self {
         Self {
             query: Document::new(""),
             selected: 0,
             line_mode,
+            markdown,
             hits: vec![],
             ready: false,
             error: None,
@@ -180,9 +238,18 @@ impl Palette {
         Command::ALL
             .into_iter()
             .filter(|command| {
-                let label = format!("{} {}", command.label(), command.shortcut()).to_lowercase();
+                let label = format!("{} {}", command.label(), command.shortcut(self.markdown))
+                    .to_lowercase();
                 query.split_whitespace().all(|part| label.contains(part))
             })
+            .collect()
+    }
+    /// Commands, led by a jump when the query is a bare line number.
+    pub fn entries(&self) -> Vec<Entry> {
+        parse_line(self.query.text())
+            .map(|(line, column)| Entry::Line(line, column))
+            .into_iter()
+            .chain(self.matches().into_iter().map(Entry::Command))
             .collect()
     }
     pub fn invalidate(&mut self) {
@@ -202,8 +269,9 @@ impl Palette {
             Event::Key(key) => {
                 let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
                 match key.code {
+                    // Ctrl+Q aborts the prompt, as at micro's command line.
                     KeyCode::Esc => return Action::Close,
-                    KeyCode::Char('q') if ctrl => return Action::Command(Command::Quit),
+                    KeyCode::Char('q') if ctrl => return Action::Close,
                     KeyCode::Char('a') if ctrl => self.query.select_all(),
                     KeyCode::Char('u') if ctrl => {
                         self.query.select_all();
@@ -215,17 +283,17 @@ impl Palette {
                     }
                     KeyCode::Down if !self.line_mode => {
                         self.selected =
-                            (self.selected + 1).min(self.matches().len().saturating_sub(1));
+                            (self.selected + 1).min(self.entries().len().saturating_sub(1));
                         self.hits.clear();
                     }
                     KeyCode::Enter if self.ready => {
                         if self.line_mode {
-                            match self.query.text().trim().parse::<usize>() {
-                                Ok(line) if line > 0 => return Action::Line(line),
-                                _ => self.error = Some("Enter a line number starting at 1"),
+                            match parse_line(self.query.text()) {
+                                Some((line, column)) => return Action::Line(line, column),
+                                None => self.error = Some("Enter a line, or line:column"),
                             }
-                        } else if let Some(command) = self.matches().get(self.selected) {
-                            return Action::Command(*command);
+                        } else if let Some(entry) = self.entries().get(self.selected) {
+                            return entry.action();
                         }
                     }
                     KeyCode::Left => self
@@ -257,12 +325,12 @@ impl Palette {
                 }
             }
             Event::Mouse(mouse) if mouse.kind == MouseEventKind::Down(MouseButton::Left) => {
-                if let Some((_, command)) = self
+                if let Some((_, entry)) = self
                     .hits
                     .iter()
                     .find(|(rect, _)| rect.contains((mouse.column, mouse.row).into()))
                 {
-                    return Action::Command(*command);
+                    return entry.action();
                 }
             }
             _ => {}
@@ -290,11 +358,11 @@ impl Palette {
         }
         let width = area.width.saturating_sub(4).clamp(12, 76).min(area.width);
         let max_height = area.height.saturating_sub(2).clamp(5, 19).min(area.height);
-        let commands = self.matches();
+        let entries = self.entries();
         let height = if self.line_mode {
             6.min(max_height)
         } else {
-            (commands.len() as u16 + 4).clamp(5, max_height)
+            (entries.len() as u16 + 4).clamp(5, max_height)
         };
         let rect = Rect::new(
             area.x + (area.width - width) / 2,
@@ -303,7 +371,7 @@ impl Palette {
             width,
             height,
         );
-        let count = format!("{}/{}", commands.len(), Command::ALL.len());
+        let count = format!("{}/{}", self.matches().len(), Command::ALL.len());
         let inner = ui::panel(
             frame,
             rect,
@@ -320,7 +388,7 @@ impl Palette {
             field,
             &self.query,
             if self.line_mode {
-                "Line number…"
+                "Line or line:column…"
             } else {
                 "Type to filter commands…"
             },
@@ -345,22 +413,31 @@ impl Palette {
                 Rect::new(field.x, rect.y + 3, field.width, 1),
             );
         } else {
-            self.selected = self.selected.min(commands.len().saturating_sub(1));
+            self.selected = self.selected.min(entries.len().saturating_sub(1));
             let start = self.selected.saturating_sub(available.saturating_sub(1));
             let query = self.query.text().to_owned();
-            for (row, command) in commands.iter().skip(start).take(available).enumerate() {
+            for (row, entry) in entries.iter().skip(start).take(available).enumerate() {
                 let row_rect = Rect::new(inner.x, rect.y + 3 + row as u16, inner.width, 1);
+                let (label, shortcut) = match entry {
+                    Entry::Line(line, 1) => (format!("Go to line {line}"), "Ctrl+L"),
+                    Entry::Line(line, column) => {
+                        (format!("Go to line {line}, column {column}"), "Ctrl+L")
+                    }
+                    Entry::Command(command) => {
+                        (command.label().to_owned(), command.shortcut(self.markdown))
+                    }
+                };
                 ui::item(
                     frame,
                     row_rect,
-                    command.label(),
-                    command.shortcut(),
+                    &label,
+                    shortcut,
                     start + row == self.selected,
                     &query,
                 );
-                self.hits.push((row_rect, *command));
+                self.hits.push((row_rect, *entry));
             }
-            if commands.is_empty() {
+            if entries.is_empty() {
                 frame.render_widget(
                     Paragraph::new("  No matching commands").style(ui::muted()),
                     Rect::new(inner.x, rect.y + 3, inner.width, 1),

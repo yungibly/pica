@@ -120,6 +120,27 @@ impl Language {
             .or_else(|| Self::by_extension(word))
     }
 
+    /// Markers that comment out one line: a line-comment prefix and an empty
+    /// suffix, or a wrapping pair where the language has no line comment.
+    /// Diff has none. Mostly matches micro's comment plugin; INI uses `#`,
+    /// which more of its dialects accept than `;`.
+    pub fn comment(&self) -> Option<(&'static str, &'static str)> {
+        match self.lexer {
+            Lexer::Code(grammar) => grammar
+                .line_comments
+                .first()
+                .map(|marker| (*marker, ""))
+                .or(grammar.block_comment),
+            Lexer::Json | Lexer::Scss => Some(("//", "")),
+            Lexer::Yaml | Lexer::Toml | Lexer::Ini | Lexer::Make | Lexer::Docker | Lexer::Shell => {
+                Some(("#", ""))
+            }
+            Lexer::Html | Lexer::Xml | Lexer::Markdown => Some(("<!--", "-->")),
+            Lexer::Css => Some(("/*", "*/")),
+            Lexer::Diff => None,
+        }
+    }
+
     /// All registered languages, for tests and diagnostics.
     pub fn all() -> &'static [Language] {
         &languages::LANGUAGES

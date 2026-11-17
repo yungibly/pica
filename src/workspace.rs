@@ -1,4 +1,6 @@
 //! Document workspace. Each tab owns its editor; clipboard and quit intent are session-wide.
+#[cfg(test)]
+mod keys_tests;
 mod matching;
 mod navigation;
 mod palette;
@@ -34,7 +36,6 @@ use std::{
     io,
     path::{Component, Path, PathBuf},
 };
-use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 struct Tab {
@@ -256,18 +257,14 @@ impl Workspace {
         self.pending = Some(pending);
     }
 
+    /// Close the active tab. Like micro, closing the last tab quits.
     fn close_active(&mut self) {
         self.clear_recovery(self.tabs[self.active].number);
-        self.tabs.remove(self.active);
-        if self.tabs.is_empty() {
-            self.tabs.push(Tab {
-                editor: App::open(None).expect("empty document"),
-                number: self.next_number,
-                identity: None,
-                recovered: None,
-            });
-            self.next_number += 1;
+        if self.tabs.len() == 1 {
+            self.should_exit = true;
+            return;
         }
+        self.tabs.remove(self.active);
         self.active = self.active.min(self.tabs.len() - 1);
         self.tab_hits.clear();
         self.sidebar.invalidate();
@@ -323,7 +320,8 @@ impl Workspace {
     fn open_palette(&mut self, line_mode: bool) {
         self.editor_mut().deactivate();
         self.sidebar.focused = false;
-        self.palette = Some(Palette::new(line_mode));
+        let markdown = self.editor().is_markdown();
+        self.palette = Some(Palette::new(line_mode, markdown));
         self.tab_hits.clear();
         self.sidebar.invalidate();
     }
@@ -369,20 +367,39 @@ impl Workspace {
         self.palette = None;
         self.sidebar.focused = false;
         let (code, modifiers) = match command {
-            Command::New => (KeyCode::Char('n'), KeyModifiers::CONTROL),
+            Command::New => {
+                self.new_tab();
+                return;
+            }
             Command::Open => (KeyCode::Char('o'), KeyModifiers::CONTROL),
             Command::Save => (KeyCode::Char('s'), KeyModifiers::CONTROL),
             Command::SaveAs => (KeyCode::F(4), KeyModifiers::NONE),
-            Command::Close => (KeyCode::Char('w'), KeyModifiers::CONTROL),
+            Command::Close => {
+                self.request(Intent::Close);
+                return;
+            }
             Command::Find => (KeyCode::Char('f'), KeyModifiers::CONTROL),
-            Command::Replace => (KeyCode::Char('r'), KeyModifiers::CONTROL),
+            Command::FindNext => (KeyCode::Char('n'), KeyModifiers::CONTROL),
+            Command::FindPrevious => (KeyCode::Char('p'), KeyModifiers::CONTROL),
+            Command::Replace => {
+                // Ctrl+R inside Find expands it to Replace.
+                self.handle_event(Event::Key(KeyEvent::new(
+                    KeyCode::Char('f'),
+                    KeyModifiers::CONTROL,
+                )));
+                (KeyCode::Char('r'), KeyModifiers::CONTROL)
+            }
             Command::View => (KeyCode::F(6), KeyModifiers::NONE),
+            Command::Ruler => {
+                self.editor_mut().toggle_ruler();
+                return;
+            }
             Command::Sidebar => {
                 self.toggle_sidebar(false);
                 return;
             }
-            Command::NextTab => (KeyCode::F(8), KeyModifiers::NONE),
-            Command::PreviousTab => (KeyCode::F(7), KeyModifiers::NONE),
+            Command::NextTab => (KeyCode::Char('.'), KeyModifiers::ALT),
+            Command::PreviousTab => (KeyCode::Char(','), KeyModifiers::ALT),
             Command::GoToLine => {
                 self.open_palette(true);
                 return;
@@ -395,13 +412,20 @@ impl Workspace {
                 self.open_headings();
                 return;
             }
-            Command::Help => (KeyCode::F(1), KeyModifiers::NONE),
-            Command::Quit => (KeyCode::Char('q'), KeyModifiers::CONTROL),
+            Command::Help => (KeyCode::Char('g'), KeyModifiers::CONTROL),
+            Command::Quit => {
+                self.request(Intent::Quit);
+                return;
+            }
             Command::Undo => (KeyCode::Char('z'), KeyModifiers::CONTROL),
             Command::Redo => (KeyCode::Char('y'), KeyModifiers::CONTROL),
+            Command::CutLine => (KeyCode::Char('k'), KeyModifiers::CONTROL),
+            Command::Duplicate => (KeyCode::Char('d'), KeyModifiers::CONTROL),
+            Command::Comment => (KeyCode::Char('/'), KeyModifiers::ALT),
             Command::Bold => (KeyCode::Char('b'), KeyModifiers::CONTROL),
             Command::Italic => (KeyCode::Char('i'), KeyModifiers::ALT),
             Command::InlineCode => (KeyCode::Char('`'), KeyModifiers::ALT),
+            Command::Task => (KeyCode::Char('t'), KeyModifiers::ALT),
             Command::Indent => (KeyCode::Char(']'), KeyModifiers::CONTROL),
             Command::Outdent => (KeyCode::Char('['), KeyModifiers::CONTROL),
             Command::MoveUp => (KeyCode::Up, KeyModifiers::ALT),
@@ -464,16 +488,11 @@ impl Workspace {
     fn handle_choice(&mut self, event: Event) {
         let mut choice = self.choice.take().expect("open picker");
         match choice.picker.handle(event) {
-            ChoiceAction::Cancel => {
+            // Ctrl+Q aborts a picker, as it aborts micro's prompts.
+            ChoiceAction::Cancel | ChoiceAction::Quit => {
                 if let ChoiceMode::Theme { original, .. } = choice.mode {
                     self.editor_mut().set_theme(original);
                 }
-            }
-            ChoiceAction::Quit => {
-                if let ChoiceMode::Theme { original, .. } = choice.mode {
-                    self.editor_mut().set_theme(original);
-                }
-                self.request(Intent::Quit);
             }
             ChoiceAction::Accept(index) => match choice.mode {
                 ChoiceMode::Theme { themes, .. } => {
@@ -551,25 +570,9 @@ impl Workspace {
             match palette.handle(event) {
                 PaletteAction::Close => self.palette = None,
                 PaletteAction::Command(command) => self.run_command(command),
-                PaletteAction::Line(line) => {
-                    let source = self.editor().document.text();
-                    let mut current = 1;
-                    let mut offset = source.len();
-                    if line == 1 {
-                        offset = 0;
-                    } else {
-                        for (index, grapheme) in source.grapheme_indices(true) {
-                            if matches!(grapheme, "\r" | "\n" | "\r\n") {
-                                current += 1;
-                                if current == line {
-                                    offset = index + grapheme.len();
-                                    break;
-                                }
-                            }
-                        }
-                    }
+                PaletteAction::Line(line, column) => {
                     self.palette = None;
-                    self.editor_mut().jump_to_source(offset);
+                    self.editor_mut().go_to(line, column);
                 }
                 PaletteAction::None => {}
             }
@@ -578,8 +581,19 @@ impl Workspace {
         if self.browser.is_some()
             && matches!(&event, Event::Key(key) if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('q'))
         {
+            // Ctrl+Q closes what is in front. Behind a browser opened from a
+            // directory argument or an empty tab, there is nothing left.
             self.browser = None;
-            self.request(Intent::Quit);
+            self.tab_hits.clear();
+            self.sidebar.invalidate();
+            let editor = self.editor();
+            if self.tabs.len() == 1
+                && editor.path().is_none()
+                && editor.document.text().is_empty()
+                && !editor.document.is_dirty()
+            {
+                self.should_exit = true;
+            }
             return;
         }
         if let Some(browser) = &mut self.browser {
@@ -651,16 +665,18 @@ impl Workspace {
         if self.editor().workspace_commands_allowed() {
             if let Event::Key(key) = &event {
                 let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+                let alt = key.modifiers.contains(KeyModifiers::ALT);
+                // Function keys are silent aliases for the micro-aligned keys.
                 match key.code {
                     KeyCode::F(2) if key.modifiers.is_empty() => {
                         self.open_palette(false);
                         return;
                     }
-                    KeyCode::Char('p') if ctrl => {
+                    KeyCode::Char('e') if ctrl => {
                         self.open_palette(false);
                         return;
                     }
-                    KeyCode::Char('g') if ctrl => {
+                    KeyCode::Char('l') if ctrl => {
                         self.open_palette(true);
                         return;
                     }
@@ -707,25 +723,30 @@ impl Workspace {
                             }
                             return;
                         }
-                        _ if !ctrl && !matches!(key.code, KeyCode::F(_)) => return,
+                        _ if !ctrl && !alt && !matches!(key.code, KeyCode::F(_)) => return,
                         _ => self.sidebar.focused = false,
                     }
                 }
                 match key.code {
-                    KeyCode::Char('n') if ctrl => {
+                    KeyCode::Char('t') if ctrl => {
                         self.new_tab();
-                        return;
-                    }
-                    KeyCode::Char('w') if ctrl => {
-                        self.request(Intent::Close);
                         return;
                     }
                     KeyCode::Char('o') if ctrl => {
                         self.open_browser();
                         return;
                     }
+                    // Like micro: close this tab, and quit after the last.
                     KeyCode::Char('q') if ctrl => {
-                        self.request(Intent::Quit);
+                        self.request(Intent::Close);
+                        return;
+                    }
+                    KeyCode::Char(',') if alt && !ctrl => {
+                        self.switch((self.active + self.tabs.len() - 1) % self.tabs.len());
+                        return;
+                    }
+                    KeyCode::Char('.') if alt && !ctrl => {
+                        self.switch((self.active + 1) % self.tabs.len());
                         return;
                     }
                     KeyCode::F(7) | KeyCode::PageUp if key.code == KeyCode::F(7) || ctrl => {
@@ -873,7 +894,10 @@ impl Workspace {
                             label.rsplit(['/', '\\']).next().unwrap_or(label)
                         )
                     })
-                    .unwrap_or_else(|| format!("Untitled {}.md", tab.number))
+                    .unwrap_or_else(|| {
+                        let extension = if tab.editor.is_markdown() { ".md" } else { "" };
+                        format!("Untitled {}{extension}", tab.number)
+                    })
             });
         safe_text(&filename)
     }
@@ -955,7 +979,11 @@ impl Workspace {
                 )));
             } else {
                 body.push(Line::from(Span::styled(
-                    "Only this document will close.",
+                    if self.tabs.len() == 1 {
+                        "This is the last tab; milli quits after it closes."
+                    } else {
+                        "Only this document will close."
+                    },
                     muted,
                 )));
             }
@@ -1065,6 +1093,8 @@ mod tests {
     #[test]
     fn no_op_workspace_navigation_and_current_tab_click_end_typing_groups() {
         for event in [
+            Event::Key(KeyEvent::new(KeyCode::Char(','), KeyModifiers::ALT)),
+            Event::Key(KeyEvent::new(KeyCode::Char('.'), KeyModifiers::ALT)),
             Event::Key(KeyEvent::new(KeyCode::F(7), KeyModifiers::NONE)),
             Event::Key(KeyEvent::new(KeyCode::F(8), KeyModifiers::NONE)),
             Event::Key(KeyEvent::new(KeyCode::PageUp, KeyModifiers::CONTROL)),
@@ -1099,11 +1129,11 @@ mod tests {
         app.handle_event(Event::Paste(
             (0..60).map(|i| format!("line {i}\n")).collect(),
         ));
-        ctrl(&mut app, 'e');
+        ctrl(&mut app, 'r');
         draw(&mut app, 60, 16);
         let selection = app.editor().document.selection();
         let scroll = app.editor().scroll;
-        ctrl(&mut app, 'n');
+        ctrl(&mut app, 't');
         app.handle_event(Event::Paste("second 👩🏽‍💻".into()));
         key(&mut app, KeyCode::F(7), KeyModifiers::NONE);
         assert_eq!(app.editor().document.selection(), selection);
@@ -1119,15 +1149,17 @@ mod tests {
     #[test]
     fn clipboard_is_global_and_survives_closing_origin() {
         let mut app = Workspace::open(None).unwrap();
+        ctrl(&mut app, 't');
         app.handle_event(Event::Paste("copied".into()));
         ctrl(&mut app, 'a');
         ctrl(&mut app, 'c');
-        ctrl(&mut app, 'w');
+        ctrl(&mut app, 'q');
         plain(&mut app, 'n');
         assert_eq!(app.tabs.len(), 1);
+        assert!(!app.should_exit);
         ctrl(&mut app, 'v');
         assert_eq!(app.editor().document.text(), "copied");
-        ctrl(&mut app, 'n');
+        ctrl(&mut app, 't');
         ctrl(&mut app, 'v');
         assert_eq!(app.editor().document.text(), "copied");
     }
@@ -1136,9 +1168,9 @@ mod tests {
     fn quit_cancel_keeps_previously_discarded_tabs() {
         let mut app = Workspace::open(None).unwrap();
         app.handle_event(Event::Paste("first".into()));
-        ctrl(&mut app, 'n');
+        ctrl(&mut app, 't');
         app.handle_event(Event::Paste("second".into()));
-        ctrl(&mut app, 'q');
+        app.run_command(Command::Quit);
         assert_eq!(app.active, 0);
         plain(&mut app, 'n');
         assert_eq!(app.active, 1);
@@ -1147,7 +1179,7 @@ mod tests {
         assert_eq!(app.tabs.len(), 2);
         assert!(app.tabs.iter().all(|tab| tab.editor.document.is_dirty()));
         assert_eq!(app.tabs[0].editor.document.text(), "first");
-        ctrl(&mut app, 'q');
+        app.run_command(Command::Quit);
         plain(&mut app, 'n');
         plain(&mut app, 'n');
         assert!(app.should_exit);
@@ -1157,7 +1189,7 @@ mod tests {
     fn close_save_as_cancel_and_failure_keep_document() {
         let mut app = Workspace::open(None).unwrap();
         app.handle_event(Event::Paste("unsaved".into()));
-        ctrl(&mut app, 'w');
+        ctrl(&mut app, 'q');
         plain(&mut app, 'y');
         assert!(app.editor().saving_as());
         key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
@@ -1182,7 +1214,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let target = dir.path().join("new.md");
         let mut app = Workspace::open(Some(target.clone())).unwrap();
-        ctrl(&mut app, 'n');
+        ctrl(&mut app, 't');
         app.handle_event(Event::Paste("second".into()));
         key(&mut app, KeyCode::F(4), KeyModifiers::NONE);
         app.handle_event(Event::Paste(target.display().to_string()));
@@ -1190,7 +1222,7 @@ mod tests {
         assert!(app.editor().saving_as());
         assert!(!target.exists());
         key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
-        ctrl(&mut app, 'w');
+        ctrl(&mut app, 'q');
         plain(&mut app, 'y');
         let other = dir.path().join("other.md");
         app.handle_event(Event::Paste(other.display().to_string()));
@@ -1202,7 +1234,7 @@ mod tests {
     #[test]
     fn real_tab_hit_geometry_changes_active_once_and_resize_invalidates() {
         let mut app = Workspace::open(None).unwrap();
-        ctrl(&mut app, 'n');
+        ctrl(&mut app, 't');
         draw(&mut app, 80, 24);
         let rect = app
             .tab_hits
@@ -1343,7 +1375,7 @@ mod tests {
         app.handle_event(Event::Paste("match".into()));
         draw(&mut app, 80, 24);
         let selection = app.editor().document.selection();
-        ctrl(&mut app, 'n');
+        ctrl(&mut app, 't');
         key(&mut app, KeyCode::F(7), KeyModifiers::NONE);
         assert_eq!(app.editor().document.selection(), selection);
         plain(&mut app, 'x');
@@ -1354,7 +1386,7 @@ mod tests {
     fn single_header_keeps_identity_in_tabs_and_metadata_in_footer() {
         let mut app = Workspace::open(None).unwrap();
         app.handle_event(Event::Paste("draft".into()));
-        ctrl(&mut app, 'n');
+        ctrl(&mut app, 't');
         key(&mut app, KeyCode::F(7), KeyModifiers::NONE);
         let terminal = draw(&mut app, 80, 24);
         let active = app
@@ -1396,7 +1428,7 @@ mod tests {
             assert!(!snapshot.contains(redundant), "{redundant}");
         }
         assert!(!snapshot.contains("clipboard"));
-        ctrl(&mut app, 'e');
+        ctrl(&mut app, 'r');
         let snapshot = crate::simulation::snapshot(&mut app, 80, 24).unwrap();
         assert!(snapshot.contains("SOURCE"));
         assert!(!snapshot.lines().next().unwrap().contains("SOURCE"));
@@ -1406,7 +1438,7 @@ mod tests {
     fn modified_or_repeated_confirmation_keys_never_discard_or_save() {
         let mut app = Workspace::open(None).unwrap();
         app.handle_event(Event::Paste("valuable".into()));
-        ctrl(&mut app, 'w');
+        ctrl(&mut app, 'q');
         for modifiers in [KeyModifiers::CONTROL, KeyModifiers::ALT] {
             key(&mut app, KeyCode::Char('n'), modifiers);
             key(&mut app, KeyCode::Char('y'), modifiers);
@@ -1422,9 +1454,9 @@ mod tests {
         assert_eq!(app.editor().document.text(), "valuable");
         assert!(!app.editor().saving_as());
         key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
-        ctrl(&mut app, 'n');
+        ctrl(&mut app, 't');
         app.handle_event(Event::Paste("second".into()));
-        ctrl(&mut app, 'q');
+        app.run_command(Command::Quit);
         ctrl(&mut app, 'n');
         assert_eq!(app.active, 0);
         plain(&mut app, 'n');
@@ -1505,7 +1537,7 @@ mod tests {
         );
         let mut app = Workspace::open(Some(target.clone())).unwrap();
         app.handle_event(Event::Paste("first".into()));
-        ctrl(&mut app, 'n');
+        ctrl(&mut app, 't');
         app.handle_event(Event::Paste("second".into()));
         key(&mut app, KeyCode::F(4), KeyModifiers::NONE);
         app.handle_event(Event::Paste(alias.display().to_string()));
@@ -1564,16 +1596,21 @@ mod tests {
     }
 
     #[test]
-    fn quit_from_browser_checks_dirty_tabs() {
+    fn ctrl_q_in_the_browser_closes_it_and_quits_only_over_an_empty_tab() {
         let mut app = Workspace::open(None).unwrap();
         app.handle_event(Event::Paste("draft".into()));
         ctrl(&mut app, 'o');
         ctrl(&mut app, 'q');
         assert!(app.browser.is_none());
-        assert!(app.pending.is_some());
+        assert!(app.pending.is_none());
         assert!(!app.should_exit);
-        key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
         assert_eq!(app.editor().document.text(), "draft");
+        // A browser opened over nothing, as `milli folder/` does, quits.
+        let mut app = Workspace::open(None).unwrap();
+        ctrl(&mut app, 'o');
+        assert!(app.browser.is_some());
+        ctrl(&mut app, 'q');
+        assert!(app.should_exit);
     }
     #[cfg(unix)]
     #[test]
@@ -1596,7 +1633,7 @@ mod tests {
         let mut app = Workspace::open(Some(original.clone())).unwrap();
         app.handle_event(Event::Paste("draft ".into()));
         let selection = app.editor().document.selection();
-        ctrl(&mut app, 'n');
+        ctrl(&mut app, 't');
         let restore =
             RestorePermissions(locked.clone(), fs::metadata(&locked).unwrap().permissions());
         fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
@@ -1670,7 +1707,7 @@ mod tests {
         symlink(&original, &alias).unwrap();
         let mut app = Workspace::open(Some(alias.clone())).unwrap();
         app.handle_event(Event::Paste("draft ".into()));
-        ctrl(&mut app, 'n');
+        ctrl(&mut app, 't');
         let _restore =
             RestorePermissions(locked.clone(), fs::metadata(&locked).unwrap().permissions());
         fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
@@ -1894,7 +1931,7 @@ mod tests {
         assert_eq!(app.tabs.len(), 2);
         assert_eq!(app.active, 1);
         app.handle_event(Event::Paste("second".into()));
-        palette_query(&mut app, "previous", 80, 24);
+        palette_query(&mut app, "previous tab", 80, 24);
         key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         assert_eq!(app.editor().document.text(), "first");
         palette_query(&mut app, "close", 80, 24);
@@ -1902,7 +1939,7 @@ mod tests {
         assert!(app.pending.is_some());
         key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
         assert_eq!(app.tabs.len(), 2);
-        palette_query(&mut app, "quit", 80, 24);
+        palette_query(&mut app, "quit all", 80, 24);
         key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         plain(&mut app, 'n');
         key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
@@ -1917,7 +1954,7 @@ mod tests {
         let existing = dir.path().join("owned.md");
         std::fs::write(&existing, "first").unwrap();
         let mut app = Workspace::open(Some(existing.clone())).unwrap();
-        ctrl(&mut app, 'n');
+        ctrl(&mut app, 't');
         app.handle_event(Event::Paste("second".into()));
         palette_query(&mut app, "save as", 80, 24);
         key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
@@ -1977,7 +2014,7 @@ mod tests {
         let source = "one\r\n界 two\rthree\nfour";
         app.editor_mut().document = milli::Document::new(source);
         for (line, offset) in [(1, 0), (2, 5), (3, 13), (4, 19), (999, source.len())] {
-            ctrl(&mut app, 'g');
+            ctrl(&mut app, 'l');
             app.handle_event(Event::Paste(line.to_string()));
             draw(&mut app, 80, 24);
             key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
@@ -1985,7 +2022,7 @@ mod tests {
             assert_eq!(app.editor().document.text(), source);
             assert!(!app.editor().document.can_undo());
         }
-        ctrl(&mut app, 'g');
+        ctrl(&mut app, 'l');
         app.handle_event(Event::Paste("0".into()));
         draw(&mut app, 80, 24);
         key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
@@ -2175,7 +2212,7 @@ mod tests {
         let mut initial = draw(&mut app, 80, 24);
         let query_y = initial.get_cursor_position().unwrap().y;
         key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
-        ctrl(&mut app, 'g');
+        ctrl(&mut app, 'l');
         let mut line = draw(&mut app, 80, 24);
         let cursor = line.get_cursor_position().unwrap();
         assert_eq!(cursor.y, query_y);

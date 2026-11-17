@@ -11,7 +11,7 @@ use crate::{
 use crossterm::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
-use milli::{Document, InlineStyle, Selection};
+use milli::{BlockKind, Document, InlineStyle, Selection};
 use ratatui::{
     Frame,
     layout::Rect,
@@ -51,74 +51,74 @@ fn chrome_focus() -> Style {
     chrome_style().fg(palette().accent)
 }
 
-/// The keyboard reference, grouped the way people look for it.
+/// The keyboard reference, grouped the way people look for it. Function
+/// keys still work as silent aliases but are never listed here.
 const HELP: &[(&str, &[(&str, &str)])] = &[
     (
-        "Writing",
+        "Files and tabs",
         &[
-            ("Ctrl+B", "Bold"),
-            ("Alt+I", "Italic"),
-            ("Alt+`", "Inline code"),
-            ("Ctrl+T", "Toggle task"),
-            ("Enter", "Continue a list"),
-            ("Alt+Enter", "Literal newline"),
+            ("Ctrl+S", "Save"),
+            ("Ctrl+O", "Open a file"),
+            ("Ctrl+T", "New tab"),
+            ("Alt+, / Alt+.", "Previous / next tab"),
+            ("Ctrl+Q", "Close tab; the last quits"),
+            ("Ctrl+E", "Commands: Save as, more"),
+        ],
+    ),
+    (
+        "Editing",
+        &[
+            ("Ctrl+Z / Ctrl+Y", "Undo / redo"),
+            ("Ctrl+C / X / V", "Copy / cut / paste"),
+            ("Ctrl+K", "Cut line; repeat to add"),
+            ("Ctrl+D", "Duplicate line/selection"),
+            ("Ctrl+/ or Alt+/", "Comment or uncomment"),
             ("Tab / Shift+Tab", "Indent / outdent lines"),
-            ("Ctrl+] / Ctrl+[", "Indent / outdent lines"),
             ("Alt+↑ / Alt+↓", "Move lines"),
             ("Alt+Shift+↑ / ↓", "Duplicate lines"),
-            ("Ctrl+Z / Ctrl+Y", "Undo / redo"),
+            ("Enter", "New line, keeping indent"),
+            ("Alt+Enter", "Plain new line"),
         ],
     ),
     (
-        "Selecting",
+        "Moving and selecting",
         &[
+            ("Home", "Line text, then line start"),
+            ("Ctrl+Home / End", "Start / end of file"),
+            ("Ctrl+L", "Go to line"),
+            ("Ctrl+← / →", "Move by word"),
             ("Shift+arrows", "Extend the selection"),
-            ("Ctrl/Alt+← / →", "Move by word"),
-            ("Ctrl/Alt+Backspace", "Delete a word"),
+            ("Ctrl+Backspace", "Delete a word"),
             ("Ctrl+A", "Select all"),
-            ("Ctrl+C / X / V", "Copy / cut / paste"),
-        ],
-    ),
-    (
-        "Moving around",
-        &[
-            ("Home / End", "Start / end of row"),
-            ("Ctrl+Home / End", "Start / end of document"),
-            ("Ctrl+G", "Go to line"),
-            ("F11", "Go to heading"),
-            ("F9", "Focus or hide the outline"),
         ],
     ),
     (
         "Finding",
         &[
             ("Ctrl+F", "Find"),
-            ("Ctrl+R", "Find and replace"),
-            ("F3 / Shift+F3", "Next / previous match"),
+            ("Ctrl+N / Ctrl+P", "Next / previous match"),
+            ("Ctrl+R in Find", "Replace"),
             ("Alt+R / Alt+A", "Replace one / all"),
             ("Tab", "Switch Find and With"),
         ],
     ),
     (
-        "Documents",
+        "Markdown",
         &[
-            ("Ctrl+N", "New document"),
-            ("Ctrl+O", "Open a file"),
-            ("Ctrl+S", "Save"),
-            ("F4 / Ctrl+Shift+S", "Save as"),
-            ("F5", "Reload from disk"),
-            ("Ctrl+W", "Close tab"),
-            ("F7 / F8", "Previous / next tab"),
-            ("F10", "Switch document"),
-            ("Ctrl+Q", "Quit"),
+            ("Ctrl+R", "Live or source view"),
+            ("Ctrl+B", "Bold"),
+            ("Alt+I", "Italic"),
+            ("Alt+`", "Inline code"),
+            ("Alt+T", "Toggle task"),
+            ("Enter", "Continue a list"),
         ],
     ),
     (
-        "Viewing",
+        "View",
         &[
-            ("Ctrl+E / F6", "Live or source view"),
-            ("F2 / Ctrl+P", "Commands, themes, icons"),
-            ("F1", "This reference"),
+            ("Ctrl+R", "Line numbers in code"),
+            ("Ctrl+E", "Outline, headings, themes"),
+            ("Ctrl+G", "This help"),
         ],
     ),
 ];
@@ -153,6 +153,8 @@ pub struct App {
     pub document: Document,
     file: Option<FileState>,
     pub live: bool,
+    /// Line numbers in code, plain-text and source views: micro's ruler.
+    pub ruler: bool,
     markdown: bool,
     /// Detected for other text files; Markdown highlights fenced code itself.
     language: Option<&'static Language>,
@@ -169,6 +171,11 @@ pub struct App {
     reveal: bool,
     anchor_screen_row: Option<usize>,
     clipboard: Clipboard,
+    /// Consecutive Ctrl+K cuts collect into one clipboard entry: the revision
+    /// and caret the last cut left behind, and everything cut so far.
+    cut_chain: Option<(u64, usize, String)>,
+    /// The last Find query, kept for Ctrl+N and Ctrl+P after Find closes.
+    last_query: String,
     search: Search,
     search_geometry: SearchGeometry,
     field_drag: Option<FieldDrag>,
@@ -251,14 +258,14 @@ impl App {
                 return false;
             }
             ExternalChange::Changed => {
-                "Disk file changed. F5: reload · F4: Save As; your text is intact".into()
+                "Disk file changed; your text is intact. Ctrl+E: Reload or Save as".into()
             }
             ExternalChange::Missing => {
-                "Disk file is missing. Your text is intact; use F4: Save As or restore the file"
+                "Disk file is missing; your text is intact. Ctrl+E: Save as, or restore the file"
                     .into()
             }
             ExternalChange::Unreadable(error) => format!(
-                "Cannot read disk file: {error}. Your text is intact; retry F5 or use F4: Save As"
+                "Cannot read disk file: {error}. Your text is intact; Ctrl+E: Reload or Save as"
             ),
         };
         self.set_message(message);
@@ -274,7 +281,7 @@ impl App {
             return;
         }
         if self.file.is_none() {
-            self.set_message("This buffer has no disk file. Use F4: Save As first");
+            self.set_message("This buffer has no disk file. Save it first with Ctrl+S");
         } else if self.document.is_dirty() {
             self.overlay = Overlay::Reload;
             self.reload_prompt_visible.set(false);
@@ -381,7 +388,11 @@ impl App {
         self.document.break_undo_group();
         self.reload_prompt_visible.set(false);
         self.overlay = Overlay::None;
+        if !self.search.query.text().is_empty() {
+            self.last_query = self.search.query.text().to_owned();
+        }
         self.search = Search::default();
+        self.cut_chain = None;
         self.search_geometry = SearchGeometry::default();
         self.field_drag = None;
         self.dragging = false;
@@ -439,6 +450,7 @@ impl App {
             document,
             file,
             live: markdown,
+            ruler: true,
             markdown,
             language: None,
             parsed,
@@ -452,6 +464,8 @@ impl App {
             reveal: false,
             anchor_screen_row: None,
             clipboard: Clipboard::internal(),
+            cut_chain: None,
+            last_query: String::new(),
             search: Search::default(),
             search_geometry: SearchGeometry::default(),
             field_drag: None,
@@ -482,6 +496,20 @@ impl App {
                     && !key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT));
         if !typing && !matches!(&event, Event::Key(key) if key.kind == KeyEventKind::Release) {
             self.document.break_undo_group();
+        }
+        // Only an uninterrupted run of Ctrl+K presses collects lines.
+        let passive = match &event {
+            Event::Key(key) => {
+                key.kind == KeyEventKind::Release
+                    || (key.code == KeyCode::Char('k')
+                        && key.modifiers.contains(KeyModifiers::CONTROL))
+            }
+            Event::Resize(..) | Event::FocusGained | Event::FocusLost => true,
+            Event::Mouse(mouse) => mouse.kind == MouseEventKind::Moved,
+            Event::Paste(_) => false,
+        };
+        if !passive {
+            self.cut_chain = None;
         }
         if !self.message_is_error
             && (matches!(&event, Event::Key(key) if key.kind != KeyEventKind::Release)
@@ -580,7 +608,14 @@ impl App {
                         self.save(false);
                     }
                 }
-                KeyCode::Char('e') => self.toggle_view(),
+                KeyCode::Char('g') => self.open_help(),
+                KeyCode::Char('r') => {
+                    if self.markdown {
+                        self.toggle_view();
+                    } else {
+                        self.toggle_ruler();
+                    }
+                }
                 KeyCode::Char('z' | 'Z') if shift => {
                     self.document.redo();
                 }
@@ -591,8 +626,17 @@ impl App {
                     self.document.redo();
                 }
                 KeyCode::Char('a') => self.document.select_all(),
-                KeyCode::Char('f') => self.open_search(false),
-                KeyCode::Char('r') => self.open_search(true),
+                // Ctrl+W is nano's "Where Is"; it stays a silent alias.
+                KeyCode::Char('f' | 'w') => self.open_search(false),
+                KeyCode::Char('n') => self.find_adjacent(false),
+                KeyCode::Char('p') => self.find_adjacent(true),
+                KeyCode::Char('k') => self.cut_line(),
+                KeyCode::Char('d') => {
+                    milli::editing::duplicate(&mut self.document);
+                }
+                // Legacy terminals send Ctrl+/ as 0x1F, which Crossterm reads
+                // as Ctrl+7; some send Ctrl+_. The enhanced protocol sends '/'.
+                KeyCode::Char('/' | '7' | '_') => self.toggle_comment(),
                 KeyCode::Char('c') => self.copy(false),
                 KeyCode::Char('x') => self.copy(true),
                 KeyCode::Char('v') => {
@@ -604,9 +648,6 @@ impl App {
                     if let Some(text) = text {
                         self.document.insert(&text);
                     }
-                }
-                KeyCode::Char('t') if self.markdown => {
-                    self.document.toggle_task_at_caret();
                 }
                 KeyCode::Left => {
                     self.document.move_word_left(shift);
@@ -628,7 +669,8 @@ impl App {
                 KeyCode::Char('i' | 'I') if self.markdown => {
                     self.document.toggle_inline(InlineStyle::Italic);
                 }
-                KeyCode::Char(']') => {
+                // Legacy terminals send Ctrl+] as 0x1D, which reads as Ctrl+5.
+                KeyCode::Char(']' | '5') => {
                     self.document.indent_lines();
                 }
                 KeyCode::Char('[') => {
@@ -671,6 +713,10 @@ impl App {
                 KeyCode::Char('`') if self.markdown => {
                     self.document.toggle_inline(InlineStyle::Code);
                 }
+                KeyCode::Char('t' | 'T') if self.markdown => {
+                    self.document.toggle_task_at_caret();
+                }
+                KeyCode::Char('/') => self.toggle_comment(),
                 _ => {}
             }
             if !matches!(key.code, KeyCode::Enter) {
@@ -681,13 +727,7 @@ impl App {
         }
         match key.code {
             KeyCode::F(1) => self.open_help(),
-            KeyCode::F(3) => {
-                if self.search.query.text().is_empty() {
-                    self.open_search(false);
-                } else {
-                    self.find_next(shift);
-                }
-            }
+            KeyCode::F(3) => self.find_adjacent(shift),
             KeyCode::F(4) => self.start_save_as(false),
             KeyCode::F(5) => self.request_reload(),
             KeyCode::F(6) => self.toggle_view(),
@@ -711,27 +751,31 @@ impl App {
             KeyCode::Down => self.vertical(1, shift),
             KeyCode::PageUp => self.vertical(-(self.viewport.height.max(1) as isize), shift),
             KeyCode::PageDown => self.vertical(self.viewport.height.max(1) as isize, shift),
-            KeyCode::Home | KeyCode::End => {
-                let (row, _) = self.caret_position();
-                let row = &self.projection.rows[row];
+            KeyCode::Home => {
+                // Smart Home works on source lines: first non-blank, then
+                // column zero, alternating.
+                let head = self.document.selection().head;
                 self.move_to(
-                    if key.code == KeyCode::Home {
-                        row.start
-                    } else {
-                        row.end
-                    },
+                    milli::editing::smart_home(self.document.text(), head),
                     shift,
                 );
-                if key.code == KeyCode::End {
-                    self.affinity = Affinity::Upstream;
-                }
+                self.preferred_column = None;
+            }
+            KeyCode::End => {
+                let (row, _) = self.caret_position();
+                let row = &self.projection.rows[row];
+                self.move_to(row.end, shift);
+                self.affinity = Affinity::Upstream;
                 self.preferred_column = None;
             }
             KeyCode::Enter => {
-                if shift || alt || !self.markdown {
+                if shift || alt {
                     self.document.literal_newline();
-                } else {
+                } else if self.markdown {
+                    // List continuation, or an auto-indented newline.
                     self.document.enter();
+                } else {
+                    milli::editing::indent_newline(&mut self.document);
                 }
                 self.preferred_column = None;
             }
@@ -773,6 +817,114 @@ impl App {
     fn open_help(&mut self) {
         self.help_scroll = 0;
         self.overlay = Overlay::Help;
+    }
+
+    /// Micro's ruler: line numbers on or off in numbered views.
+    pub(crate) fn toggle_ruler(&mut self) {
+        self.ruler = !self.ruler;
+    }
+
+    /// Place the caret at a 1-based line and grapheme column, clamped to the
+    /// document, and bring it into view.
+    pub(crate) fn go_to(&mut self, line: usize, column: usize) {
+        let offset = milli::editing::line_column_offset(self.document.text(), line, column);
+        self.jump_to_source(offset);
+    }
+
+    /// Ctrl+N and Ctrl+P: the next or previous match of the current or last
+    /// query, even with Find closed. Without any query, open Find.
+    fn find_adjacent(&mut self, backwards: bool) {
+        if self.search.query.text().is_empty() {
+            if self.last_query.is_empty() {
+                self.open_search(false);
+                return;
+            }
+            self.search.query = Document::new(self.last_query.clone());
+        }
+        self.find_next(backwards);
+        if self.overlay == Overlay::None {
+            let query = safe_text(self.search.query.text());
+            if self.search.matches.is_empty() {
+                self.inform(format!("No matches for “{query}”"));
+            } else if self.search.wrapped {
+                self.inform(if backwards {
+                    "Search wrapped to the end"
+                } else {
+                    "Search wrapped to the start"
+                });
+            }
+        }
+    }
+
+    /// Ctrl+K: cut the caret's line or the selected lines. An uninterrupted
+    /// run of cuts collects into one clipboard entry; each cut undoes alone.
+    fn cut_line(&mut self) {
+        let selection = self.document.selection();
+        let chained = self.cut_chain.take().filter(|(revision, caret, _)| {
+            *revision == self.document.revision()
+                && selection.is_empty()
+                && *caret == selection.head
+        });
+        let Some(removed) = milli::editing::cut_lines(&mut self.document) else {
+            self.cut_chain = chained;
+            return;
+        };
+        let mut text = chained.map(|(_, _, text)| text).unwrap_or_default();
+        text.push_str(&removed);
+        let message = self.clipboard.copy(&text);
+        if self.clipboard.uses_fallback() {
+            self.clipboard_feedback(message, true);
+        } else {
+            let lines = text.lines().count();
+            let unit = if lines == 1 { "line" } else { "lines" };
+            self.clipboard_feedback(format!("Cut {lines} {unit} · Ctrl+V pastes"), false);
+        }
+        self.cut_chain = Some((
+            self.document.revision(),
+            self.document.selection().head,
+            text,
+        ));
+    }
+
+    /// Ctrl+/: comment or uncomment the caret's line or the selected lines.
+    fn toggle_comment(&mut self) {
+        match self.comment_markers() {
+            Some((open, close)) => {
+                milli::editing::toggle_comment(&mut self.document, open, close);
+            }
+            None => self.inform("No comment syntax here"),
+        }
+    }
+
+    /// The language's line-comment marker, or a wrapping pair where it has
+    /// none. Markdown uses HTML comments, except inside front matter and
+    /// fenced code, which follow their own language. Plain text uses `#`.
+    fn comment_markers(&self) -> Option<(&'static str, &'static str)> {
+        if !self.markdown {
+            return self.language.map_or(Some(("#", "")), Language::comment);
+        }
+        let source = self.document.text();
+        let caret = self.document.selection().range().start;
+        let snapshot = self.document.markdown();
+        let block = snapshot
+            .blocks
+            .iter()
+            .filter(|block| {
+                matches!(block.kind, BlockKind::Code | BlockKind::Metadata)
+                    && block.range.start <= caret
+                    && (caret < block.range.end || caret == source.len())
+            })
+            .min_by_key(|block| block.range.len());
+        let Some(block) = block else {
+            return Some(("<!--", "-->"));
+        };
+        if block.kind == BlockKind::Metadata {
+            return Some(("#", ""));
+        }
+        let fence = &source[milli::editing::line_range(source, block.range.start)];
+        let fence = fence.trim_start_matches(['\u{feff}', ' ', '\t', '>']);
+        let marker = fence.chars().next().filter(|c| matches!(c, '`' | '~'))?;
+        Language::for_fence(fence.trim_start_matches(marker)).and_then(Language::comment)
     }
 
     fn move_to(&mut self, offset: usize, extend: bool) {
@@ -1017,7 +1169,7 @@ impl App {
             self.key(key);
             return;
         }
-        if control && matches!(key.code, KeyCode::Char('f' | 'r')) {
+        if control && matches!(key.code, KeyCode::Char('f' | 'r' | 'w')) {
             self.overlay = Overlay::Search {
                 replace: key.code == KeyCode::Char('r'),
             };
@@ -1025,7 +1177,7 @@ impl App {
             self.search.query.select_all();
             return;
         }
-        if key.code == KeyCode::F(1) {
+        if key.code == KeyCode::F(1) || (control && key.code == KeyCode::Char('g')) {
             self.open_help();
             return;
         }
@@ -1052,6 +1204,10 @@ impl App {
         match key.code {
             KeyCode::F(3) => {
                 self.find_next(shift);
+                return;
+            }
+            KeyCode::Char('n' | 'p') if control => {
+                self.find_next(key.code == KeyCode::Char('p'));
                 return;
             }
             KeyCode::Tab | KeyCode::BackTab => {
@@ -1292,6 +1448,9 @@ impl App {
             Overlay::Help => {
                 match key.code {
                     KeyCode::F(1) | KeyCode::Enter => self.overlay = Overlay::None,
+                    KeyCode::Char('g') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        self.overlay = Overlay::None
+                    }
                     KeyCode::Up => self.help_scroll = self.help_scroll.saturating_sub(1),
                     KeyCode::Down => self.help_scroll += 1,
                     KeyCode::PageUp => self.help_scroll = self.help_scroll.saturating_sub(8),
@@ -1590,7 +1749,11 @@ impl App {
             // Only an empty page offers a way in; written pages stay quiet.
             if height > 2 {
                 let mut x = self.viewport.x;
-                for (key, action) in [("F2", "commands"), ("Ctrl+O", "open"), ("F1", "help")] {
+                for (key, action) in [
+                    ("Ctrl+E", "commands"),
+                    ("Ctrl+O", "open"),
+                    ("Ctrl+G", "help"),
+                ] {
                     let room = usize::from(self.viewport.right().saturating_sub(x));
                     let label = format!("{key} {action}   ");
                     if UnicodeWidthStr::width(label.as_str()) > room {
@@ -1631,7 +1794,7 @@ impl App {
 
     /// Number width for the gutter, or zero when it is hidden.
     fn gutter_digits(&self, width: u16) -> u16 {
-        if self.live || width < 24 {
+        if self.live || !self.ruler || width < 24 {
             return 0;
         }
         (self.line_count().to_string().len() as u16).max(3)
@@ -2683,8 +2846,29 @@ mod tests {
         assert_eq!(app.document.text(), "one\ntwo");
         assert!(!app.document.can_undo());
         let keys: Vec<_> = HELP.iter().flat_map(|(_, keys)| keys.iter()).collect();
-        for key in ["F10", "F11", "Alt+↑ / Alt+↓", "Alt+Shift+↑ / ↓"] {
+        for key in [
+            "Ctrl+E",
+            "Ctrl+G",
+            "Ctrl+L",
+            "Ctrl+K",
+            "Ctrl+D",
+            "Ctrl+/ or Alt+/",
+            "Alt+, / Alt+.",
+            "Alt+↑ / Alt+↓",
+            "Alt+Shift+↑ / ↓",
+        ] {
             assert!(keys.iter().any(|(name, _)| *name == key), "{key}");
+        }
+        // Function keys are silent aliases: never advertised.
+        for (name, action) in keys {
+            for text in [name, action] {
+                assert!(
+                    !text.split([' ', '/', '+']).any(|word| word.len() > 1
+                        && word.starts_with('F')
+                        && word[1..].bytes().all(|b| b.is_ascii_digit())),
+                    "{text}"
+                );
+            }
         }
     }
 
@@ -2991,7 +3175,8 @@ mod tests {
         std::fs::write(&path, "external edit").unwrap();
         assert!(app.check_external_change());
         assert_eq!(app.message_origin, MessageOrigin::Disk);
-        assert!(app.message.contains("F5"));
+        assert!(app.message.contains("Reload"));
+        assert!(!app.message.contains("F5"));
         assert!(!app.check_external_change());
         assert_eq!(app.document.text(), "e\u{301} original\r\n");
         assert_eq!(app.document.selection(), selection);
@@ -3381,7 +3566,7 @@ mod tests {
         key(&mut app, KeyCode::F(1), KeyModifiers::NONE);
         key(&mut app, KeyCode::End, KeyModifiers::NONE);
         let screen = crate::simulation::snapshot(&mut app, 42, 12).unwrap();
-        assert!(screen.contains("This reference"), "{screen}");
+        assert!(screen.contains("This help"), "{screen}");
         key(&mut app, KeyCode::Home, KeyModifiers::NONE);
         assert_eq!(app.help_scroll, 0);
         key(&mut app, KeyCode::PageDown, KeyModifiers::NONE);
@@ -3823,12 +4008,12 @@ mod tests {
         state
     }
 
+    /// Open Find, and with `replace`, expand it with Ctrl+R as a user would.
     fn search(app: &mut App, query: &str, replace: bool) {
-        key(
-            app,
-            KeyCode::Char(if replace { 'r' } else { 'f' }),
-            KeyModifiers::CONTROL,
-        );
+        key(app, KeyCode::Char('f'), KeyModifiers::CONTROL);
+        if replace {
+            key(app, KeyCode::Char('r'), KeyModifiers::CONTROL);
+        }
         app.handle_event(Event::Paste(query.into()));
     }
 
@@ -5127,3 +5312,7 @@ mod tests {
         assert!(app.has_modal());
     }
 }
+
+#[cfg(test)]
+#[path = "app_keys_tests.rs"]
+mod key_tests;
