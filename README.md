@@ -2,117 +2,90 @@
 
 [![CI](https://github.com/yungibly/milli/actions/workflows/ci.yml/badge.svg)](https://github.com/yungibly/milli/actions/workflows/ci.yml)
 
-A terminal editor for writing, reading, and reviewing Markdown, with familiar shortcuts and support for other UTF-8 text files.
-
-The central idea: make a Markdown document pleasant to work in directly, with dependable cursor movement and selection, while preserving the underlying file exactly outside intentional edits.
-
-## Install
+A small terminal text editor in the nano and micro family: micro's keys, nano's quiet, and Markdown rendered as you write.
 
 ```sh
 brew install yungibly/tap/milli
-milli note.md
+milli notes.md
 ```
 
-[Release archives](https://github.com/yungibly/milli/releases) include prebuilt binaries for macOS on Apple Silicon and Intel, and Linux x86_64 with glibc 2.35 or newer. Extract an archive and put `milli` on your PATH. All themes are included; a Nerd Font is optional. Linux ARM and Windows release binaries are not provided.
+It opens however you launch it, uses the keys you already know from micro, takes your terminal's own colors, and stays out of the way. Configs, scripts, and commit messages get a plain, fast editor. Markdown also gets rendered headings, tables, code, and checklists that turn back into their exact source as soon as you edit them.
 
-Press **F1** for help or **F2** for searchable commands. Use **Ctrl+S** to save and **Ctrl+Q** to quit. With no filename, `milli` starts an untitled Markdown document.
+## Install
+
+`brew install yungibly/tap/milli` works on macOS (Apple Silicon and Intel) and Linux x86_64. [Release archives](https://github.com/yungibly/milli/releases) contain the same binaries: extract one and put `milli` on your PATH. Linux needs glibc 2.35 or newer. There are no Linux ARM or Windows builds yet. All themes are built in; a Nerd Font is optional.
+
+## Opening files
+
+```sh
+milli notes.md todo.md      # one tab each; the first is active
+milli +120 src/main.rs      # open at line 120 (also: src/main.rs +120, +120:5)
+milli src/main.rs:120:5     # line and column, when no file has that name
+milli ~/projects            # browse a folder
+git log | milli             # read piped input into an unsaved buffer
+milli -                     # read standard input explicitly
+```
+
+With no arguments, `milli` opens an untitled Markdown buffer. A missing file opens empty and is created when you save. `milli` works as `$EDITOR` and `$VISUAL`.
+
+## Keys
+
+The defaults follow micro's. Press **Ctrl+G** for help and **Ctrl+E** for every command with its key; the status line always shows both.
+
+| Key | Action | Key | Action |
+| --- | --- | --- | --- |
+| Ctrl+S | Save | Ctrl+F | Find (Ctrl+N / Ctrl+P: next / previous) |
+| Ctrl+O | Open a file | Ctrl+R in Find | Replace |
+| Ctrl+T | New tab | Ctrl+L | Go to line |
+| Alt+, / Alt+. | Previous / next tab | Ctrl+K | Cut line; repeat to collect more |
+| Ctrl+Q | Close tab; the last one quits | Ctrl+D | Duplicate line or selection |
+| Ctrl+Z / Ctrl+Y | Undo / redo | Ctrl+/ or Alt+/ | Comment or uncomment |
+| Ctrl+C / X / V | Copy / cut / paste | Alt+↑ / Alt+↓ | Move lines |
+| Ctrl+A | Select all | Home | Line text, then line start |
+| Ctrl+R | Line numbers (code) or live/source view (Markdown) | Ctrl+B / Alt+I / Alt+T | Bold / italic / toggle task (Markdown) |
+
+Enter keeps the current line's indentation and continues Markdown lists. Tab inserts a tab; with a selection it indents lines. [The full key reference](docs/keys.md) lists every key, the differences from micro, and terminal quirks. Function keys from earlier versions still work but are not shown.
+
+## Markdown
+
+Markdown opens in a live view. Headings carry a mark in the margin, tables become aligned grids, fenced code and front matter become labelled, highlighted surfaces, `> [!NOTE]` alerts become callouts, and task boxes can be clicked. The block holding the caret always shows its exact source, so you edit what is in the file and nothing else changes. Ctrl+R switches to the plain numbered source view. milli remembers that choice for later Markdown files.
+
+Lists continue on Enter; Enter on an empty item leaves the list. Clicking a task box, or pressing Alt+T, changes only its `[ ]` / `[x]` marker. From Ctrl+E you can open an outline sidebar of the document's headings (it stays open once chosen), jump to any heading, or switch documents by fuzzy name. Footnotes, math, raw HTML, and other unsupported constructs stay visible as source.
+
+Code files and plain text open as numbered source with highlighting for 41 languages, including Rust, Python, JavaScript, TypeScript, Go, C and C++, shell, SQL, HTML, CSS, JSON, YAML, TOML, and diffs. The highlighter is small and built in: it knows comments, strings, keywords, and literals, not full grammars.
+
+## Looks
+
+The default **Terminal** theme uses your terminal's own background, foreground, and colors. Selections and bars use reverse video, as nano draws them, so milli looks at home in light and dark terminals alike. **624 other themes**, including Catppuccin, Dracula, Nord, Gruvbox, Solarized, and Tokyo Night, are built in. Press Ctrl+E, choose **Choose theme**, and arrow through them to preview; Enter keeps one. `milli --list-themes` lists them, and `--theme NAME` picks one for a single launch. [Theme provenance and licenses](third_party/iterm2-themes/README.md) accompany the catalog.
+
+A lone document has no tab row: just the text and one status line naming the file, its position, kind, and size. Tabs appear when a second document opens. Indent guides for code are off until you choose them from Ctrl+E. **Nerd Font icons** are on by default in Ghostty, Kitty, and WezTerm outside tmux, and off elsewhere. Toggle them from Ctrl+E, or launch with `--icons nerd` or `--icons plain`.
+
+Theme, icon, outline, guide, and view choices are saved to `$XDG_CONFIG_HOME/milli/settings.conf` (by default `~/.config/milli/settings.conf`). `--no-state` disables preferences and recovery.
+
+## Files and safety
+
+- **Exact bytes.** Opening, viewing, and saving never reformat a file. Line endings, a BOM, and trailing whitespace are kept outside your edits.
+- **Changed on disk.** The open file is checked about once a second. Reload from Ctrl+E; reload is undoable, and a changed disk version is never silently overwritten.
+- **Careful saves.** Saves are atomic and keep the file's permissions, group, and (on macOS) extended attributes. A file opened through a symbolic link, as dotfile managers create, is saved to the file the link pointed to when opened. milli refuses saves if that link has moved, if the file has other hard links, if it belongs to another user, or if you cannot write it; Save as stays available.
+- **Speed.** Typing stays around a millisecond or two whatever the file's size: only what is on screen is laid out and highlighted. Files over 256 KiB open in a plain source mode without Markdown rendering.
+- **Limits.** Files must be UTF-8 text without NUL bytes, up to 8 MiB. Hostile Markdown, such as deep nesting or runaway emphasis, cannot stall the editor. Control and bidirectional characters are shown as symbols, never sent to the terminal.
+- **Crash recovery.** Unsaved work is checkpointed about once a second to `$XDG_STATE_HOME/milli/recovery`. After an interrupted session, Ctrl+E → **Recover documents** reopens each copy as a new unsaved tab. Recovery never writes over your files.
+- **Clipboard.** Ctrl+C/X/V use the system clipboard locally and an internal one over SSH or when the system clipboard fails, with a notice. Your terminal's own paste always works and is inserted literally. OSC 52 and native Wayland clipboard support are not implemented.
 
 ## Development
 
-Building from source requires **Rust 1.89 or newer**. The [release guide](docs/releases.md) describes CI, package verification, and the Homebrew update process. milli's code is [MIT licensed](LICENSE); bundled themes and Rust dependencies retain their own notices in release archives.
-
-- [Product and interaction plan](docs/product-plan.md): live editing, rendering, controls, tabs, themes, and ideas for working alongside agents.
-- [Technical plan and milestones](docs/technical-plan.md): proposed Rust stack, source mapping, file safety, compatibility, and the first prototype.
-- [Implementation coordination](docs/coordination.md): current agent ownership, shared interfaces, and prototype acceptance criteria.
-- [Prototype checks](docs/prototype-checks.md): headless verification and a short manual terminal checklist.
-- [Visual testing and UI polish](docs/visual-testing-plan.md): screenshot feedback, the Ghostty keyboard fix, and the reusable test loop with its known limits.
-
-Build and print a headless screen without opening an interactive terminal:
+Building needs **Rust 1.89 or newer**.
 
 ```sh
 cargo build --locked
-cargo run --locked -- --snapshot tests/ui/demo.md
-cargo run --locked -- --snapshot --snapshot-size 160x45 --theme "Catppuccin Mocha" tests/ui/visual/writing.md
-cargo run --locked -- --list-themes
+cargo test --locked
+cargo run --locked -- --snapshot --snapshot-size 100x30 README.md   # headless render
+python3 tools/bench/typing.py --help                               # keystroke latency
 ```
 
-To edit a file in your terminal, run `cargo run --locked -- --theme "Catppuccin Mocha" path/to/note.md`. A saved theme is used by default, falling back to Sage Dark. `--theme` overrides the saved preference for that launch. With no filename, milli opens an untitled Markdown document. Use a [scratch copy of a fixture](docs/prototype-checks.md#manual-smoke-check-once-the-build-is-ready) for experimenting.
+- [Real-terminal test runner](tools/tui-test/README.md): drives the binary through a PTY and captures cells and PNGs; it runs on macOS and Linux.
+- [Release guide](docs/releases.md): CI, archives, and the Homebrew tap.
+- [Key reference](docs/keys.md) and [naming](docs/naming-shortlist.md).
+- Earlier plans: [product](docs/product-plan.md), [technical](docs/technical-plan.md), [visual testing](docs/visual-testing-plan.md), and [checks](docs/prototype-checks.md).
 
-milli has document tabs, live/source views, clickable rendered task boxes, automatic list continuation, selection, undo/redo, and save. Checkbox clicks include the space immediately on either side. Leaving a list keeps subsequent Enter presses in ordinary text. Live view reveals the active block's source. Ctrl+E or F6 changes view, Ctrl+S saves, F4 opens Save As, and F1 shows controls.
-
-F2 or Ctrl+P opens a filterable command palette with shortcut hints. It includes file, search, formatting, history, view, sidebar, theme, and icon actions. Ctrl+G jumps to a source line. An outline sidebar appears automatically for Markdown at 110 columns and above, drawing the heading tree and highlighting the current section. Click a heading to jump, or press F9 to focus the sidebar and use arrows/Enter. A jump from the outline, **Go to heading**, or Ctrl+G places its target a third of the way down the window, with what follows in view. Escape returns to the editor; F9 while focused hides it. The sidebar hides in small windows and can be shown explicitly when at least 60 columns are available. Headings come from the Markdown parser, so fenced-code examples do not appear as headings.
-
-## How documents look
-
-Live view renders Markdown where you read it and shows a block's exact source as soon as the caret enters it. Headings sit on quiet bands tinted by level, with a level mark in the margin: bars that thin with depth, or numbered circles with Nerd Font icons. Tables become aligned grids with rounded borders, wrapping long cells to fit the window; once a row wraps, rules separate every row. An empty header row, the usual way to write a table without one, is left out. Inline code wraps with its padding and adjacent punctuation. Fenced code and YAML front matter become surfaces labelled with their language and highlighted by syntax. GitHub alerts such as `> [!NOTE]` become titled callouts, rules become lines, task boxes replace their bullets, and checked tasks are struck through. Wrapped list items and quotes hang under their text, repeating quote rails. None of this is written to the file: select across a table or put the caret in a code block and the source you typed returns.
-
-The writing column is centered, up to 88 cells wide, with prose wrapped at words. Source view and other text files add line numbers, a current-line surface, and indent guides. Code is highlighted in 41 languages, including Rust, Python, JavaScript, TypeScript, Go, C and C++, Java, Ruby, shell, SQL, HTML, CSS, JSON, YAML, TOML, and diffs. The highlighter is small and built in; it knows each language's comments, strings, keywords, and literals rather than its full grammar. Selections take the theme's selection color, and the caret is a thin bar.
-
-A single tab row holds each document's name, icon, and a dot for unsaved changes; when the outline is open, its header shares that row. The status line shows the format (MARKDOWN, SOURCE, or a language such as RUST), words or lines and how much of them a selection covers, encoding and line endings, progress, and position, as space permits. Long documents show a scroll thumb, which also marks search results while Find is open. Commands are discoverable through F1 and F2; contextual search guidance and errors appear when needed. Find uses one row at 80 columns; Replace adds one more. Narrow windows place actions on a separate row. Routine feedback clears on the next input, while actionable errors remain visible until dismissed or resolved.
-
-## Themes and preferences
-
-**624 built-in themes** include Catppuccin, Dracula, Nord, Gruvbox, Solarized, Tokyo Night, One Dark, and many more. Press F2, choose **Choose theme**, and type to filter. Arrow keys preview the highlighted theme throughout the editor; Enter or a visible row click applies and remembers it. Escape cancels the preview. Theme changes preserve source, selection, and undo history.
-
-`milli --list-themes` lists stable IDs and display names. `--theme nord`, `--theme catppuccin-mocha`, and quoted display names work; `dark` and `light` retain the original Sage palettes. The 622 imported palettes are pinned color data from iTerm2-Color-Schemes; builds and runtime need no theme downloads. [Provenance, licenses, exclusions, and the reproducible importer](third_party/iterm2-themes/README.md) accompany the catalog.
-
-**Nerd Font icons** mark documents, languages, heading levels, tasks, and callouts, and round the status line's badges. Ghostty, Kitty, and WezTerm draw these symbols from built-in fallback fonts, so milli turns icons on there by default, except inside tmux. Elsewhere the default is plain text, which needs no special font. Choose **Toggle Nerd Font icons** in F2, or launch with `--icons nerd` or `--icons plain`. A saved choice overrides detection, and the flag overrides both for that launch. No font is bundled or downloaded.
-
-Explicit theme, sidebar, and icon choices are saved to `$XDG_CONFIG_HOME/milli/settings.conf`, or `~/.config/milli/settings.conf`. If the `milli` config directory is absent and an existing `marklane` directory is present, milli uses those preferences in place. No files are migrated or deleted. Concurrent edits, read-only settings, and invalid files are reported and preserved. `--no-state` disables preferences and recovery. Help, version, theme listing, and headless snapshots never read or write user settings or recovery files.
-
-## Editing controls
-
-| Keys | Action |
-| --- | --- |
-| Ctrl/Alt + Left/Right | Move by word; add Shift to select |
-| Ctrl/Alt + Backspace/Delete | Delete a word or the selection |
-| Ctrl+B | Toggle bold |
-| Alt+I | Toggle italic |
-| Alt+backtick | Toggle inline code |
-| Ctrl+] / Ctrl+[ | Indent / outdent source lines |
-| Tab with a selection / Shift+Tab | Indent / outdent source lines |
-| Alt+Up / Alt+Down | Move the current or selected source lines |
-| Alt+Shift+Up / Alt+Shift+Down | Duplicate source lines above / below |
-| Ctrl+Z / Ctrl+Y or Ctrl+Shift+Z | Undo / redo |
-
-Formatting wraps selected content or inserts a marker pair with the caret inside. Indent adds four spaces; outdent removes up to four spaces or one tab. A plain Tab at a caret inserts a literal tab. Enhanced terminals can also deliver Ctrl+I for italic; Alt+I and the palette avoid its legacy Tab ambiguity.
-
-Move and duplicate act on whole source lines, including every line touched by a selection except a final endpoint at the next line's start. The selection follows its text, and duplication selects the new copy. Each change is one undo step. Moving keeps the BOM, newline sequence, and final-newline presence; duplication uses a local line ending for the new separator. Edge moves are no-ops. These commands are also in F2 when a terminal intercepts modified arrows.
-
-Contiguous non-whitespace typing forms one undo group. Whitespace, navigation, saves, and other commands start a new group; paste, formatting, list continuation, and Replace All remain individual transactions. History retains at most 256 snapshots and 32 MiB across undo/redo, excluding the current document and saved baseline. Older history is evicted first; very large edited snapshots can exceed this budget and cannot retain an undo inverse. The editor preserves source bytes outside intentional edits, including BOM, line endings, and trailing whitespace.
-
-## Workspace, search, and files
-
-Ctrl+N or the tab row's **+** button creates a Markdown tab. Click a tab or use F7/F8 or Ctrl+PageUp/PageDown to switch. Each tab retains its document, undo history, selection, view, and scroll position; clipboard contents are shared. Switching tabs closes Find. Ctrl+W closes the current tab and prompts for unsaved edits. Ctrl+Q checks every dirty tab before quitting; canceling keeps all tabs, including any earlier choices to discard. An unsaved tab shows a `●` after its name. The plus button yields space to the active label in very small windows.
-
-**F10** opens a searchable list of open documents, including unsaved tabs. Filter by filename or path; abbreviated letters match in order, and separate words can match the name and directory. **F11** searches Markdown headings, with level and source line to distinguish repeated names. Both are available from F2 as **Switch document** and **Go to heading**. Arrows choose a result, Enter accepts, and Escape keeps the original document and selection. Heading navigation uses the existing parser, so fenced code is excluded and no language server is required. These additions follow a [focused review of Neovim workflows](docs/lazyvim-research.md).
-
-Ctrl+O opens a directory browser with folders first and text-file candidates visible by default. Enter or click opens an entry; Backspace or the Up button goes to its parent directory. Tab switches between the list and an editable path, F2 toggles hidden files, and F5 toggles all file types. Opening an already open path selects its tab. Errors keep the current document available. Browser opens require UTF-8 text without NUL bytes and are limited to 8 MiB; a listing examines at most 2,048 directory entries, with direct paths available for omitted names.
-
-Ctrl+F opens a compact Find row; Ctrl+R expands it with a replacement field while retaining the query and current result. Search is literal and case-sensitive, including hidden Markdown source. All visible matches receive a subtle highlight, with the current match brighter. F3 / Shift+F3 navigates matches, and the panel's navigation, replacement, and close buttons are clickable. Click or drag within a search field to position its caret or select text.
-
-Tab / Shift+Tab switches directly between Find and With, selecting the destination field's existing text. Enter in Find advances; Enter in With replaces the current result and advances. Alt+R replaces one result; Alt+A replaces all. Replace All is one document undo step. Press Escape before Ctrl+Z to undo document changes; within a search field, Ctrl+Z undoes field input.
-
-On supporting Unix terminals, milli requests disambiguated keyboard input so Shift+Enter can navigate backward. The protocol is restored on exit; Shift+F3 and the Previous button remain available. The [executable test runner](tools/tui-test/README.md) verifies the negotiated input bytes and captures the actual application without opening a native terminal window.
-
-Ctrl+C/X/V uses the native clipboard locally, with a reported internal fallback on backend errors or SSH. The terminal's own paste shortcut also accepts external text. Empty paste preserves the selection. Automated clipboard tests use fake backends; the user reports the follow-up build works, without a per-platform compatibility record. Native Wayland and OSC 52 are not implemented.
-
-The active file is checked for external changes about once a second. F5 or **Reload file from disk** loads fresh disk text. Dirty buffers require a visible confirmation; reload is undoable and is refused if the old text cannot fit the history budget. Undo restores local text as dirty against the latest disk baseline. Missing, unreadable, invalid, or oversized files leave the buffer intact.
-
-Save As requires a new path that is not owned by another tab, and a changed disk baseline blocks overwrite. Changed saves are refused for files you cannot write, even when the folder would allow replacing them, and for symbolic links, hard links, and files that belong to another user; Save As remains available. A replacement keeps the file's permissions and group, its owner under sudo, and on macOS its ACLs and extended attributes such as Finder tags. New files follow the umask. Both command-line and browser opens reject directories, devices, pipes, invalid UTF-8, binary NUL bytes, and files over 8 MiB. Disk-baseline checks stream at most the accepted file size plus one byte, so an externally enlarged file does not cause an unbounded allocation. Atomic replacement still cannot exclude a separate writer after the last check.
-
-Hostile or unusual Markdown cannot stall the editor: deeply nested quotes and emphasis lay out in linear time, and past a fixed budget, runaway `_` emphasis in a paragraph stays literal rather than letting the parser run for minutes. Control characters and bidirectional overrides in documents, filenames, and code-block labels are drawn as visible symbols or removed, never sent to the terminal.
-
-## Crash recovery
-
-Interactive sessions checkpoint dirty named and untitled documents about once a second. After an interrupted session, a startup notice offers **F2 → Recover documents**. Each chosen copy opens in a new, explicitly unsaved tab—even when its recovered text is empty. Save As chooses a new filename; recovery never overwrites a newer disk version. A recovered tab is durably checkpointed before its old recovery record is consumed.
-
-Private snapshots live in `$XDG_STATE_HOME/milli/recovery`, or `~/.local/state/milli/recovery`. The state directory independently falls back to an existing `marklane` directory when `milli` is absent, preserving access to older snapshots without migration. Session locks isolate simultaneous editors. Save and confirmed discard remove the corresponding checkpoint; a canceled quit retains the remaining dirty tabs. Corrupt or unreadable records stay on disk with a diagnostic. Ordinary clean shutdown removes only that session's owned snapshots. Recovery is implemented for Unix and tested on macOS; unsupported platforms report that recovery is unavailable while editing remains usable.
-
-Recovery is a safety net with a roughly one-second checkpoint interval, so edits since the last successful checkpoint can be lost. Each snapshot accepts up to 16 MiB; discovery is bounded to 64 records / 64 MiB and 128 state entries, reporting skipped records. Original documents are never written by recovery. `--no-state` disables all preference and recovery storage.
-
-Footnotes, math, raw inline HTML, and other unsupported constructs remain visible source. The core still uses bounded whole-document history and is intended for small documents. Automatic merging and restoring the complete previous workspace remain future work. Native Wayland/OSC 52, IME, and cross-platform terminal compatibility have not been established by automated tests.
-
-The [verification record](docs/prototype-checks.md#verification-record) records automated tests, build/lint checks, and actual executable captures separately from terminal-specific manual checks. The [local terminal runner](tools/tui-test/README.md) covers compact and wide layouts in light/dark Sage and seven imported palettes, command/outline navigation, source edits, and keyboard protocol behavior. Its known combining-grapheme and emoji rendering limitations remain documented.
-
-The product should be useful with ordinary terminal capabilities. Headings keep one cell height: larger text would need the Kitty text sizing protocol (OSC 66), which Kitty renders but Ghostty 1.3 only parses. Local images remain a possible experiment. Its files remain ordinary Markdown; no account, service, or proprietary document format is required.
+milli was called Eymi through version 0.2.1. Its code is [MIT licensed](LICENSE); bundled themes and Rust dependencies keep their own notices in release archives.
