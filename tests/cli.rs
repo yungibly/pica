@@ -151,10 +151,7 @@ fn milli_command_branding_does_not_initialize_user_state() {
     let config = directory.path().join("config");
     let state = directory.path().join("state");
     for (argument, expected) in [
-        (
-            "--help",
-            "milli — a source-preserving Markdown editor".to_owned(),
-        ),
+        ("--help", "milli — a small terminal text editor".to_owned()),
         ("--version", format!("milli {}", env!("CARGO_PKG_VERSION"))),
         ("--snapshot", "Untitled 1.md".to_owned()),
     ] {
