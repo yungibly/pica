@@ -911,7 +911,12 @@ def rendering(session):
     number = next(chunk for chunk in find_cells(cells, "42") if chunk[0]["y"] > count[0]["y"])
     session.check(number[-1]["x"] == count[-1]["x"], "Right-aligned column ends under its header")
     tab = next(find_cells(cells, "rust"))
-    session.check("▄" in row_of(cells, tab[0]["y"]), "Code surface opens with a labelled edge")
+    page = next(find_cells(cells, "Plain"))[0]["bg"]
+    beside = [c for c in cells if c["y"] == tab[0]["y"] and tab[-1]["x"] < c["x"] <= tab[-1]["x"] + 6]
+    flat = bool(beside) and all(c["bg"] != page for c in beside)
+    session.check(flat or "─" in row_of(cells, tab[0]["y"]),
+                  "Code surface opens with a labelled flat edge, or a rule without a surface color")
+    session.check(not any(c["char"] in "▄▀" for c in cells), "Code surfaces have no half-block bars")
     keyword = next(find_cells(cells, "fn"))
     name = next(find_cells(cells, "main"))
     session.check(keyword[0]["fg"] != name[0]["fg"], "Code keywords and names are highlighted differently")
