@@ -308,6 +308,29 @@ fn a_table_over_the_row_limit_stays_source_and_bounded() {
 }
 
 #[test]
+fn a_very_long_line_lays_out_only_the_rows_shown_from_its_start() {
+    let line = "word ".repeat(30_000);
+    let text = format!("before\n{line}\nafter\n");
+    let mut app = App::new(text.clone(), None, false);
+    draw(&mut app, 80, 24);
+    assert!(bounded(&app));
+    press(&mut app, KeyCode::Down, KeyModifiers::NONE);
+    for _ in 0..20 {
+        press(&mut app, KeyCode::Char('x'), KeyModifiers::NONE);
+        draw(&mut app, 80, 24);
+        assert!(caret_on_screen(&app) && bounded(&app));
+    }
+    // Reaching the end of the line lays out the line up to the caret.
+    press(&mut app, KeyCode::End, KeyModifiers::CONTROL);
+    draw(&mut app, 80, 24);
+    assert!(caret_on_screen(&app));
+    press(&mut app, KeyCode::Up, KeyModifiers::NONE);
+    draw(&mut app, 80, 24);
+    assert!(caret_on_screen(&app));
+    assert!(app.document.selection().head > text.len() / 2);
+}
+
+#[test]
 fn large_files_open_as_plain_source_without_changing_the_live_preference() {
     let mut text = "- item with **bold** text\n".repeat(LARGE_FILE / 20);
     text.push_str("- last");

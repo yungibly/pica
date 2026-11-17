@@ -211,6 +211,9 @@ impl<'a> Layout<'a> {
         let source = self.source;
         self.begin_line(offset);
         while offset < source.len() {
+            if let Some(end) = self.overflow(offset) {
+                return end;
+            }
             if self.context.first_row == self.rows.len() - 1
                 && self.column == 0
                 && let Some(end) = self.rendered_table(offset)
@@ -253,16 +256,42 @@ impl<'a> Layout<'a> {
         source.len()
     }
 
-    /// At a fresh line starting at `offset`: whether the window already has
-    /// its rows. If so, drop the line's empty row and its position.
-    fn full(&mut self, offset: usize) -> bool {
-        if offset < self.source.len() && offset > self.window.through && self.through_row.is_none()
-        {
+    /// Note the row holding `window.through` once layout passes it.
+    fn pass_through(&mut self, offset: usize) {
+        if self.through_row.is_none() && offset > self.window.through {
             self.through_row = Some(
                 self.positions
                     .at_or_before(self.window.through)
                     .map_or(0, |cell| cell.0),
             );
+        }
+    }
+
+    /// Inside a line, past the rows the window needs: drop the rows begun
+    /// beyond them and return where the window ends, so a very long line
+    /// costs the rows shown rather than all of its rows.
+    fn overflow(&mut self, offset: usize) -> Option<usize> {
+        self.pass_through(offset);
+        let keep = self
+            .through_row?
+            .saturating_add(self.window.after)
+            .saturating_add(1);
+        if self.rows.len() <= keep {
+            return None;
+        }
+        let end = self.rows[keep].start;
+        self.rows.truncate(keep);
+        while self.positions.0.last().is_some_and(|(at, _)| *at >= end) {
+            self.positions.0.pop();
+        }
+        Some(end)
+    }
+
+    /// At a fresh line starting at `offset`: whether the window already has
+    /// its rows. If so, drop the line's empty row and its position.
+    fn full(&mut self, offset: usize) -> bool {
+        if offset < self.source.len() {
+            self.pass_through(offset);
         }
         let Some(through) = self.through_row else {
             return false;

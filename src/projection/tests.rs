@@ -942,27 +942,36 @@ fn check_windows(
                 );
             }
         }
-        // A short window ends at a restart row, and holds what it promised.
-        let short = Projection::window(
-            text,
-            parsed,
-            disclosed,
-            width,
-            live,
-            Window { after: 1, ..window },
-        );
-        assert!(short.rows.len() <= p.rows.len());
-        assert!(short.complete() || short.rows.len() >= 2);
-        if !short.complete() {
-            let next = &p.rows[short.rows.len()];
-            assert!(
-                next.restart && next.start == short.end(),
-                "{text:?} from {start}"
+        // A short window ends where a row begins, even inside a line, and
+        // holds the rows it promised exactly as the whole layout does.
+        for after in [0, 1, 3] {
+            let short = Projection::window(
+                text,
+                parsed,
+                disclosed,
+                width,
+                live,
+                Window { after, ..window },
             );
-            assert_eq!(short.locate(short.end()), None);
-        }
-        for (row, expected) in short.rows.iter().zip(&p.rows) {
-            assert!(same_row(row, expected));
+            assert!(short.rows.len() <= p.rows.len());
+            assert!(short.complete() || short.rows.len() > after);
+            if !short.complete() {
+                let next = &p.rows[short.rows.len()];
+                assert_eq!(next.start, short.end(), "{text:?} from {start}");
+                assert_eq!(short.locate(short.end()), None);
+            }
+            for (row, expected) in short.rows.iter().zip(&p.rows) {
+                assert!(same_row(row, expected), "{text:?} from {start}");
+            }
+            for offset in start..short.end() {
+                if text.is_char_boundary(offset) && short.positions.contains(offset) {
+                    assert_eq!(
+                        short.cursor(offset),
+                        p.cursor(offset),
+                        "{text:?} at {offset}"
+                    );
+                }
+            }
         }
     }
 }
