@@ -768,6 +768,22 @@ impl Document {
         &self.text()[self.selection().range()]
     }
 
+    /// The source line containing `offset`, without its line ending. CRLF,
+    /// LF, and a lone CR each end a line.
+    pub fn line_range(&self, offset: usize) -> Range<usize> {
+        let bytes = self.text().as_bytes();
+        let offset = offset.min(bytes.len());
+        let start = bytes[..offset]
+            .iter()
+            .rposition(|b| matches!(b, b'\r' | b'\n'))
+            .map_or(0, |i| i + 1);
+        let end = bytes[offset..]
+            .iter()
+            .position(|b| matches!(b, b'\r' | b'\n'))
+            .map_or(bytes.len(), |i| offset + i);
+        start..end
+    }
+
     /// Find case-sensitive, nonoverlapping literal source matches. A match
     /// must start and end at extended-grapheme boundaries; empty queries match
     /// nothing. Markdown syntax and link destinations are searched verbatim.

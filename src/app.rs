@@ -713,7 +713,7 @@ impl App {
             KeyCode::PageDown => self.vertical(self.viewport.height.max(1) as isize, shift),
             KeyCode::Home | KeyCode::End => {
                 let (row, _) = self.caret_position();
-                let row = &self.projection.rows[row];
+                let row = self.projection.row(row);
                 self.move_to(
                     if key.code == KeyCode::Home {
                         row.start
@@ -816,8 +816,7 @@ impl App {
             } else {
                 (self.scroll + 3).min(
                     self.projection
-                        .rows
-                        .len()
+                        .row_count()
                         .saturating_sub(self.viewport.height as usize),
                 )
             };
@@ -1446,7 +1445,7 @@ impl App {
         if std::mem::take(&mut self.reveal) && height > 0 {
             self.scroll = cursor_row
                 .saturating_sub(height / 3)
-                .min(self.projection.rows.len().saturating_sub(height));
+                .min(self.projection.row_count().saturating_sub(height));
         }
         if self.follow_cursor && height > 0 {
             if cursor_row < self.scroll {
@@ -1458,7 +1457,7 @@ impl App {
         }
         self.scroll = self
             .scroll
-            .min(self.projection.rows.len().saturating_sub(1));
+            .min(self.projection.row_count().saturating_sub(1));
         let filename = self.file.as_ref().map_or_else(
             || "Untitled.md".into(),
             |f| safe_text(&f.path.display().to_string()),
@@ -1487,7 +1486,7 @@ impl App {
             None
         };
         let colors = palette();
-        let rows = &self.projection.rows;
+        let rows = self.projection.rows(0..self.projection.row_count());
         let line_of = |row: usize| {
             rows[..=row.min(rows.len() - 1)]
                 .iter()
@@ -1659,7 +1658,7 @@ impl App {
     /// A thin thumb on the editor's right edge, only when content overflows.
     /// While Find is open, the track also marks where matches are.
     fn draw_scrollbar(&self, frame: &mut Frame, area: Rect, height: usize) {
-        let total = self.projection.rows.len();
+        let total = self.projection.row_count();
         if height == 0 || total <= height || area.width < 3 {
             return;
         }
@@ -3435,12 +3434,12 @@ mod tests {
         draw(&mut app, 80, 24);
         assert_eq!(app.document.selection().head, source.find("text").unwrap());
         assert_eq!(app.document.text(), source);
-        assert!(app.projection.rows[2].glyphs.iter().any(|g| g.text == "["));
+        assert!(app.projection.row(2).glyphs.iter().any(|g| g.text == "["));
     }
 
     fn checkbox_position(app: &App) -> (usize, usize) {
         app.projection
-            .rows
+            .rows(0..app.projection.row_count())
             .iter()
             .enumerate()
             .find_map(|(row, visual)| {
@@ -3502,7 +3501,7 @@ mod tests {
             draw(&mut app, 80, 24);
             assert!(
                 app.projection
-                    .rows
+                    .rows(0..app.projection.row_count())
                     .iter()
                     .flat_map(|r| &r.glyphs)
                     .all(|g| g.task.is_none())
@@ -3576,7 +3575,7 @@ mod tests {
                 app.projection
                     .pointer_task(
                         &app.parsed,
-                        app.projection.rows.len(),
+                        app.projection.row_count(),
                         column,
                         usize::from(app.viewport.width)
                     )
@@ -3658,7 +3657,7 @@ mod tests {
         draw(&mut app, 24, 20);
         assert!(
             app.projection
-                .rows
+                .rows(0..app.projection.row_count())
                 .iter()
                 .flat_map(|r| &r.glyphs)
                 .any(|g| g.text == "*")
@@ -3763,7 +3762,7 @@ mod tests {
     fn end_and_blank_cell_click_keep_upstream_wrap_affinity() {
         let mut app = App::new("abcdefghijklmnopqrstuvwxyz0123456789".into(), None, false);
         draw(&mut app, 12, 12);
-        let first_end = app.projection.rows[0].end;
+        let first_end = app.projection.row(0).end;
         key(&mut app, KeyCode::End, KeyModifiers::NONE);
         draw(&mut app, 12, 12);
         assert_eq!(app.document.selection().head, first_end);
@@ -5001,7 +5000,7 @@ mod tests {
         // The document's end stays at the bottom rather than rising above it.
         app.jump_to_source(text.find("## End").unwrap());
         draw(&mut app, 80, 24);
-        assert_eq!(app.scroll, app.projection.rows.len() - height);
+        assert_eq!(app.scroll, app.projection.row_count() - height);
         assert!(app.caret_position().0 - app.scroll > reading);
         app.jump_to_source(text.find("A paragraph").unwrap());
         draw(&mut app, 80, 24);

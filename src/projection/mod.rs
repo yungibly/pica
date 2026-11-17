@@ -71,7 +71,7 @@ impl VisualRow {
 
 #[derive(Clone, Debug)]
 pub struct Projection {
-    pub rows: Vec<VisualRow>,
+    rows: Vec<VisualRow>,
     pub revision: u64,
     positions: Positions,
 }
@@ -144,6 +144,21 @@ impl Projection {
         live: bool,
     ) -> Self {
         layout::build(source, parsed, disclosed, width, live)
+    }
+
+    /// A visual row of this projection. Row numbers are local to it.
+    pub fn row(&self, index: usize) -> &VisualRow {
+        &self.rows[index]
+    }
+
+    pub fn row_count(&self) -> usize {
+        self.rows.len()
+    }
+
+    /// Consecutive rows, clamped to those laid out.
+    pub fn rows(&self, range: Range<usize>) -> &[VisualRow] {
+        let end = range.end.min(self.rows.len());
+        &self.rows[range.start.min(end)..end]
     }
 
     pub fn cursor(&self, offset: usize) -> (usize, usize) {
