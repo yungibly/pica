@@ -34,7 +34,6 @@ use std::{
     io,
     path::{Component, Path, PathBuf},
 };
-use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 struct Tab {
@@ -574,22 +573,13 @@ impl Workspace {
                 PaletteAction::Close => self.palette = None,
                 PaletteAction::Command(command) => self.run_command(command),
                 PaletteAction::Line(line) => {
-                    let source = self.editor().document.text();
-                    let mut current = 1;
-                    let mut offset = source.len();
-                    if line == 1 {
-                        offset = 0;
+                    let document = &self.editor().document;
+                    // Lines past the end go to the end of the document.
+                    let offset = if line <= document.line_count() {
+                        document.line_start(line - 1)
                     } else {
-                        for (index, grapheme) in source.grapheme_indices(true) {
-                            if matches!(grapheme, "\r" | "\n" | "\r\n") {
-                                current += 1;
-                                if current == line {
-                                    offset = index + grapheme.len();
-                                    break;
-                                }
-                            }
-                        }
-                    }
+                        document.text().len()
+                    };
                     self.palette = None;
                     self.editor_mut().jump_to_source(offset);
                 }
