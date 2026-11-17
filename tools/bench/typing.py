@@ -7,8 +7,8 @@ wraps around every frame (CSI ? 2026 l). Typing, Enter, Backspace, and undo
 are measured at the start, middle, and end of every file, on a scratch copy.
 
     cargo build --release
-    python3 tools/bench/typing.py --binary target/release/milli \\
-        src/app.rs README.md docs/product-plan.md generated:1000 big.md
+    python3 tools/bench/typing.py src/app.rs README.md \\
+        docs/product-plan.md generated:1000 big.md
 
 `generated:N` writes a deterministic N-line Markdown document. `--rss`
 reports the resident set size after the edits. Standard library only;
@@ -231,7 +231,9 @@ def measure(binary, path, label, args, ops, positions, samples, warmup, size, rs
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("--binary", default="target/release/milli")
+    parser.add_argument(
+        "--binary", help="default: target/release/pica, else target/release/milli"
+    )
     parser.add_argument("--size", default="120x40", help="COLUMNSxROWS")
     parser.add_argument("--samples", type=int, default=15, help="rounds per position")
     parser.add_argument("--warmup", type=int, default=2)
@@ -243,7 +245,15 @@ def main():
     parser.add_argument("files", nargs="+")
     options = parser.parse_args()
     columns, rows = (int(part) for part in options.size.lower().split("x"))
-    binary = os.path.abspath(options.binary)
+    binary = options.binary or next(
+        (
+            path
+            for path in ("target/release/pica", "target/release/milli")
+            if os.path.exists(path)
+        ),
+        "target/release/milli",
+    )
+    binary = os.path.abspath(binary)
     ops = options.ops.split(",")
     positions = options.positions.split(",")
     scratch = tempfile.mkdtemp(prefix="milli-bench-")
