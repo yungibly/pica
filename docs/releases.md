@@ -6,6 +6,16 @@ in [`yungibly/homebrew-tap`](https://github.com/yungibly/homebrew-tap).
 The source uses the MIT license. Theme and dependency licenses accompany every
 binary archive and are installed by the formula under pica's shared data directory.
 
+`v0.3.1` is [published](https://github.com/yungibly/pica/releases/tag/v0.3.1).
+It came through [pull request #1](https://github.com/yungibly/pica/pull/1). Its
+[CI on the release commit](https://github.com/yungibly/pica/actions/runs/44391320565),
+[native release builds](https://github.com/yungibly/pica/actions/runs/44393383251),
+and [three-platform Homebrew installation checks](https://github.com/yungibly/pica/actions/runs/44394377379)
+all passed before the tap update. Its draft assets were also checked by hand on
+Linux: checksums, `package.py verify`, the extracted binary's version and
+themes, and real-PTY clicks and drags on a lone document's top row, with
+exact saved source. The tap's formula hashes match `SHA256SUMS`.
+
 `v0.3.0`, the first release named pica, is
 [published](https://github.com/yungibly/pica/releases/tag/v0.3.0). Its
 [CI](https://github.com/yungibly/pica/actions/runs/44004997979),
