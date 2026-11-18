@@ -357,6 +357,22 @@ fn word_selection_formatting_indentation_and_typing_undo_reach_the_core() {
 }
 
 #[test]
+fn sgr_clicks_and_drags_on_a_lone_documents_top_row_reach_the_text() {
+    // A lone document has no tab row, so its first line is terminal row 1.
+    // At 100 columns the live prose column starts six cells in.
+    let source = "alpha beta\ngamma\n";
+    let mut session = Session::start(source);
+    session.send(b"\x1b[<0;13;1M\x1b[<32;17;1M\x1b[<0;17;1m\x1b[98;5u");
+    session.save_and_expect("alpha **beta**\ngamma\n");
+    session.send(b"\x1b[122;5u");
+    session.save_and_expect(source);
+    // A plain click on the top row places the caret there for typing.
+    session.send(b"\x1b[<0;12;1M\x1b[<0;12;1m!");
+    session.save_and_expect("alpha! beta\ngamma\n");
+    session.finish();
+}
+
+#[test]
 fn crash_recovery_and_saved_themes_survive_a_real_process_restart() {
     recovery_restart(false);
 }

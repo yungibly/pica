@@ -110,6 +110,9 @@ pub struct Workspace {
     last_tick: Instant,
     area: Rect,
     layout_valid: bool,
+    /// Whether the last frame drew the tab row. Without it, a lone
+    /// document's text starts on the top row and takes its pointer events.
+    header: bool,
     /// Whether Markdown opens live; an explicit switch is remembered.
     markdown_live: bool,
     /// Indent guides in code and source views, off until chosen.
@@ -140,6 +143,7 @@ impl Workspace {
             last_tick: Instant::now(),
             area: Rect::new(0, 0, 80, 24),
             layout_valid: false,
+            header: false,
             markdown_live: true,
             guides: false,
             should_exit: false,
@@ -927,8 +931,15 @@ impl Workspace {
                     self.sidebar.focused = false;
                 }
             }
+            // A drag that wanders onto the tab row still belongs to the
+            // editor, which ends it on release.
             if let Event::Mouse(mouse) = &event
-                && mouse.row == 0
+                && self.header
+                && mouse.row == self.area.y
+                && !matches!(
+                    mouse.kind,
+                    MouseEventKind::Drag(MouseButton::Left) | MouseEventKind::Up(MouseButton::Left)
+                )
             {
                 if mouse.kind == MouseEventKind::Down(MouseButton::Left)
                     && let Some(target) = self.tab_hits.iter().find_map(|(rect, target)| {
@@ -1059,6 +1070,7 @@ impl Workspace {
         );
         // Like micro, a lone document has no tab row; the status line names it.
         let header = self.tabs.len() > 1 || sidebar_visible;
+        self.header = header;
         let label = self.name(self.active);
         let guides = self.guides;
         let editor = self.editor_mut();
@@ -1421,6 +1433,84 @@ mod tests {
         for size in [(1, 1), (3, 6), (12, 8), (80, 24)] {
             draw(&mut app, size.0, size.1);
         }
+    }
+
+    fn pointer(app: &mut Workspace, kind: MouseEventKind, column: u16, row: u16) {
+        app.handle_event(Event::Mouse(MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        }));
+    }
+
+    #[test]
+    fn lone_document_top_row_takes_clicks_and_drags() {
+        use MouseButton::Left;
+        use MouseEventKind::{Down, Drag, Up};
+        let mut app = Workspace::open(None).unwrap();
+        app.handle_event(Event::Paste("alpha beta\ngamma delta\n".into()));
+        for live in [true, false] {
+            if app.editor().live != live {
+                ctrl(&mut app, 'r');
+            }
+            draw(&mut app, 80, 24);
+            assert!(!app.header);
+            let x = app.editor().viewport.x;
+            assert_eq!(app.editor().viewport.y, 0);
+            pointer(&mut app, Down(Left), x + 6, 0);
+            assert_eq!(app.editor().document.selection().head, 6);
+            draw(&mut app, 80, 24);
+            pointer(&mut app, Drag(Left), x + 10, 0);
+            draw(&mut app, 80, 24);
+            pointer(&mut app, Up(Left), x + 10, 0);
+            assert_eq!(app.editor().document.selected_text(), "beta");
+            // A drag from the second row up onto the first selects across both.
+            draw(&mut app, 80, 24);
+            pointer(&mut app, Down(Left), x + 5, 1);
+            draw(&mut app, 80, 24);
+            pointer(&mut app, Drag(Left), x, 0);
+            draw(&mut app, 80, 24);
+            pointer(&mut app, Up(Left), x, 0);
+            assert_eq!(app.editor().document.selected_text(), "alpha beta\ngamma");
+        }
+    }
+
+    #[test]
+    fn tab_row_ends_a_drag_without_moving_the_caret_or_switching_tabs() {
+        use MouseButton::Left;
+        use MouseEventKind::{Down, Drag, Up};
+        let mut app = Workspace::open(None).unwrap();
+        app.handle_event(Event::Paste("alpha beta\ngamma delta\n".into()));
+        ctrl(&mut app, 't');
+        app.handle_event(Event::Paste("second\nline\n".into()));
+        draw(&mut app, 80, 24);
+        assert!(app.header);
+        let first = app
+            .tab_hits
+            .iter()
+            .find(|(_, target)| *target == tabs::Target::Activate(0))
+            .unwrap()
+            .0;
+        let x = app.editor().viewport.x;
+        assert_eq!(app.editor().viewport.y, 1);
+        pointer(&mut app, Down(Left), x + 2, 1);
+        draw(&mut app, 80, 24);
+        pointer(&mut app, Drag(Left), x + 4, 1);
+        draw(&mut app, 80, 24);
+        pointer(&mut app, Drag(Left), first.x, 0);
+        draw(&mut app, 80, 24);
+        pointer(&mut app, Up(Left), first.x, 0);
+        assert_eq!(app.active, 1);
+        assert_eq!(app.editor().document.selected_text(), "co");
+        // The release ended the drag, so a stray motion report selects nothing.
+        draw(&mut app, 80, 24);
+        pointer(&mut app, Drag(Left), x + 6, 2);
+        assert_eq!(app.editor().document.selected_text(), "co");
+        // A click on a tab still switches to it.
+        draw(&mut app, 80, 24);
+        pointer(&mut app, Down(Left), first.x, 0);
+        assert_eq!(app.active, 0);
     }
 
     fn new_document_button(app: &Workspace) -> Option<Rect> {
