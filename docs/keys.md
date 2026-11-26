@@ -20,6 +20,27 @@ command with its key.
 | Ctrl+E, then "Save as" | Save to a new filename |
 | Ctrl+E, then "Reload" | Reload the file from disk |
 
+## File browser
+
+Ctrl+O lists the folder of the current file: folders first, then text files.
+
+| Key | Action |
+| --- | --- |
+| Letters and digits | Narrow the listing to matching names. Case does not matter, and letters need only appear in order: `ntm` finds `notes.md`. |
+| Up / Down, PageUp / PageDown, Home / End | Choose among the names shown |
+| Enter | Open the chosen file, or go into the chosen folder |
+| / | After a filter, go into the folder it chose, so `sr/ap` reads like a path. With nothing typed, start a path from the root. |
+| ~ | With nothing typed, start a path from your home folder |
+| Backspace | Delete from the filter; when it is empty, go up to the parent folder |
+| Ctrl+U | Clear the filter |
+| Tab | Switch between the listing and the path field, where a whole path can be typed, pasted or edited |
+| Alt+H | Show or hide hidden (dot) files. A filter that starts with a dot finds them either way. |
+| Alt+A | Show every file, or only those that look like text |
+| Esc or Ctrl+Q | Close the browser |
+
+The folder and what you have typed read as one path at the top. The same
+controls are along the second row for the mouse.
+
 ## Editing
 
 | Key | Action |
@@ -158,8 +179,8 @@ you work until Esc dismisses it; the status line says so.
 Function keys from earlier versions still work but are not shown anywhere:
 F1 help, F2 commands, F3 / Shift+F3 next / previous match, F4 save as, F5
 reload, F6 live or source view, F7 / F8 previous / next tab, F9 outline
-sidebar, F10 switch document and F11 go to heading. Nano's Ctrl+W also opens
-Find.
+sidebar, F10 switch document and F11 go to heading. Inside the file browser,
+F2 and F5 are Alt+H and Alt+A. Nano's Ctrl+W also opens Find.
 
 ## Terminal notes
 
