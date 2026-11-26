@@ -673,14 +673,8 @@ fn front_matter_is_a_surface_not_a_rule_and_heading() {
 
 #[test]
 fn inline_code_delimiters_become_padding_of_the_same_width() {
-    crate::theme::set_theme(crate::theme::Theme::Terminal);
-    let text = "a `b` c\n\nx";
-    // With no code surface to pad, the backticks stay as quiet marks.
-    assert_eq!(
-        display(&project(text, text.len(), 40, true)),
-        "a `b` c\n\nx"
-    );
     crate::theme::set_theme(crate::theme::Theme::Dark);
+    let text = "a `b` c\n\nx";
     let rendered = project(text, text.len(), 40, true);
     assert_eq!(display(&rendered), "a  b  c\n\nx");
     let background = crate::theme::palette().code_background;
@@ -689,6 +683,124 @@ fn inline_code_delimiters_become_padding_of_the_same_width() {
             .iter()
             .all(|g| g.style.bg == Some(background))
     );
+}
+
+#[test]
+fn inline_code_without_a_surface_hides_its_backticks_and_keeps_its_color() {
+    crate::theme::set_theme(crate::theme::Theme::Terminal);
+    let colors = crate::theme::palette();
+    assert_eq!(colors.code_background, colors.background);
+    // With no code surface to pad, the backticks are hidden like bold's
+    // stars, and the code's own color sets it apart from the prose.
+    let text = "a `b` c and `` `tick` `` and ` d `\n\nx";
+    let rendered = project(text, text.len(), 60, true);
+    assert_eq!(display(&rendered), "a b c and `tick` and d\n\nx");
+    let spans = [
+        text.find('b').unwrap()..text.find('b').unwrap() + 1,
+        text.find("`tick`").unwrap()..text.find("`tick`").unwrap() + 6,
+        text.find(" d ").unwrap() + 1..text.find(" d ").unwrap() + 2,
+    ];
+    for glyph in &rendered.rows[0].glyphs {
+        let code = spans.iter().any(|span| span.contains(&glyph.source.start));
+        assert_eq!(
+            glyph.style.fg == Some(colors.code),
+            code,
+            "{:?} at column {}",
+            glyph.text,
+            glyph.column
+        );
+    }
+    // The caret maps through the hidden marks, and clicks land on letters.
+    let b = text.find('b').unwrap();
+    assert_eq!(rendered.cursor(b), (0, 2));
+    assert_eq!(rendered.hit(0, 2).offset, b);
+    assert_eq!(rendered.cursor(b + 2), (0, 3));
+    // The block holding the caret shows its exact source.
+    assert_eq!(display(&project(text, 0, 60, true)), text);
+    // Code that is only spaces would vanish without its backticks.
+    let blank = "see `  ` here\n\nx";
+    assert_eq!(display(&project(blank, blank.len(), 40, true)), blank);
+    // Source view never hides anything.
+    assert_eq!(display(&project(text, text.len(), 60, false)), text);
+    crate::theme::set_theme(crate::theme::Theme::Dark);
+}
+
+#[test]
+fn badges_and_images_show_their_label_alone() {
+    use crate::icons::{self, IconSet};
+    let old_icons = icons::current();
+    icons::set(IconSet::Plain);
+    crate::theme::set_theme(crate::theme::Theme::Dark);
+    let link = crate::theme::palette().link;
+    let styled = |p: &Projection, row: usize, word: &str, underlined: bool, italic: bool| {
+        let line = row_text(&p.rows[row]);
+        let at = line
+            .find(word)
+            .unwrap_or_else(|| panic!("{word} in {line:?}"));
+        let glyphs: Vec<_> = p.rows[row]
+            .glyphs
+            .iter()
+            .filter(|g| g.width > 0)
+            .skip(line[..at].chars().count())
+            .take(word.chars().count())
+            .collect();
+        for glyph in glyphs {
+            let modifiers = glyph.style.add_modifier;
+            assert_eq!(glyph.style.fg, Some(link), "{word}: {:?}", glyph.text);
+            assert_eq!(
+                modifiers.contains(Modifier::UNDERLINED),
+                underlined,
+                "{word}"
+            );
+            assert_eq!(modifiers.contains(Modifier::ITALIC), italic, "{word}");
+        }
+    };
+    // A badge is an image inside a link: its alt text, styled as a link.
+    let badge = "intro\n\n[![CI](https://example.com/ci/badge.svg)](https://example.com/ci) [![Docs](d.svg)](https://docs.example) and ![a cat](cat.png) end\n";
+    let p = project(badge, 0, 80, true);
+    assert_eq!(row_text(&p.rows[2]), "CI Docs and a cat end");
+    styled(&p, 2, "CI", true, true);
+    styled(&p, 2, "Docs", true, true);
+    styled(&p, 2, "a cat", false, true);
+    // Clicks and the caret land in the alt text, never in hidden syntax.
+    let ci = badge.find("CI").unwrap();
+    assert_eq!(p.cursor(ci), (2, 0));
+    assert_eq!(p.hit(2, 1).offset, ci + 1);
+    let docs = badge.find("Docs").unwrap();
+    assert_eq!(p.hit(2, 3).offset, docs);
+    // The block holding the caret shows its exact source.
+    let active = project(badge, ci, 200, true);
+    assert_eq!(row_text(&active.rows[2]), badge.lines().nth(2).unwrap());
+    // Labels need not be a plain slice of the source.
+    for (source, shown) in [
+        ("[a `](` b](u)", "a  ](  b"),
+        ("[a \\[b\\]](u)", "a \\[b\\]"),
+        ("[**bold** label](u \"title\")", "bold label"),
+        ("![alt *with* emphasis](i.png)", "alt with emphasis"),
+        ("[label ](u)", "label "),
+        // Reference links and labels with nothing to show stay as written.
+        ("[text][ref]", "[text][ref]"),
+        ("[](https://example.com)", "[](https://example.com)"),
+        ("![](shot.png)", "![](shot.png)"),
+        ("[![](badge.svg)](u)", "![](badge.svg)"),
+    ] {
+        let text = format!("intro\n\nsee {source} here\n\n[ref]: https://example.com\n");
+        let p = project(&text, 0, 80, true);
+        assert_eq!(
+            row_text(&p.rows[2]),
+            format!("see {shown} here"),
+            "{source}"
+        );
+    }
+    // An optional icon stands in for the image's mark.
+    icons::set(IconSet::Nerd);
+    let icon = IconSet::Nerd.image();
+    let p = project(badge, 0, 80, true);
+    assert_eq!(
+        row_text(&p.rows[2]),
+        format!("{icon} CI {icon} Docs and {icon} a cat end")
+    );
+    icons::set(old_icons);
 }
 
 #[test]
