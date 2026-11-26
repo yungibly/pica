@@ -18,7 +18,7 @@ command with its key.
 | Ctrl+Q | Close the current tab, asking first if it has unsaved changes. Closing the last tab quits. |
 | Ctrl+E, then "Quit pica" | Quit, checking every unsaved tab |
 | Ctrl+E, then "Save as" | Save under another name or in another place; see below |
-| Ctrl+E, then "Reload" | Reload the file from disk. A file that changes while you have no unsaved edits reloads by itself. |
+| Ctrl+E, then "Reload" | Reload the file from disk. A file that changes while you have no unsaved edits, and none undone that Ctrl+Y could redo, reloads by itself. |
 
 ## Save as
 
