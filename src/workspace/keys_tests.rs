@@ -83,6 +83,8 @@ fn quit_all_stays_in_the_palette_and_checks_every_dirty_tab() {
     draw(&mut app);
     plain(&mut app, 'n');
     draw(&mut app);
+    // Each tab is answered with a press of its own, a beat apart.
+    app.beat();
     plain(&mut app, 'n');
     assert!(app.should_exit);
 }

@@ -606,6 +606,18 @@ impl App {
         matches!(self.overlay, Overlay::SaveAs { .. })
     }
 
+    /// The question this editor is asking that one key answers, by kind:
+    /// whether to save before quitting, to reload over edits, or to go
+    /// ahead with what Save As found in the way.
+    pub(crate) fn question(&self) -> Option<u8> {
+        match self.overlay {
+            Overlay::Quit => Some(1),
+            Overlay::Reload => Some(2),
+            Overlay::SaveAs { .. } => self.save_as.question_kind(),
+            Overlay::None | Overlay::Help | Overlay::Search { .. } => None,
+        }
+    }
+
     /// Show a problem the user must not miss. It stays through typing and
     /// movement until Esc dismisses it or its cause goes away.
     pub(crate) fn set_message(&mut self, message: impl Into<String>) {
@@ -2670,11 +2682,19 @@ impl App {
                 }
                 self.help_scroll = self.help_scroll.min(help_sheet(1).len() - 1);
             }
-            Overlay::Quit => match key.code {
-                KeyCode::Char('y' | 'Y') => self.save(true),
-                KeyCode::Char('n' | 'N') => self.should_exit = true,
-                _ => {}
-            },
+            // Like every question, only a plain press answers: never a
+            // repeat a terminal reports as one, nor a chord.
+            Overlay::Quit
+                if key.kind == KeyEventKind::Press
+                    && (key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT) =>
+            {
+                match key.code {
+                    KeyCode::Char('y' | 'Y') => self.save(true),
+                    KeyCode::Char('n' | 'N') => self.should_exit = true,
+                    _ => {}
+                }
+            }
+            Overlay::Quit => {}
             Overlay::None | Overlay::Search { .. } | Overlay::Reload | Overlay::SaveAs { .. } => {}
         }
     }
@@ -6041,6 +6061,32 @@ mod tests {
         for width in 0..6 {
             draw(&mut app, width, 2);
         }
+    }
+
+    #[test]
+    fn the_quit_question_takes_only_a_plain_press() {
+        let mut app = App::new(String::new(), None, true);
+        app.handle_event(Event::Paste("unsaved".into()));
+        key(&mut app, KeyCode::Char('q'), KeyModifiers::CONTROL);
+        assert_eq!(app.overlay, Overlay::Quit);
+        // A repeat a terminal reports as one, and chords, answer nothing.
+        for kind in [KeyEventKind::Repeat, KeyEventKind::Release] {
+            for answer in ['n', 'y'] {
+                app.handle_event(Event::Key(KeyEvent::new_with_kind(
+                    KeyCode::Char(answer),
+                    KeyModifiers::NONE,
+                    kind,
+                )));
+            }
+        }
+        for modifiers in [KeyModifiers::CONTROL, KeyModifiers::ALT] {
+            key(&mut app, KeyCode::Char('n'), modifiers);
+            key(&mut app, KeyCode::Char('y'), modifiers);
+        }
+        assert_eq!(app.overlay, Overlay::Quit);
+        assert!(!app.should_exit && app.document.is_dirty());
+        key(&mut app, KeyCode::Char('N'), KeyModifiers::SHIFT);
+        assert!(app.should_exit);
     }
 
     #[test]

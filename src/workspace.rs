@@ -1,4 +1,6 @@
 //! Document workspace. Each tab owns its editor; clipboard and quit intent are session-wide.
+#[cfg(test)]
+mod answer_tests;
 mod bindings;
 #[cfg(test)]
 mod keys_tests;
@@ -54,6 +56,52 @@ const OPENER: fn(&str) -> io::Result<()> =
 
 /// How long typing must pause before the outline may appear or disappear.
 const OUTLINE_HOLD: Duration = Duration::from_millis(700);
+
+/// After a key answers a question, another press of it this soon is the
+/// same press, still held: longer than the wait before a held key starts to
+/// repeat, which is 660 ms by default under X11 and less elsewhere.
+const ANSWER_HOLD: Duration = Duration::from_millis(700);
+/// Presses of one key closer together than this are a held key repeating.
+const REPEAT_GAP: Duration = Duration::from_millis(200);
+
+/// The key that last answered a question, while it may still be held down.
+/// Most terminals report a held key as one press after another, and the
+/// next press would answer the next question the same way, or be typed
+/// into the document.
+struct Answer {
+    key: Held,
+    /// When it answered.
+    at: Instant,
+    /// When it was last pressed, answering or swallowed.
+    last: Instant,
+}
+
+/// A key as a held key repeats it: a letter in either case is one key, and
+/// the same letter with Ctrl or Alt is another.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct Held {
+    code: KeyCode,
+    chord: bool,
+}
+
+impl Held {
+    fn of(key: &KeyEvent) -> Self {
+        Self {
+            code: match key.code {
+                KeyCode::Char(c) => KeyCode::Char(c.to_lowercase().next().unwrap_or(c)),
+                code => code,
+            },
+            chord: key
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT),
+        }
+    }
+
+    /// The only kind of key a question takes as its answer.
+    fn answers(self) -> bool {
+        matches!(self.code, KeyCode::Char(_)) && !self.chord
+    }
+}
 
 /// The answers to the unsaved-document question, and its greatest width.
 const UNSAVED_KEYS: &[(&str, &str)] = &[("Y", "Save"), ("N", "Discard"), ("Esc", "Cancel")];
@@ -153,6 +201,8 @@ pub struct Workspace {
     opener: fn(&str) -> io::Result<()>,
     /// The user's own keys, from `keys.conf`.
     bindings: bindings::Bindings,
+    /// The key that just answered a question, until it stops repeating.
+    answered: Option<Answer>,
     /// A key sent by a command or a binding, which bindings leave alone.
     synthetic: bool,
     pub should_exit: bool,
@@ -181,6 +231,7 @@ impl Workspace {
             last_tick: Instant::now(),
             last_typed: None,
             bindings: bindings::Bindings::default(),
+            answered: None,
             synthetic: false,
             area: Rect::new(0, 0, 80, 24),
             layout_valid: false,
@@ -710,7 +761,7 @@ impl Workspace {
     /// Act on a key with its default meaning, whatever the user has bound.
     fn send(&mut self, code: KeyCode, modifiers: KeyModifiers) {
         let outer = std::mem::replace(&mut self.synthetic, true);
-        self.handle_event(Event::Key(KeyEvent::new(code, modifiers)));
+        self.dispatch(Event::Key(KeyEvent::new(code, modifiers)));
         self.synthetic = outer;
     }
 
@@ -893,9 +944,79 @@ impl Workspace {
     }
 
     pub fn handle_event(&mut self, event: Event) {
+        self.handle_event_at(event, Instant::now);
+    }
+
+    /// The question waiting for a one-key answer, told apart from the next
+    /// one: its kind, the tab it is about, and how many tabs are left to ask.
+    fn question(&self) -> Option<(u8, usize, usize)> {
+        let tab = self.tabs[self.active].number;
+        match self.pending.as_ref().filter(|pending| !pending.saving) {
+            Some(pending) => Some((0, tab, pending.remaining.len())),
+            None => self.editor().question().map(|kind| (kind, tab, 0)),
+        }
+    }
+
+    /// Time passes, as between one deliberate answer and the next.
+    #[cfg(test)]
+    pub(crate) fn beat(&mut self) {
+        if let Some(answer) = &mut self.answered {
+            answer.at -= ANSWER_HOLD * 2;
+            answer.last -= ANSWER_HOLD * 2;
+        }
+    }
+
+    /// Handle an event, reading the time from `clock`.
+    ///
+    /// A key that answers a question is not taken again while it is held.
+    /// Without this, holding N at "Quit pica" discards every unsaved tab in
+    /// turn, and a Y held a moment too long at "Replace file?" goes on to
+    /// type into the document. Further presses of the answering key are
+    /// dropped, wherever they would go, for `ANSWER_HOLD` after the answer
+    /// and for as long as they keep coming `REPEAT_GAP` apart. Any other
+    /// key, or a pause, ends that; so answering several questions with one
+    /// key takes a beat between them.
+    pub(crate) fn handle_event_at(&mut self, event: Event, mut clock: impl FnMut() -> Instant) {
         if matches!(event, Event::Key(key) if key.kind == KeyEventKind::Release) {
             return;
         }
+        let now = clock();
+        // Keys a command or a binding sends are not presses.
+        let pressed = match &event {
+            Event::Key(key) if !self.synthetic => Some(Held::of(key)),
+            _ => None,
+        };
+        if let (Some(key), Some(answer)) = (pressed, &mut self.answered) {
+            let held = now.saturating_duration_since(answer.at) < ANSWER_HOLD
+                || now.saturating_duration_since(answer.last) < REPEAT_GAP;
+            if answer.key == key && held {
+                answer.last = now;
+                return;
+            }
+            self.answered = None;
+        }
+        let asked = pressed
+            .filter(|key| key.answers())
+            .and_then(|key| Some((key, self.question()?)));
+        self.dispatch(event);
+        // A character that made the question go away, or gave way to the
+        // next one, answered it.
+        if let Some((key, asked)) = asked
+            && self.question() != Some(asked)
+        {
+            // Acting on an answer can take a while, a save to a slow disk
+            // most of all, and the presses that queued up behind it arrive
+            // together when it is done. The hold counts from there.
+            let done = clock();
+            self.answered = Some(Answer {
+                key,
+                at: done,
+                last: done,
+            });
+        }
+    }
+
+    fn dispatch(&mut self, event: Event) {
         // Workspace commands may return without reaching App, including a tab
         // switch to the already active tab. They still end a typing transaction.
         let typing = matches!(&event, Event::Key(key)
@@ -1636,6 +1757,9 @@ mod tests {
         assert_eq!(app.tabs[0].editor.document.text(), "first");
         app.run_command(Command::Quit);
         plain(&mut app, 'n');
+        // The next answer is a press of its own, a beat later: a key still
+        // held from the first would not count.
+        app.beat();
         plain(&mut app, 'n');
         assert!(app.should_exit);
     }
@@ -2819,6 +2943,8 @@ mod tests {
         // The first tab was let go; the question moved on to the second.
         assert!(app.pending.is_some() && !app.should_exit);
         draw(&mut app, 44, 11);
+        // Pressed again a beat later, not held.
+        app.beat();
         plain(&mut app, 'n');
         assert!(app.should_exit);
     }

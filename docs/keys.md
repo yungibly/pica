@@ -234,6 +234,13 @@ Reload, Quit pica (all tabs), the outline sidebar, Switch document, Go to
 heading, themes, icons, indentation, tab width and document recovery. In the palette, pickers and
 the go-to-line prompt, Esc or Ctrl+Q closes them without doing anything.
 
+Questions such as "Save changes before closing?", "Replace file?" and
+"Replace local edits with disk text?" take one plain press of Y or N, and
+only while the whole question is on screen. A key held down answers one
+question and no more: until it is let go, or another key is pressed, it
+neither answers the next question nor types. When several unsaved tabs are
+asked about in turn, press the key again for each, a moment apart.
+
 The outline sidebar is a preference: once turned on, it shows beside every
 Markdown document that has at least one heading, in a window at least 60
 columns wide, and nowhere else. Code, plain text and Markdown without
