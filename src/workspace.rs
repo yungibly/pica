@@ -1,4 +1,5 @@
 //! Document workspace. Each tab owns its editor; clipboard and quit intent are session-wide.
+mod bindings;
 #[cfg(test)]
 mod keys_tests;
 pub(crate) mod matching;
@@ -127,6 +128,10 @@ pub struct Workspace {
     markdown_live: bool,
     /// Indent guides in code and source views, off until chosen.
     guides: bool,
+    /// The user's own keys, from `keys.conf`.
+    bindings: bindings::Bindings,
+    /// A key sent by a command or a binding, which bindings leave alone.
+    synthetic: bool,
     pub should_exit: bool,
 }
 
@@ -152,6 +157,8 @@ impl Workspace {
             persistence: None,
             last_tick: Instant::now(),
             last_typed: None,
+            bindings: bindings::Bindings::default(),
+            synthetic: false,
             area: Rect::new(0, 0, 80, 24),
             layout_valid: false,
             header: false,
@@ -490,7 +497,7 @@ impl Workspace {
         self.editor_mut().deactivate();
         self.sidebar.focused = false;
         let markdown = self.editor().is_markdown();
-        self.palette = Some(Palette::new(line_mode, markdown));
+        self.palette = Some(Palette::new(line_mode, markdown, &self.bindings));
         self.tab_hits.clear();
         self.sidebar.invalidate();
     }
@@ -570,10 +577,7 @@ impl Workspace {
             Command::FindPrevious => (KeyCode::Char('p'), KeyModifiers::CONTROL),
             Command::Replace => {
                 // Ctrl+R inside Find expands it to Replace.
-                self.handle_event(Event::Key(KeyEvent::new(
-                    KeyCode::Char('f'),
-                    KeyModifiers::CONTROL,
-                )));
+                self.send(KeyCode::Char('f'), KeyModifiers::CONTROL);
                 (KeyCode::Char('r'), KeyModifiers::CONTROL)
             }
             Command::View => (KeyCode::F(6), KeyModifiers::NONE),
@@ -648,7 +652,14 @@ impl Workspace {
                 return;
             }
         };
+        self.send(code, modifiers);
+    }
+
+    /// Act on a key with its default meaning, whatever the user has bound.
+    fn send(&mut self, code: KeyCode, modifiers: KeyModifiers) {
+        let outer = std::mem::replace(&mut self.synthetic, true);
         self.handle_event(Event::Key(KeyEvent::new(code, modifiers)));
+        self.synthetic = outer;
     }
 
     fn open_themes(&mut self) {
@@ -950,6 +961,20 @@ impl Workspace {
         }
         if self.editor().has_modal() && matches!(&event, Event::Mouse(_)) {
             self.forward(event);
+            return;
+        }
+        // The user's own keys come before the defaults, wherever commands
+        // are available: not in the palette, pickers, the browser or prompts.
+        if !self.synthetic
+            && self.editor().workspace_commands_allowed()
+            && let Event::Key(key) = &event
+            && let Some(bound) = self.bindings.lookup(key)
+        {
+            match bound {
+                bindings::Bound::Command(command) => self.run_command(command),
+                bindings::Bound::Key(code, modifiers) => self.send(code, modifiers),
+                bindings::Bound::Nothing => {}
+            }
             return;
         }
         if self.editor().workspace_commands_allowed() {
