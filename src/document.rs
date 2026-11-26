@@ -274,6 +274,108 @@ mod tests {
     }
 
     #[test]
+    fn a_run_of_followed_reloads_is_one_undo_step_back_to_the_text_before_the_first() {
+        let mut doc = Document::new("base\n");
+        doc.type_text("mine ");
+        doc.mark_saved();
+        let own = doc.undo.len();
+        assert!(!doc.following());
+        // More of them than the history holds entries.
+        let mut revision = doc.revision();
+        for n in 0..300 {
+            assert!(doc.follow_saved(format!("mine base\nline {n}\n")).unwrap());
+            assert!(doc.following() && !doc.is_dirty());
+            assert_eq!(doc.undo.len(), own + 1, "after reload {n}");
+            assert!(doc.revision() > revision);
+            revision = doc.revision();
+        }
+        // The same text again changes nothing and keeps the run going.
+        assert!(!doc.follow_saved("mine base\nline 299\n".into()).unwrap());
+        assert!(doc.following());
+        assert_eq!(doc.revision(), revision);
+        // One step back is the text before the first of them, as an edit
+        // against what is on disk now; the user's own step is still there.
+        assert!(doc.undo());
+        assert_eq!(doc.text(), "mine base\n");
+        assert!(doc.is_dirty());
+        assert!(doc.undo());
+        assert_eq!(doc.text(), "base\n");
+        assert!(doc.redo() && doc.redo() && !doc.redo());
+        assert_eq!(doc.text(), "mine base\nline 299\n");
+        assert!(!doc.is_dirty());
+    }
+
+    #[test]
+    fn anything_else_between_followed_reloads_starts_a_new_undo_step() {
+        let texts = |doc: &mut Document| {
+            let mut texts = vec![doc.text().to_owned()];
+            while doc.undo() {
+                texts.push(doc.text().to_owned());
+            }
+            texts
+        };
+        // An edit of the user's.
+        let mut doc = Document::new("a");
+        doc.follow_saved("b".into()).unwrap();
+        doc.type_text("x");
+        doc.mark_saved();
+        assert!(!doc.following());
+        doc.follow_saved("c".into()).unwrap();
+        assert_eq!(texts(&mut doc), ["c", "xb", "b", "a"]);
+        // A reload the user asked for, which is always a step of its own.
+        let mut doc = Document::new("a");
+        doc.follow_saved("b".into()).unwrap();
+        doc.follow_saved("c".into()).unwrap();
+        doc.reload_saved("d".into()).unwrap();
+        assert!(!doc.following());
+        doc.reload_saved("e".into()).unwrap();
+        doc.follow_saved("f".into()).unwrap();
+        doc.follow_saved("g".into()).unwrap();
+        assert_eq!(texts(&mut doc), ["g", "e", "d", "c", "a"]);
+        // Undoing the run and redoing it.
+        let mut doc = Document::new("a");
+        doc.follow_saved("b".into()).unwrap();
+        assert!(doc.undo() && doc.redo());
+        assert!(!doc.following());
+        doc.follow_saved("c".into()).unwrap();
+        assert_eq!(texts(&mut doc), ["c", "b", "a"]);
+        // A reload that changes nothing starts no run and no step.
+        let mut doc = Document::new("a");
+        assert!(!doc.follow_saved("a".into()).unwrap());
+        assert!(!doc.following() && !doc.can_undo());
+    }
+
+    #[test]
+    fn the_caret_stays_with_its_text_through_a_run_of_followed_reloads() {
+        let mut doc = Document::new("one\ntwo\nthree\n");
+        doc.set_selection(Selection {
+            anchor: 8,
+            head: 11,
+        })
+        .unwrap();
+        doc.follow_saved("zero\none\ntwo\nthree\n".into()).unwrap();
+        assert_eq!(doc.selected_text(), "thr");
+        doc.follow_saved("zero\nzero\none\ntwo\nthree\nfour\n".into())
+            .unwrap();
+        assert_eq!(doc.selected_text(), "thr");
+        assert_eq!(doc.line_count(), 7);
+        assert_eq!(doc.line_start(4), 18);
+        // Without room to keep a step, the first of a run is refused as an
+        // explicit reload is, and nothing changes.
+        let mut doc = Document::new("a");
+        doc.set_history_limits(HistoryLimits {
+            max_entries: 0,
+            max_bytes: 0,
+        });
+        assert_eq!(
+            doc.follow_saved("b".into()),
+            Err(EditError::HistoryUnavailable)
+        );
+        assert_eq!(doc.text(), "a");
+        assert!(!doc.following());
+    }
+
+    #[test]
     fn identical_reload_adopts_baseline_without_fabricating_an_edit() {
         let mut doc = Document::unsaved("");
         doc.set_history_limits(HistoryLimits {
@@ -923,6 +1025,10 @@ pub struct Document {
     lines: LineIndex,
     /// The first changed byte of each recent revision, oldest first.
     edits: VecDeque<(u64, usize)>,
+    /// The revision that following the file on disk last left. While it is
+    /// still the current one, the newest undo step is the text from before
+    /// a run of such reloads.
+    followed: Option<u64>,
     id: u64,
 }
 
@@ -945,6 +1051,7 @@ impl Document {
             typing_end: None,
             lines: LineIndex::new(""),
             edits: VecDeque::new(),
+            followed: None,
         }
         .with_lines()
     }
@@ -969,27 +1076,55 @@ impl Document {
     /// The selection stays with the text it was in: see `carried`. Reject
     /// replacements whose prior snapshot cannot be retained.
     pub fn reload_saved(&mut self, text: String) -> Result<bool, EditError> {
+        self.accept_saved(text, true)
+    }
+
+    /// Accept fresh disk content that the document follows by itself, with
+    /// nobody asking. As `reload_saved`, except that a run of these is one
+    /// undo step, which leads back to the text before the first of them. A
+    /// file another program rewrites often would otherwise fill the history
+    /// and push the user's own edits out of it.
+    pub fn follow_saved(&mut self, text: String) -> Result<bool, EditError> {
+        let step = !self.following();
+        let changed = self.accept_saved(text, step)?;
+        if changed {
+            self.followed = Some(self.revision);
+        }
+        Ok(changed)
+    }
+
+    /// Whether the last change of any kind was a `follow_saved`: no edit,
+    /// undo, redo or `reload_saved` since. The next one continues the run.
+    pub fn following(&self) -> bool {
+        self.followed == Some(self.revision) && !self.undo.is_empty()
+    }
+
+    /// Replace the text with what is on disk and make that the baseline.
+    /// With `step`, the text replaced becomes an undo step.
+    fn accept_saved(&mut self, text: String, step: bool) -> Result<bool, EditError> {
         self.break_undo_group();
         let changed = text != self.state.text;
         if changed {
-            let previous = self.state.clone();
-            if self.history_limits.max_entries == 0
-                || previous.text.capacity() + std::mem::size_of::<State>()
-                    > self.history_limits.max_bytes
+            if step
+                && (self.history_limits.max_entries == 0
+                    || self.state.text.capacity() + std::mem::size_of::<State>()
+                        > self.history_limits.max_bytes)
             {
                 return Err(EditError::HistoryUnavailable);
             }
-            let change = delta(&previous.text, &text);
-            let place = |offset| carry(change, &previous.text, &text, offset);
+            let change = delta(&self.state.text, &text);
+            let place = |offset| carry(change, &self.state.text, &text, offset);
             let selection = Selection {
                 anchor: place(self.selection().anchor),
                 head: place(self.selection().head),
             };
-            self.undo.push_back(previous);
-            self.state = State { text, selection };
-            self.redo.clear();
+            let previous = std::mem::replace(&mut self.state, State { text, selection });
+            if step {
+                self.undo.push_back(previous);
+                self.redo.clear();
+            }
             self.revision += 1;
-            let (start, old_end, new_end) = delta(&self.undo.back().unwrap().text, self.text());
+            let (start, old_end, new_end) = change;
             self.lines.edit(&self.state.text, start, old_end, new_end);
             self.log_edit(start);
             self.trim_history();
