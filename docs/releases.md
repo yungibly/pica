@@ -6,6 +6,29 @@ in [`yungibly/homebrew-tap`](https://github.com/yungibly/homebrew-tap).
 The source uses the MIT license. Theme and dependency licenses accompany every
 binary archive and are installed by the formula under pica's shared data directory.
 
+`v0.4.0` is [published](https://github.com/yungibly/pica/releases/tag/v0.4.0).
+It gathers pull requests #3 through #36: indentation that follows each file,
+a word wrap toggle, rebindable keys, links, Save as that asks, and buffers
+that follow their file on disk. [Pull request #32](https://github.com/yungibly/pica/pull/32)
+set the version, and the tag is on `7a30c4f`, the merge of the last of them.
+Its [CI on the release commit](https://github.com/yungibly/pica/actions/runs/45761940467),
+[native release builds](https://github.com/yungibly/pica/actions/runs/45762717684),
+and [three-platform Homebrew installation checks](https://github.com/yungibly/pica/actions/runs/45763452429)
+all passed before the tap update. On the release commit, the tests also
+passed locally with Rust 1.89.0, and all nine real-terminal visual suites
+passed on Linux. Its draft assets were checked by hand on Linux: checksums,
+`package.py verify`, and the extracted binary's version, themes, and an
+unchanged source after a snapshot. That binary was then driven through a
+real PTY: Tab in a space-indented Python file, selected numbered list items
+nested and renumbered, the wrap toggle, Find ignoring case, quitting with
+several tabs, and a double click on a word in rendered Markdown, each with
+the saved bytes checked. The tap's formula hashes match `SHA256SUMS`.
+
+Not exercised for this release: the Wayland clipboard path on a live
+compositor, OSC 52 through a real SSH hop, and the platform link opener
+with a real browser. Each was tested against the bytes or arguments pica
+produces and against stand-in tools.
+
 `v0.3.1` is [published](https://github.com/yungibly/pica/releases/tag/v0.3.1).
 It came through [pull request #1](https://github.com/yungibly/pica/pull/1). Its
 [CI on the release commit](https://github.com/yungibly/pica/actions/runs/44391320565),
@@ -50,8 +73,8 @@ Release builds use Rust 1.98.0 and three native runners:
 The runner tests establish behavior on those operating systems, not every
 older release allowed by the binary's deployment target. The build logs retain
 `file`, `otool`/`vtool`, or `ldd`/`readelf` output for the packaged executable.
-Native Wayland clipboard, OSC 52, IME, and all terminal/font combinations are
-outside this compatibility claim. Linux ARM and Windows have no release asset.
+Wayland clipboard tools, a terminal's handling of OSC 52, IME, and all
+terminal/font combinations are outside this compatibility claim. Linux ARM and Windows have no release asset.
 
 ## Prepare and review a release
 
