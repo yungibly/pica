@@ -53,6 +53,7 @@ impl Workspace {
             Ok(settings) => {
                 self.sidebar.preference = settings.sidebar();
                 self.guides = settings.guides();
+                self.wrap = settings.wrap();
                 if settings.markdown_live() == Some(false) {
                     self.markdown_live = false;
                     for tab in &mut self.tabs {
@@ -219,6 +220,19 @@ impl Workspace {
         if let Some(Err(error)) = result {
             self.editor_mut().set_message(format!(
                 "Guides changed for this session; could not save preferences: {error}"
+            ));
+        }
+    }
+    pub(super) fn persist_wrap(&mut self) {
+        let on = self.wrap;
+        let result = self
+            .persistence
+            .as_mut()
+            .and_then(|state| state.settings.as_mut())
+            .map(|settings| settings.save_wrap(on));
+        if let Some(Err(error)) = result {
+            self.editor_mut().set_message(format!(
+                "Word wrap changed for this session; could not save preferences: {error}"
             ));
         }
     }

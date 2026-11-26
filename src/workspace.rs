@@ -128,6 +128,8 @@ pub struct Workspace {
     markdown_live: bool,
     /// Indent guides in code and source views, off until chosen.
     guides: bool,
+    /// Word wrap, for every tab; on until switched off.
+    wrap: bool,
     /// The user's own keys, from `keys.conf`.
     bindings: bindings::Bindings,
     /// A key sent by a command or a binding, which bindings leave alone.
@@ -164,6 +166,7 @@ impl Workspace {
             header: false,
             markdown_live: true,
             guides: false,
+            wrap: true,
             should_exit: false,
         })
     }
@@ -557,6 +560,27 @@ impl Workspace {
         self.sidebar.invalidate();
     }
 
+    /// `--no-wrap`: start with word wrap off, whatever was remembered.
+    pub fn set_wrap(&mut self, on: bool) {
+        self.wrap = on;
+    }
+
+    /// Alt+Z: word wrap on or off, for every tab, and remembered. Rendered
+    /// Markdown always wraps, so there the notice says where it applies.
+    fn toggle_wrap(&mut self) {
+        self.wrap = !self.wrap;
+        let notice = match (self.wrap, self.editor().live_view()) {
+            (true, _) => "Word wrap on",
+            (false, false) => "Word wrap off · long lines scroll sideways",
+            (false, true) => "Word wrap off for code and source views · the live view always wraps",
+        };
+        let wrap = self.wrap;
+        let editor = self.editor_mut();
+        editor.wrap = wrap;
+        editor.inform(notice);
+        self.persist_wrap();
+    }
+
     fn run_command(&mut self, command: Command) {
         self.palette = None;
         self.sidebar.focused = false;
@@ -585,6 +609,7 @@ impl Workspace {
                 self.editor_mut().toggle_ruler();
                 return;
             }
+            Command::Wrap => (KeyCode::Char('z'), KeyModifiers::ALT),
             Command::Sidebar => {
                 self.toggle_sidebar(false);
                 return;
@@ -1064,6 +1089,10 @@ impl Workspace {
                         self.switch((self.active + 1) % self.tabs.len());
                         return;
                     }
+                    KeyCode::Char('z' | 'Z') if alt && !ctrl => {
+                        self.toggle_wrap();
+                        return;
+                    }
                     KeyCode::F(7) | KeyCode::PageUp if key.code == KeyCode::F(7) || ctrl => {
                         self.switch((self.active + self.tabs.len() - 1) % self.tabs.len());
                         return;
@@ -1258,10 +1287,12 @@ impl Workspace {
         self.header = header;
         let label = self.name(self.active);
         let guides = self.guides;
+        let wrap = self.wrap;
         let editor = self.editor_mut();
         editor.header = header;
         editor.label = Some(label);
         editor.guides = guides;
+        editor.wrap = wrap;
         self.editor_mut().draw_in(frame, editor_area, show_cursor);
         self.tab_hits.clear();
         self.sidebar.invalidate();

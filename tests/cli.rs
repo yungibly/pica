@@ -314,3 +314,60 @@ fn interactive_mode_still_needs_a_terminal_for_output() {
     assert!(String::from_utf8_lossy(&output.stderr).contains("needs a terminal"));
     assert!(!directory.path().join("a.md").exists());
 }
+
+#[test]
+fn no_wrap_snapshots_keep_each_line_on_one_row_without_touching_preferences() {
+    let directory = tempfile::tempdir().unwrap();
+    let config = directory.path().join("config");
+    let state = directory.path().join("state");
+    let path = directory.path().join("long.rs");
+    let long = format!("    let total = {};", "value + ".repeat(12));
+    let source = format!("fn main() {{\n{long}\n}}\n");
+    fs::write(&path, &source).unwrap();
+    let snapshot = |arguments: &[&str]| {
+        let output = binary()
+            .args(["--snapshot", "--snapshot-size", "40x8"])
+            .args(arguments)
+            .arg(&path)
+            .env("XDG_CONFIG_HOME", &config)
+            .env("XDG_STATE_HOME", &state)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout).unwrap()
+    };
+    // Wrapped, the long line takes several rows before the closing brace.
+    let wrapped = snapshot(&[]);
+    let rows: Vec<&str> = wrapped.lines().collect();
+    assert_eq!(rows[0], "   1 fn main() {");
+    assert!(
+        rows[1].starts_with("   2     let total = value +"),
+        "{wrapped}"
+    );
+    assert!(rows[2].starts_with("         value +"), "{wrapped}");
+    assert!(!wrapped.contains('›'), "{wrapped}");
+    assert!(rows[2..7].contains(&"   3 }"), "{wrapped}");
+    // Unwrapped, each line has one row and the cut is marked.
+    let unwrapped = snapshot(&["--no-wrap"]);
+    let rows: Vec<&str> = unwrapped.lines().collect();
+    assert_eq!(rows[0], "   1 fn main() {");
+    assert_eq!(rows[1], format!("   2 {}›", &long[..33]));
+    assert_eq!(rows[2], "   3 }");
+    assert!(
+        unwrapped.contains("visual row: 1 · column: 1"),
+        "{unwrapped}"
+    );
+    // The view follows the caret to the end of the line.
+    let position = format!("+2:{}", long.len() + 1);
+    let scrolled = snapshot(&["--no-wrap", &position]);
+    let rows: Vec<&str> = scrolled.lines().collect();
+    assert_eq!(rows[0], "   1‹");
+    assert_eq!(rows[1], format!("   2‹{}", &long[long.len() - 33..]));
+    assert_eq!(rows[2], "   3‹");
+    assert_eq!(fs::read_to_string(&path).unwrap(), source);
+    assert!(!config.exists() && !state.exists());
+}

@@ -526,3 +526,48 @@ fn recovery_restart(legacy: bool) {
             .contains("theme=catppuccin-mocha")
     );
 }
+
+#[test]
+fn clicks_in_an_unwrapped_view_scrolled_sideways_reach_the_text_under_them() {
+    // Source view at 100 columns: a three-digit gutter, so the text column
+    // starts at terminal column 6 and is 94 cells wide.
+    let long = "0123456789".repeat(20);
+    let source = format!("short\n{long}\nend\n");
+    let mut session = Session::start(&source);
+    session.send(b"\x1b[114;5u");
+    session.until("source view", |s| {
+        count(&s.transcript, b"markdown source") > 0
+    });
+    // Alt+Z turns word wrap off; the long line then ends in the mark.
+    session.send(b"\x1b[122;3u");
+    session.until("word wrap off", |s| {
+        count(&s.transcript, b"Word wrap off") > 0 && count(&s.transcript, "›".as_bytes()) > 0
+    });
+    // A click on the long line, then End: the view scrolls to the line's end
+    // and rows cut off on the left say so.
+    session.send(b"\x1b[<0;20;2M\x1b[<0;20;2m\x1b[F");
+    session.until("view scrolled sideways", |s| {
+        count(&s.transcript, "‹".as_bytes()) > 0
+    });
+    // The line is 200 cells and the caret takes one more, so the view begins
+    // at column 107. Terminal column 20 is the text column's 15th cell.
+    session.send(b"\x1b[<0;20;2M\x1b[<0;20;2m!");
+    let expected = format!("short\n{}!{}\nend\n", &long[..121], &long[121..]);
+    session.save_and_expect(&expected);
+    // Home brings the view back: the first line is drawn again. A click
+    // then lands on the unscrolled text.
+    let drawn = count(&session.transcript, b"short");
+    session.send(b"\x1b[H");
+    session.until("view back at the line start", |s| {
+        count(&s.transcript, b"short") > drawn
+    });
+    session.send(b"\x1b[<0;20;2M\x1b[<0;20;2m?");
+    let expected = format!(
+        "short\n{}?{}!{}\nend\n",
+        &long[..14],
+        &long[14..121],
+        &long[121..]
+    );
+    session.save_and_expect(&expected);
+    session.finish();
+}

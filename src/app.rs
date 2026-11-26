@@ -117,6 +117,7 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
         "View",
         &[
             ("Ctrl+R", "Line numbers in code"),
+            ("Alt+Z", "Word wrap on or off"),
             ("Ctrl+E", "Outline, headings, themes"),
             ("Ctrl+G", "This help"),
         ],
@@ -194,6 +195,19 @@ const SETTLE: std::time::Duration = std::time::Duration::from_millis(100);
 /// inside it; nearer rows are cheaper to lay out than to look up.
 const LONG_LINE_ROWS: usize = 32;
 
+/// The layout width with word wrap off. A line longer than this still
+/// continues on the next row, so one enormous line never costs more than
+/// the rows shown: each is laid out whole, however far the view has
+/// scrolled sideways. At this width a screen of the longest rows still
+/// lays out in a couple of dozen milliseconds, and a row is already more
+/// than a dozen screens long.
+const UNWRAPPED_WIDTH: usize = 4_000;
+/// Cells of a line kept in view beyond the caret when the view scrolls
+/// sideways to follow it.
+const SIDE_MARGIN: usize = 4;
+/// Cells the view moves for one notch of a sideways wheel.
+const SIDE_STEP: usize = 6;
+
 /// Where the rows of one long source line begin, from earlier layouts of a
 /// source view, so a window inside the line can resume near it.
 struct Wraps {
@@ -259,6 +273,12 @@ pub struct App {
     pub scroll: usize,
     /// The top visible row, by source line, kept across relayout.
     top: Anchor,
+    /// Word wrap. Off, code, plain text and Markdown source keep each line
+    /// on one row and the view scrolls sideways; the live view always
+    /// wraps. The workspace sets this.
+    pub(crate) wrap: bool,
+    /// The first visible column of an unwrapped view.
+    side: usize,
     preferred_column: Option<usize>,
     affinity: Affinity,
     dragging: bool,
@@ -768,6 +788,8 @@ impl App {
             viewport: Rect::default(),
             scroll: 0,
             top: Anchor::default(),
+            wrap: true,
+            side: 0,
             preferred_column: None,
             affinity: Affinity::Downstream,
             dragging: false,
@@ -931,13 +953,62 @@ impl App {
         usize::from(self.viewport.height).max(1)
     }
 
-    /// The layout width, before the first draw has measured one.
+    /// Whether lines stay on one row each and the view scrolls sideways:
+    /// word wrap is off and the view shows source. Rendered Markdown wraps
+    /// regardless; prose that runs off the page cannot be read.
+    pub(crate) fn unwrapped(&self) -> bool {
+        !self.wrap && !self.live_view()
+    }
+
+    /// The first visible column: zero unless the view is unwrapped.
+    fn side(&self) -> usize {
+        if self.unwrapped() { self.side } else { 0 }
+    }
+
+    /// The layout width, before the first draw has measured one. Unwrapped
+    /// views lay out in a width no ordinary line reaches.
     fn layout_width(&self) -> usize {
-        if self.viewport.width == 0 && self.viewport.height == 0 {
+        if self.unwrapped() {
+            UNWRAPPED_WIDTH
+        } else if self.viewport.width == 0 && self.viewport.height == 0 {
             80
         } else {
             usize::from(self.viewport.width)
         }
+    }
+
+    /// Scroll an unwrapped view sideways as little as keeps the caret in
+    /// view with a few cells of its line on either side of it. A caret that
+    /// fits the first screen brings the view back to the start of the
+    /// lines, rather than leaving them cut off for the sake of a few cells.
+    fn follow_sideways(&mut self) {
+        if !self.unwrapped() {
+            self.side = 0;
+            return;
+        }
+        let Some((row, column)) = self.caret_cell() else {
+            return;
+        };
+        let width = usize::from(self.viewport.width);
+        if width == 0 {
+            return;
+        }
+        let length = row_width(self.projection.row(row));
+        let margin = SIDE_MARGIN.min(width.saturating_sub(2) / 4);
+        // The cells that must show to the caret's right: its own, a little
+        // of what follows it, and the mark in the last cell while more
+        // follows that.
+        let end = (length + 1).min(column + margin + 2);
+        if self.side > 0 && column < self.side + margin {
+            self.side = if end <= width {
+                0
+            } else {
+                column.saturating_sub(margin)
+            };
+        } else if end > self.side + width {
+            self.side = end - width;
+        }
+        self.side = self.side.min(column);
     }
 
     fn layout_key(&self) -> LayoutKey {
@@ -1813,7 +1884,51 @@ impl App {
         self.anchor_screen_row = Some(row - self.scroll);
     }
 
+    /// Move an unwrapped view sideways by wheel, no further than its longest
+    /// visible row needs. The caret stays where it is, as when the wheel
+    /// scrolls down the document.
+    fn scroll_sideways(&mut self, right: bool) {
+        if !self.unwrapped() {
+            return;
+        }
+        self.update_layout();
+        let width = usize::from(self.viewport.width);
+        let height = usize::from(self.viewport.height);
+        let longest = self
+            .projection
+            .rows(self.scroll..self.scroll + height)
+            .iter()
+            .map(row_width)
+            .max()
+            .unwrap_or(0);
+        // Room for a caret after the longest row's last cell.
+        let limit = (longest + 1).saturating_sub(width);
+        self.side = if right {
+            (self.side + SIDE_STEP).min(limit.max(self.side))
+        } else {
+            self.side.saturating_sub(SIDE_STEP)
+        };
+        self.follow_cursor = false;
+    }
+
     fn mouse(&mut self, event: MouseEvent) {
+        // A sideways wheel, or Shift with the ordinary one, scrolls an
+        // unwrapped view along its lines. Where lines wrap there is nowhere
+        // to go, and Shift leaves the wheel scrolling down the document.
+        let shift = event.modifiers.contains(KeyModifiers::SHIFT) && self.unwrapped();
+        let sideways = match event.kind {
+            MouseEventKind::ScrollLeft => Some(false),
+            MouseEventKind::ScrollRight => Some(true),
+            MouseEventKind::ScrollUp if shift => Some(false),
+            MouseEventKind::ScrollDown if shift => Some(true),
+            _ => None,
+        };
+        if let Some(right) = sideways {
+            if contains(self.editor_area, event.column, event.row) {
+                self.scroll_sideways(right);
+            }
+            return;
+        }
         if matches!(
             event.kind,
             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
@@ -1850,7 +1965,7 @@ impl App {
             return;
         }
         let row = usize::from(event.row - self.viewport.y) + self.scroll;
-        let col = usize::from(event.column - self.viewport.x);
+        let col = usize::from(event.column - self.viewport.x) + self.side();
         let hit = self.projection.hit(row, col);
         match event.kind {
             MouseEventKind::Down(MouseButton::Left) => {
@@ -2507,7 +2622,16 @@ impl App {
             if !self.covers() {
                 self.lay_out_top(0, 0);
             }
+            if self.follow_cursor {
+                self.follow_sideways();
+            }
         }
+        if !self.unwrapped() {
+            self.side = 0;
+        }
+        let side = self.side;
+        let unwrapped = self.unwrapped();
+        let width = usize::from(self.viewport.width);
         let (cursor_row, cursor_col) = self.caret_cell().unwrap_or((usize::MAX, 0));
         let filename = self.file.as_ref().map_or_else(
             || "Untitled.md".into(),
@@ -2593,7 +2717,19 @@ impl App {
                     surface = Some((fill.from, fill.color));
                 }
             }
-            for glyph in &row.glyphs {
+            // An unwrapped row can be far wider than the view: draw from the
+            // first glyph inside it and stop at the first one past it. A
+            // wide glyph cut by the left edge leaves its cell blank.
+            let first = if side > 0 {
+                row.glyphs.partition_point(|glyph| glyph.column < side)
+            } else {
+                0
+            };
+            for glyph in &row.glyphs[first..] {
+                let column = glyph.column - side;
+                if column >= width {
+                    break;
+                }
                 let selected =
                     glyph.source.start < selection.end && selection.start < glyph.source.end;
                 let mut base = glyph.style;
@@ -2611,24 +2747,47 @@ impl App {
                     matches,
                     active,
                 );
-                let x = self.viewport.x + glyph.column as u16;
-                if x < self.viewport.right() {
-                    frame.buffer_mut().set_stringn(
-                        x,
-                        y,
-                        &glyph.text,
-                        usize::from(self.viewport.right() - x),
-                        style,
-                    );
-                }
+                let x = self.viewport.x + column as u16;
+                frame.buffer_mut().set_stringn(
+                    x,
+                    y,
+                    &glyph.text,
+                    usize::from(self.viewport.right() - x),
+                    style,
+                );
             }
             if let Some((unit, indents)) = &guides {
                 let buffer = frame.buffer_mut();
                 for column in (0..indents[screen_row]).step_by(*unit) {
-                    let x = self.viewport.x + column as u16;
-                    if x < self.viewport.right() && buffer[(x, y)].symbol() == " " {
+                    if column < side || column - side >= width {
+                        continue;
+                    }
+                    let x = self.viewport.x + (column - side) as u16;
+                    if buffer[(x, y)].symbol() == " " {
                         buffer[(x, y)].set_symbol("│").set_fg(colors.faint);
                     }
+                }
+            }
+            if unwrapped && width > 0 {
+                // Text cut off by an edge leaves a mark there: in the blank
+                // cell before the text column, and over the last cell of it.
+                let buffer = frame.buffer_mut();
+                let mark = |cell: &mut ratatui::buffer::Cell, symbol: &str| {
+                    cell.set_symbol(symbol).set_fg(colors.faint);
+                    cell.modifier = Modifier::empty();
+                };
+                if first > 0 && self.viewport.x > area.x {
+                    mark(&mut buffer[(self.viewport.x - 1, y)], "‹");
+                }
+                if row_width(row) > side + width {
+                    let x = self.viewport.right() - 1;
+                    // Half of a wide glyph cannot stay beside the mark.
+                    if x > self.viewport.x
+                        && UnicodeWidthStr::width(buffer[(x - 1, y)].symbol()) > 1
+                    {
+                        buffer[(x - 1, y)].set_symbol(" ");
+                    }
+                    mark(&mut buffer[(x, y)], "›");
                 }
             }
         }
@@ -2676,10 +2835,11 @@ impl App {
             && height > 0
             && cursor_row >= self.scroll
             && cursor_row < self.scroll + height
-            && cursor_col < self.viewport.width as usize
+            && cursor_col >= side
+            && cursor_col - side < width
         {
             frame.set_cursor_position((
-                self.viewport.x + cursor_col as u16,
+                self.viewport.x + (cursor_col - side) as u16,
                 self.viewport.y + (cursor_row - self.scroll) as u16,
             ));
         }
@@ -3617,6 +3777,13 @@ fn body_top(header: bool, height: u16) -> u16 {
     u16::from(header && height > 0)
 }
 
+/// The cells a row's glyphs take, from its first column.
+fn row_width(row: &crate::projection::VisualRow) -> usize {
+    row.glyphs
+        .last()
+        .map_or(0, |glyph| glyph.column + glyph.width)
+}
+
 /// The display column where a source line's text begins, or `None` for a
 /// blank line. Tabs advance to the next multiple of four.
 fn source_indent(line: &str) -> Option<usize> {
@@ -3997,6 +4164,10 @@ mod disk_tests;
 #[cfg(test)]
 #[path = "app_window_tests.rs"]
 mod window_tests;
+
+#[cfg(test)]
+#[path = "app_wrap_tests.rs"]
+mod wrap_tests;
 
 #[cfg(test)]
 mod tests {
