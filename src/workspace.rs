@@ -55,6 +55,10 @@ const OPENER: fn(&str) -> io::Result<()> =
 /// How long typing must pause before the outline may appear or disappear.
 const OUTLINE_HOLD: Duration = Duration::from_millis(700);
 
+/// The answers to the unsaved-document question, and its greatest width.
+const UNSAVED_KEYS: &[(&str, &str)] = &[("Y", "Save"), ("N", "Discard"), ("Esc", "Cancel")];
+const UNSAVED_WIDTH: u16 = 72;
+
 struct Tab {
     editor: App,
     number: usize,
@@ -993,10 +997,11 @@ impl Workspace {
             self.sidebar.invalidate();
             return;
         }
-        if self.pending.as_ref().is_some_and(|pending| !pending.saving) {
-            if !crate::ui::dialog_fits(self.area)
-                && matches!(&event, Event::Key(key) if key.code != KeyCode::Esc)
-            {
+        if let Some(body) = self.unsaved_question() {
+            // The same rule the question is drawn by: while any of it would
+            // be cut off, Esc is the only key that does anything.
+            let whole = crate::ui::question_fits(self.area, &body, UNSAVED_KEYS, UNSAVED_WIDTH);
+            if !whole && matches!(&event, Event::Key(key) if key.code != KeyCode::Esc) {
                 return;
             }
             if let Event::Key(key) = event {
@@ -1319,6 +1324,33 @@ impl Workspace {
         safe_text(&filename)
     }
 
+    /// What the unsaved-document question says, while it is being asked.
+    /// Drawing and answering both go by this text: an answer counts only
+    /// where all of it, and every key, fits the window.
+    fn unsaved_question(&self) -> Option<Vec<Line<'static>>> {
+        let pending = self.pending.as_ref().filter(|pending| !pending.saving)?;
+        let quitting = pending.intent == Intent::Quit;
+        let last = if quitting {
+            "Other unsaved tabs are checked next; cancelling keeps every tab."
+        } else if self.tabs.len() == 1 {
+            "This is the last tab; pica quits after it closes."
+        } else {
+            "Only this document will close."
+        };
+        Some(vec![
+            Line::from(Span::styled(
+                self.name(self.active),
+                crate::ui::surface().add_modifier(Modifier::BOLD),
+            )),
+            Line::from(if quitting {
+                "Save changes before quitting?"
+            } else {
+                "Save changes before closing?"
+            }),
+            Line::from(Span::styled(last, crate::ui::muted())),
+        ])
+    }
+
     pub fn draw(&mut self, frame: &mut Frame) {
         if std::mem::take(&mut self.editor_mut().case_toggled) {
             self.persist_find_case();
@@ -1392,43 +1424,13 @@ impl Workspace {
             self.tab_hits.clear();
             self.sidebar.hits.clear();
         }
-        if let Some(pending) = &self.pending
-            && !pending.saving
-        {
-            let quitting = pending.intent == Intent::Quit;
-            let muted = crate::ui::muted();
-            let mut body = vec![
-                Line::from(Span::styled(
-                    self.name(self.active),
-                    crate::ui::surface().add_modifier(Modifier::BOLD),
-                )),
-                Line::from(if quitting {
-                    "Save changes before quitting?"
-                } else {
-                    "Save changes before closing?"
-                }),
-            ];
-            if quitting {
-                body.push(Line::from(Span::styled(
-                    "Other unsaved tabs are checked next; cancelling keeps every tab.",
-                    muted,
-                )));
-            } else {
-                body.push(Line::from(Span::styled(
-                    if self.tabs.len() == 1 {
-                        "This is the last tab; pica quits after it closes."
-                    } else {
-                        "Only this document will close."
-                    },
-                    muted,
-                )));
-            }
+        if let Some(body) = self.unsaved_question() {
             crate::ui::dialog(
                 frame,
                 "Unsaved document",
                 &body,
-                &[("Y", "Save"), ("N", "Discard"), ("Esc", "Cancel")],
-                72,
+                UNSAVED_KEYS,
+                UNSAVED_WIDTH,
             );
         }
         if let Some(browser) = &mut self.browser {
@@ -2755,6 +2757,63 @@ mod tests {
         assert_eq!(app.editor().document.text(), "valuable");
         key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
         assert!(app.pending.is_none());
+    }
+
+    #[test]
+    fn the_unsaved_question_takes_an_answer_only_where_all_of_it_shows() {
+        let mut app = Workspace::open(None).unwrap();
+        app.handle_event(Event::Paste("first unsaved".into()));
+        ctrl(&mut app, 't');
+        app.handle_event(Event::Paste("second unsaved".into()));
+        app.request(Intent::Quit);
+        let screen = |app: &mut Workspace, width: u16, height: u16| -> String {
+            let terminal = draw(app, width, height);
+            let buffer = terminal.backend().buffer();
+            (0..height)
+                .flat_map(|y| (0..width).map(move |x| (x, y)))
+                .map(|at| buffer[at].symbol())
+                .collect()
+        };
+        // Big enough for a dialog, too small for this one's last sentence,
+        // which says that the other unsaved tabs come next: N discards
+        // nothing there, and neither does Y save.
+        for (width, height) in [(44, 9), (44, 10), (50, 9)] {
+            let text = screen(&mut app, width, height);
+            assert!(
+                text.contains("Resize to confirm"),
+                "{width}x{height}: {text}"
+            );
+            assert!(!text.contains("Discard"), "{width}x{height}: {text}");
+            for answer in ['n', 'y'] {
+                plain(&mut app, answer);
+                assert!(app.pending.is_some() && !app.should_exit);
+                assert_eq!(app.tabs.len(), 2);
+                assert!(app.tabs.iter().all(|tab| tab.editor.document.is_dirty()));
+                assert!(!app.editor().saving_as());
+            }
+        }
+        // Esc still cancels from there.
+        key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert!(app.pending.is_none());
+        // With room for every sentence and key, the answer counts.
+        app.request(Intent::Quit);
+        let text = screen(&mut app, 44, 11);
+        for part in [
+            "Save changes before quitting?",
+            "Other unsaved tabs are checked next;",
+            "cancelling keeps every tab.",
+            " Y  Save",
+            " N  Discard",
+            " Esc  Cancel",
+        ] {
+            assert!(text.contains(part), "{part:?} in {text}");
+        }
+        plain(&mut app, 'n');
+        // The first tab was let go; the question moved on to the second.
+        assert!(app.pending.is_some() && !app.should_exit);
+        draw(&mut app, 44, 11);
+        plain(&mut app, 'n');
+        assert!(app.should_exit);
     }
 
     /// The outline preference is on and the window has room for it.

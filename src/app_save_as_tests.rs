@@ -546,3 +546,44 @@ fn a_failed_save_says_so_in_a_sentence() {
     assert_eq!(fs::read_to_string(&notes).unwrap(), "mine base");
     assert!(!app.document.is_dirty());
 }
+
+#[test]
+fn a_question_cut_short_by_a_small_window_cannot_be_answered() {
+    let dir = scratch();
+    let other = dir.path().join("other.md");
+    fs::write(&other, "what was there\n").unwrap();
+    let mut app = saving("my text\n", &other);
+    press(&mut app, KeyCode::Enter);
+    // Each of these windows is big enough for a dialog, but not for all of
+    // this question: the warning, or one of the three keys, would be cut
+    // off. Nothing of it is offered, and Y replaces nothing.
+    for (width, height) in [(44, 9), (44, 11), (50, 10), (58, 9)] {
+        let text = screen(&mut app, width, height);
+        assert!(
+            text.contains("Resize to confirm"),
+            "{width}x{height}: {text}"
+        );
+        assert!(!text.contains("Replace"), "{width}x{height}: {text}");
+        press(&mut app, KeyCode::Char('y'));
+        assert_eq!(fs::read_to_string(&other).unwrap(), "what was there\n");
+        assert!(app.saving_as() && app.document.is_dirty());
+    }
+    // With room, all of it shows, the keys on rows of their own where the
+    // window is narrow, and only then does Y replace the file.
+    let text = screen(&mut app, 44, 12);
+    for part in [
+        "Replace file?",
+        "other.md already exists.",
+        "Replace it with this document?",
+        "will be lost.",
+        " Y  Replace",
+        " N  Choose another name",
+        " Esc  Cancel",
+    ] {
+        assert!(text.contains(part), "{part:?} in {text}");
+    }
+    assert_eq!(fs::read_to_string(&other).unwrap(), "what was there\n");
+    press(&mut app, KeyCode::Char('y'));
+    assert_eq!(fs::read_to_string(&other).unwrap(), "my text\n");
+    assert!(!app.saving_as() && !app.document.is_dirty());
+}
