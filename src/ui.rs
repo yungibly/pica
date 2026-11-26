@@ -309,6 +309,28 @@ pub fn clipped(text: &str, max: usize) -> String {
     output
 }
 
+/// The end of `text` that fits `max` cells, after an ellipsis when its
+/// start is cut: for paths, whose tail tells them apart.
+pub fn clipped_suffix(text: &str, max: usize) -> String {
+    if UnicodeWidthStr::width(text) <= max {
+        return text.to_owned();
+    }
+    if max == 0 {
+        return String::new();
+    }
+    let mut remaining = max - 1;
+    let mut start = text.len();
+    for (index, grapheme) in text.grapheme_indices(true).rev() {
+        let cells = UnicodeWidthStr::width(grapheme);
+        if cells > remaining {
+            break;
+        }
+        remaining -= cells;
+        start = index;
+    }
+    format!("…{}", &text[start..])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -223,17 +223,155 @@ fn prose_wraps_whole_words_and_retains_source_whitespace() {
     );
     assert_eq!(projected.hit(0, 11).offset, boundary);
     assert_eq!(projected.hit(1, 0).offset, boundary);
-    // Markdown source view still wraps prose at words; code and plain-text
-    // files preserve their column-based layout.
+    // Markdown source view wraps prose at words too, and so do code and
+    // plain-text files.
     assert_eq!(
         display(&project(text, 0, 13, false)),
         "alpha beta \ngamma delta"
     );
     let plain = Parsed::new(text, Document::new(text).markdown(), false, None);
     let plain = Projection::build(text, &plain, Selection::caret(0), 13, false);
-    assert_eq!(display(&plain), "alpha beta g\namma delta");
+    assert_eq!(display(&plain), "alpha beta \ngamma delta");
     let code = format!("```\n{text}\n```\n");
-    assert!(display(&project(&code, 0, 13, true)).contains("alpha beta g\namma delta"));
+    assert!(display(&project(&code, 0, 13, true)).contains("alpha beta \ngamma delta"));
+}
+
+/// Lay out `text` as a file that is not Markdown.
+fn project_code(text: &str, width: usize) -> Projection {
+    let parsed = Parsed::new(text, Document::new(text).markdown(), false, None);
+    Projection::build(text, &parsed, Selection::caret(0), width, false)
+}
+
+#[test]
+fn code_wraps_at_words_and_breaks_only_tokens_longer_than_a_row() {
+    // The breaks 0.3.1 made at 70 columns: "…to the la / st file." and
+    // "Action::Help / ),".
+    let text = "    // Keep a few large blocks' saved states, or else to the last file.\n            Command::Help => Action::Help),\n";
+    let p = project_code(text, 64);
+    let rows: Vec<_> = p.rows.iter().map(row_text).collect();
+    assert_eq!(
+        rows,
+        [
+            "    // Keep a few large blocks' saved states, or else to the ",
+            "    last file.",
+            "            Command::Help => Action::Help),",
+            "",
+        ],
+    );
+    let narrow = project_code(text, 40);
+    let rows: Vec<_> = narrow.rows.iter().map(row_text).collect();
+    assert_eq!(
+        rows,
+        [
+            "    // Keep a few large blocks' saved ",
+            "    states, or else to the last file.",
+            "            Command::Help => ",
+            "            Action::Help),",
+            "",
+        ],
+    );
+    // Every source grapheme keeps a glyph, in order, at every width: wrapping
+    // moves words and never hides or reorders text, and no row is too wide.
+    for width in 2..90 {
+        let p = project_code(text, width);
+        let mut shown = String::new();
+        for row in &p.rows {
+            if row.line.is_some() && !shown.is_empty() {
+                shown.push('\n');
+            }
+            for glyph in row.glyphs.iter().filter(|g| !g.source.is_empty()) {
+                shown.push_str(&text[glyph.source.clone()]);
+                assert!(glyph.column + glyph.width < width.max(2), "width {width}");
+            }
+        }
+        assert_eq!(shown, text, "width {width}");
+    }
+    // A row breaks inside a word only when the word cannot fit a row of its
+    // own, or when nothing but indentation stands before it: moving that
+    // word down would leave its line's first row blank.
+    let mut broken = 0;
+    for width in 8..90 {
+        let p = project_code(text, width);
+        for (index, row) in p.rows.iter().enumerate().skip(1) {
+            if row.line.is_some() {
+                continue;
+            }
+            let before = text[..row.start].chars().next_back().unwrap();
+            let after = text[row.start..].chars().next().unwrap();
+            if before.is_whitespace() || after.is_whitespace() {
+                continue;
+            }
+            broken += 1;
+            // The word broken at this row's start, and the row it began on.
+            let begin = text[..row.start]
+                .rfind(char::is_whitespace)
+                .map_or(0, |at| at + 1);
+            let end = text[row.start..]
+                .find(char::is_whitespace)
+                .map_or(text.len(), |at| row.start + at);
+            let home = p.rows[..index]
+                .iter()
+                .rposition(|r| r.start <= begin)
+                .unwrap();
+            let leads = !p.rows[home].glyphs.iter().any(|g| {
+                !g.source.is_empty() && g.source.start < begin && !g.text.trim().is_empty()
+            });
+            let hang = row
+                .glyphs
+                .iter()
+                .take_while(|g| g.source.is_empty())
+                .count();
+            assert!(
+                leads || end - begin > width - 1 - hang,
+                "width {width} row {index}: {:?} broken though it fits a row",
+                &text[begin..end]
+            );
+        }
+    }
+    assert!(
+        broken > 0,
+        "narrow widths still break words too long to fit"
+    );
+    // A token longer than the row starts where it stands and breaks by
+    // column, as before.
+    let url = "see https://example.com/a/very/long/path/that/cannot/fit/in/one/row.html now\n";
+    let rows: Vec<_> = project_code(url, 24).rows.iter().map(row_text).collect();
+    assert_eq!(
+        rows,
+        [
+            "see https://example.com",
+            "/a/very/long/path/that/",
+            "cannot/fit/in/one/row.h",
+            "tml now",
+            ""
+        ]
+    );
+    // The one space between two words stays at the end of a full row,
+    // without a cell, so the second word begins its row under the first.
+    let rows = |text: &str, width: usize| -> Vec<String> {
+        project_code(text, width)
+            .rows
+            .iter()
+            .map(row_text)
+            .collect()
+    };
+    assert_eq!(rows("alpha beta gamma", 11), ["alpha beta", "gamma"]);
+    assert_eq!(
+        rows("  alpha beta gamma delta", 13),
+        ["  alpha beta", "  gamma ", "  delta"]
+    );
+    let p = project_code("alpha beta gamma", 11);
+    let space = &p.rows[0].glyphs[10];
+    assert_eq!((space.source.clone(), space.width), (10..11, 0));
+    assert_eq!(p.cursor(10), (0, 10));
+    assert_eq!(p.cursor(11), (1, 0));
+    assert_eq!(p.cursor_with_affinity(11, Affinity::Upstream), (0, 10));
+    assert_eq!(p.hit(1, 0).offset, 11);
+    // Any other space keeps its cell, as code shows its spaces: a run of
+    // them wraps by column, and so does one that ends its line.
+    assert_eq!(rows("alpha beta  gamma", 11), ["alpha beta", "  gamma"]);
+    assert_eq!(rows("alpha beta \tgamma", 11), ["alpha beta", "    gamma"]);
+    assert_eq!(rows("alpha beta \nx", 11), ["alpha beta", " ", "x"]);
 }
 
 #[test]
@@ -866,9 +1004,12 @@ fn spaces_at_a_soft_wrap_hang_invisibly_instead_of_indenting_the_next_row() {
         p.cursor_with_affinity(boundary, Affinity::Upstream),
         (0, 10)
     );
-    // Code keeps every space visible and column-wrapped.
+    // Code treats the one space between two words the same way, and keeps
+    // every other space visible.
     let code = format!("```\n{text}\n```\n");
-    assert!(display(&project(&code, 0, 11, true)).contains("alpha beta\n gamma"));
+    assert!(display(&project(&code, 0, 11, true)).contains("alpha beta\ngamma"));
+    let spaced = "```\nalpha beta  gamma\n```\n";
+    assert!(display(&project(spaced, 0, 11, true)).contains("alpha beta\n  gamma"));
 }
 
 #[test]

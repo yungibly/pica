@@ -109,8 +109,10 @@ pub struct Window {
 
 /// A row inside one long line where a window may begin: the row's number
 /// within the line and its source offset, from an earlier layout of the same
-/// line. Literal rows break by width alone, so the rows before an edit keep
-/// their starts and layout can skip them.
+/// line. Where a literal row begins depends only on the text before it and
+/// on the word it begins with, which ends by the next row's start. So a row
+/// keeps its start through any edit made after the start of the row that
+/// follows it, and layout can skip the rows that hold.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Resume {
     pub row: usize,

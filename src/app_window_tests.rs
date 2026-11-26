@@ -442,6 +442,119 @@ fn a_very_long_line_lays_out_only_the_rows_shown_from_its_start() {
     );
 }
 
+/// Every row the window holds begins, ends, and hangs where laying out the
+/// whole document would put it.
+fn rows_match_whole_layout(app: &App) {
+    let text = app.document.text();
+    let parsed = Parsed::new(text, MarkdownSnapshot::default(), false, None);
+    let whole = Projection::build(
+        text,
+        &parsed,
+        app.document.selection(),
+        usize::from(app.viewport.width),
+        false,
+    );
+    let shape = |row: &crate::projection::VisualRow| {
+        let first = row.glyphs.iter().find(|glyph| !glyph.source.is_empty());
+        (row.end, first.map(|glyph| glyph.column), row.line.is_some())
+    };
+    let expected: std::collections::HashMap<_, _> = whole
+        .rows(0..whole.row_count())
+        .iter()
+        .map(|row| (row.start, shape(row)))
+        .collect();
+    let window = app.projection.rows(0..app.projection.row_count());
+    for (index, row) in window.iter().enumerate() {
+        assert_eq!(
+            expected.get(&row.start),
+            Some(&shape(row)),
+            "window row {index} of {} starting at {}",
+            window.len(),
+            row.start
+        );
+    }
+}
+
+#[test]
+fn edits_deep_in_a_long_wrapped_line_keep_its_rows_where_whole_layout_breaks_them() {
+    // Words of many lengths, so rows break at different columns and an
+    // edit can pull a word back to the row above or push one down.
+    let mut line = String::from("    ");
+    for n in 0..9_000 {
+        line.push_str(&"w".repeat(1 + (n * 7) % 13));
+        line.push(' ');
+    }
+    let text = format!("before\n{line}\nafter\n");
+    let mut app = App::new(text.clone(), None, false);
+    draw(&mut app, 80, 24);
+    let line_start = text.find('\n').unwrap() + 1;
+    // Lay the line out once to its end, so later windows resume inside it.
+    app.jump_to_source(line_start + line.len());
+    draw(&mut app, 80, 24);
+    rows_match_whole_layout(&app);
+    let deep = line_start + line.len() * 2 / 3;
+    app.jump_to_source(deep);
+    draw(&mut app, 80, 24);
+    assert!(
+        app.projection.first_row() > 0,
+        "the window resumes mid-line"
+    );
+    rows_match_whole_layout(&app);
+    let mut resumed = 0;
+    for step in 0..60 {
+        // Put the caret at, just after, or just before the start of its
+        // row, or of a neighbouring row: where a row's first word decides
+        // whether it stays or moves.
+        let (row, _) = app.caret_position();
+        let target = (row + step % 3).min(app.projection.row_count() - 1);
+        let start = app.projection.row(target).start;
+        let offset = match step % 4 {
+            0 => start,
+            1 => start + 1,
+            2 => start.saturating_sub(1),
+            _ => start + 3,
+        };
+        let offset = app.document.floor_grapheme_boundary(offset);
+        app.document.set_caret(offset).unwrap();
+        match step % 5 {
+            0 => press(&mut app, KeyCode::Backspace, KeyModifiers::NONE),
+            1 => press(&mut app, KeyCode::Char('q'), KeyModifiers::NONE),
+            2 => press(&mut app, KeyCode::Char(' '), KeyModifiers::NONE),
+            3 => press(&mut app, KeyCode::Delete, KeyModifiers::NONE),
+            _ => app.handle_event(Event::Paste("pasted words that span rows ".repeat(9))),
+        }
+        draw(&mut app, 80, 24);
+        assert!(caret_on_screen(&app) && bounded(&app), "step {step}");
+        rows_match_whole_layout(&app);
+        resumed += usize::from(app.projection.first_row() > 0);
+        // Rows far below the edit moved with it: a window there must not
+        // begin from where they used to start. It is laid out from the
+        // edit instead, once.
+        if step % 6 == 5 {
+            let head = app.document.selection().head;
+            let ahead = if step % 12 == 5 { 9_000 } else { 2_500 };
+            app.jump_to_source(head + ahead);
+            draw(&mut app, 80, 24);
+            assert!(caret_on_screen(&app), "step {step}");
+            rows_match_whole_layout(&app);
+            app.jump_to_source(head.saturating_sub(1_200).max(line_start));
+            draw(&mut app, 80, 24);
+            rows_match_whole_layout(&app);
+        }
+    }
+    assert!(
+        resumed >= 50,
+        "edits resumed inside the line {resumed} times"
+    );
+    // Undo walks the same edits back through the same rows.
+    for _ in 0..20 {
+        press(&mut app, KeyCode::Char('z'), KeyModifiers::CONTROL);
+        draw(&mut app, 80, 24);
+        assert!(caret_on_screen(&app));
+        rows_match_whole_layout(&app);
+    }
+}
+
 #[test]
 fn large_files_open_as_plain_source_without_changing_the_live_preference() {
     let mut text = "- item with **bold** text\n".repeat(LARGE_FILE / 20);

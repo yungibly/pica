@@ -1,6 +1,7 @@
-//! Ranked, case-insensitive subsequence matching for navigation pickers.
+//! Ranked, case-insensitive subsequence matching for navigation pickers
+//! and the file browser.
 
-pub(super) fn ranked<'a>(
+pub(crate) fn ranked<'a>(
     entries: impl IntoIterator<Item = (&'a str, &'a str)>,
     query: &str,
 ) -> Vec<usize> {

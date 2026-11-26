@@ -35,7 +35,7 @@ The defaults follow micro's. Press **Ctrl+G** for help and **Ctrl+E** for every 
 | Key | Action | Key | Action |
 | --- | --- | --- | --- |
 | Ctrl+S | Save | Ctrl+F | Find (Ctrl+N / Ctrl+P: next / previous) |
-| Ctrl+O | Open a file | Ctrl+R / Alt+C in Find | Replace / match case |
+| Ctrl+O | Open a file; type to filter | Ctrl+R / Alt+C in Find | Replace / match case |
 | Ctrl+T | New tab | Ctrl+L | Go to line |
 | Alt+, / Alt+. | Previous / next tab | Ctrl+K | Cut line; repeat to collect more |
 | Ctrl+Q | Close tab; the last one quits | Ctrl+D | Duplicate line or selection |
@@ -52,7 +52,7 @@ Markdown opens in a live view. Headings carry a mark in the margin, tables becom
 
 Lists continue on Enter; Enter on an empty item leaves the list. Tab nests an item under the one above it and Shift+Tab lifts it back out, with its own lines and children. Clicking a task box, or pressing Alt+T, changes only its `[ ]` / `[x]` marker. From Ctrl+E you can turn on an outline sidebar of the document's headings, jump to any heading, or switch documents by fuzzy name. Once on, the outline shows beside every Markdown document that has headings and stays out of the way of everything else. Footnotes, math, raw HTML, and other unsupported constructs stay visible as source.
 
-Code files and plain text open as numbered source with highlighting for 41 languages, including Rust, Python, JavaScript, TypeScript, Go, C and C++, shell, SQL, HTML, CSS, JSON, YAML, TOML, and diffs. The highlighter is small and built in: it knows comments, strings, keywords, and literals, not full grammars.
+Code files and plain text open as numbered source with highlighting for 41 languages, including Rust, Python, JavaScript, TypeScript, Go, C and C++, shell, SQL, HTML, CSS, JSON, YAML, TOML, and diffs. The highlighter is small and built in: it knows comments, strings, keywords, and literals, not full grammars. A line too long for the window wraps between words and continues under its own indentation; only a word longer than a row is broken inside.
 
 ## Looks
 

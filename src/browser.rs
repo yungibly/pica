@@ -5,7 +5,7 @@ use crate::{
     projection::safe_text,
     search::{FieldMap, Focus},
     ui,
-    workspace::clipped,
+    workspace::{clipped, matching},
 };
 use crossterm::event::{Event, KeyCode, KeyModifiers, MouseButton, MouseEventKind};
 use pica::Document;
@@ -20,10 +20,13 @@ use std::{
     io::{self, Read},
     path::{Path, PathBuf},
 };
+use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 const MAX_ENTRIES: usize = 2048;
 const SNIFF_BYTES: u64 = 512;
+/// A filter is a few letters of a name; longer input is a path.
+const MAX_FILTER: usize = 255;
 
 #[derive(Clone, Debug)]
 struct Entry {
@@ -31,8 +34,19 @@ struct Entry {
     directory: bool,
 }
 
+impl Entry {
+    fn name(&self) -> String {
+        self.path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned()
+    }
+}
+
 #[derive(Clone, Copy)]
 enum Hit {
+    /// A row of the listing, by its place among the matches.
     Entry(usize),
     Parent,
     Hidden,
@@ -49,13 +63,22 @@ pub enum Action {
 
 pub struct Browser {
     directory: PathBuf,
+    /// Everything listed in the folder, folders first.
     entries: Vec<Entry>,
+    /// The entries the filter matches, best first: indices into `entries`.
+    matches: Vec<usize>,
+    /// Typed in the listing to narrow it; cleared on entering a folder.
+    filter: String,
+    /// The selected row: an index into `matches`.
     selected: usize,
     scroll: usize,
     path: Document,
     path_focus: bool,
     hidden: bool,
     all: bool,
+    /// Whether `entries` holds dot files: the Hidden toggle is on, or the
+    /// filter begins with a dot and so asks for them.
+    listed_hidden: bool,
     message: String,
     hits: Vec<(Rect, Hit)>,
     visible_rows: usize,
@@ -70,11 +93,14 @@ impl Browser {
             path: Document::new(directory.display().to_string()),
             directory,
             entries: vec![],
+            matches: vec![],
+            filter: String::new(),
             selected: 0,
             scroll: 0,
             path_focus: false,
             hidden: false,
             all: false,
+            listed_hidden: false,
             message: String::new(),
             hits: vec![],
             visible_rows: 1,
@@ -90,6 +116,7 @@ impl Browser {
     }
 
     fn reload(&mut self) -> io::Result<()> {
+        let show_hidden = self.hidden || self.filter.starts_with('.');
         let mut entries = vec![];
         let mut truncated = false;
         let mut skipped = 0;
@@ -105,7 +132,7 @@ impl Browser {
                     continue;
                 }
             };
-            if !self.hidden && item.file_name().to_string_lossy().starts_with('.') {
+            if !show_hidden && item.file_name().to_string_lossy().starts_with('.') {
                 continue;
             }
             let path = item.path();
@@ -131,9 +158,8 @@ impl Browser {
                 .then_with(|| a.path.file_name().cmp(&b.path.file_name()))
         });
         self.entries = entries;
-        self.selected = 0;
-        self.scroll = 0;
-        self.hits.clear();
+        self.listed_hidden = show_hidden;
+        self.refilter();
         self.message = if truncated {
             format!("Listing limited to {MAX_ENTRIES} entries; use Path to open omitted names.")
         } else if skipped > 0 {
@@ -144,8 +170,38 @@ impl Browser {
         Ok(())
     }
 
+    /// Match the listing against the filter and select the best match.
+    fn refilter(&mut self) {
+        self.matches = if self.filter.trim().is_empty() {
+            (0..self.entries.len()).collect()
+        } else {
+            let names: Vec<String> = self.entries.iter().map(Entry::name).collect();
+            matching::ranked(names.iter().map(|name| (name.as_str(), "")), &self.filter)
+        };
+        self.selected = 0;
+        self.scroll = 0;
+        self.hits.clear();
+    }
+
+    /// Narrow the listing to names matching `filter`. A filter that begins
+    /// with a dot asks for dot files, whatever the Hidden toggle says.
+    fn set_filter(&mut self, filter: String) {
+        self.filter = filter;
+        if (self.hidden || self.filter.starts_with('.')) == self.listed_hidden {
+            self.refilter();
+        } else if let Err(error) = self.reload() {
+            self.set_error(error);
+        }
+    }
+
+    fn selected_entry(&self) -> Option<&Entry> {
+        self.matches
+            .get(self.selected)
+            .and_then(|index| self.entries.get(*index))
+    }
+
     fn navigate(&mut self, directory: PathBuf) {
-        let previous = self.directory.clone();
+        let previous = (self.directory.clone(), std::mem::take(&mut self.filter));
         self.directory = directory;
         match self.reload() {
             Ok(()) => {
@@ -153,7 +209,7 @@ impl Browser {
                 self.path_focus = false;
             }
             Err(error) => {
-                self.directory = previous;
+                (self.directory, self.filter) = previous;
                 self.set_error(error);
             }
         }
@@ -178,14 +234,14 @@ impl Browser {
 
     fn enter(&mut self) -> Action {
         if self.path_focus {
-            let typed = PathBuf::from(self.path.text());
+            let typed = expand_home(self.path.text());
             let path = if typed.is_absolute() {
                 typed
             } else {
                 self.directory.join(typed)
             };
             self.activate_path(path)
-        } else if let Some(entry) = self.entries.get(self.selected) {
+        } else if let Some(entry) = self.selected_entry() {
             self.activate_path(entry.path.clone())
         } else {
             Action::None
@@ -203,12 +259,20 @@ impl Browser {
         self.path.select_all();
     }
 
+    /// Begin a path in the path field with `text`, as typing `/` or `~` in
+    /// the listing does.
+    fn start_path(&mut self, text: &str) {
+        self.path_focus = true;
+        self.path.select_all();
+        self.path.insert(text);
+    }
+
     fn move_selection(&mut self, delta: isize) {
         self.path_focus = false;
         self.selected = self
             .selected
             .saturating_add_signed(delta)
-            .min(self.entries.len().saturating_sub(1));
+            .min(self.matches.len().saturating_sub(1));
     }
 
     fn toggle(&mut self, hidden: bool) {
@@ -227,6 +291,114 @@ impl Browser {
         if !text.is_empty() {
             self.path.insert(&text);
         }
+    }
+
+    /// Typed or pasted into the listing: more of the filter.
+    fn type_filter(&mut self, text: &str) {
+        let mut filter = self.filter.clone();
+        for grapheme in text.graphemes(true) {
+            if grapheme.chars().any(char::is_control)
+                || (filter.is_empty() && grapheme.trim().is_empty())
+                || filter.len() + grapheme.len() > MAX_FILTER
+            {
+                continue;
+            }
+            filter.push_str(grapheme);
+        }
+        if filter != self.filter {
+            self.set_filter(filter);
+        }
+    }
+
+    /// One key in the listing, where typing filters. Returns `None` for a
+    /// key the listing and the path field treat alike.
+    fn list_key(&mut self, code: KeyCode, control: bool) -> Option<Action> {
+        match code {
+            KeyCode::Backspace if self.filter.is_empty() => self.parent(),
+            KeyCode::Backspace => {
+                let mut filter = self.filter.clone();
+                if let Some((start, _)) = filter.grapheme_indices(true).next_back() {
+                    filter.truncate(start);
+                }
+                self.set_filter(filter);
+            }
+            KeyCode::Char('u') if control => self.set_filter(String::new()),
+            KeyCode::Home => self.selected = 0,
+            KeyCode::End => self.selected = self.matches.len().saturating_sub(1),
+            // An empty filter makes `/` and `~` the start of a path. After a
+            // filter, `/` enters the folder it selected, as a path would.
+            KeyCode::Char('/') if !control && self.filter.is_empty() => self.start_path("/"),
+            KeyCode::Char('~') if !control && self.filter.is_empty() => self.start_path("~"),
+            KeyCode::Char('/') if !control => {
+                if let Some(entry) = self.selected_entry().filter(|entry| entry.directory) {
+                    return Some(self.activate_path(entry.path.clone()));
+                }
+            }
+            KeyCode::Char(c) if !control => self.type_filter(&c.to_string()),
+            _ => return None,
+        }
+        Some(Action::None)
+    }
+
+    /// One key in the path field. Returns `None` for a key the listing and
+    /// the path field treat alike.
+    fn path_key(
+        &mut self,
+        code: KeyCode,
+        control: bool,
+        shift: bool,
+        clipboard: &mut Clipboard,
+    ) -> Option<Action> {
+        match code {
+            KeyCode::Char('a') if control => self.path.select_all(),
+            KeyCode::Char('c' | 'x') if control => {
+                if !self.path.selection().is_empty() {
+                    self.message = clipboard.copy(self.path.selected_text());
+                    if code == KeyCode::Char('x') {
+                        self.path.insert("");
+                    }
+                }
+            }
+            KeyCode::Char('v') if control => {
+                let (text, message) = clipboard.paste();
+                self.message = message;
+                if let Some(text) = text {
+                    self.insert_path_text(&text);
+                }
+            }
+            KeyCode::Char('z') if control => {
+                self.path.undo();
+            }
+            KeyCode::Char('y') if control => {
+                self.path.redo();
+            }
+            KeyCode::Left => self.path.move_left(shift),
+            KeyCode::Right => self.path.move_right(shift),
+            KeyCode::Home | KeyCode::End => {
+                let head = if code == KeyCode::Home {
+                    0
+                } else {
+                    self.path.text().len()
+                };
+                let anchor = if shift {
+                    self.path.selection().anchor
+                } else {
+                    head
+                };
+                let _ = self.path.set_selection(pica::Selection { anchor, head });
+            }
+            KeyCode::Backspace => {
+                self.path.backspace();
+            }
+            KeyCode::Delete => {
+                self.path.delete_forward();
+            }
+            KeyCode::Char(c) if !control => {
+                self.path.insert(&c.to_string());
+            }
+            _ => return None,
+        }
+        Some(Action::None)
     }
 
     pub fn handle_event(&mut self, event: Event, clipboard: &mut Clipboard) -> Action {
@@ -251,9 +423,20 @@ impl Browser {
             Event::Paste(text) if self.path_focus => {
                 self.insert_path_text(&text);
             }
+            // Pasted into the listing, a path goes to the path field and
+            // anything else narrows the listing.
+            Event::Paste(text) => {
+                let text = text.replace(['\n', '\r', '\0'], "");
+                if text.contains('/') || text.starts_with('~') {
+                    self.start_path(&text);
+                } else {
+                    self.type_filter(&text);
+                }
+            }
             Event::Key(key) => {
                 let control = key.modifiers.contains(KeyModifiers::CONTROL);
                 let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+                let alt = key.modifiers.contains(KeyModifiers::ALT);
                 match key.code {
                     KeyCode::Esc => action = Action::Close,
                     KeyCode::Tab | KeyCode::BackTab => {
@@ -263,72 +446,26 @@ impl Browser {
                             self.focus_path();
                         }
                     }
+                    // F2 and F5 are silent aliases from earlier versions.
                     KeyCode::F(2) => self.toggle(true),
                     KeyCode::F(5) => self.toggle(false),
+                    KeyCode::Char('h' | 'H') if alt && !control => self.toggle(true),
+                    KeyCode::Char('a' | 'A') if alt && !control => self.toggle(false),
                     KeyCode::Enter => action = self.enter(),
                     KeyCode::Up => self.move_selection(-1),
                     KeyCode::Down => self.move_selection(1),
                     KeyCode::PageUp => self.move_selection(-(self.visible_rows as isize)),
                     KeyCode::PageDown => self.move_selection(self.visible_rows as isize),
-                    KeyCode::Backspace if !self.path_focus => self.parent(),
-                    KeyCode::Char('/') if !self.path_focus => self.focus_path(),
-                    KeyCode::Char('a') if control && self.path_focus => self.path.select_all(),
-                    KeyCode::Char('c' | 'x') if control && self.path_focus => {
-                        if !self.path.selection().is_empty() {
-                            self.message = clipboard.copy(self.path.selected_text());
-                            if key.code == KeyCode::Char('x') {
-                                self.path.insert("");
-                            }
-                        }
-                    }
-                    KeyCode::Char('v') if control && self.path_focus => {
-                        let (text, message) = clipboard.paste();
-                        self.message = message;
-                        if let Some(text) = text {
-                            self.insert_path_text(&text);
-                        }
-                    }
-                    KeyCode::Char('z') if control && self.path_focus => {
-                        self.path.undo();
-                    }
-                    KeyCode::Char('y') if control && self.path_focus => {
-                        self.path.redo();
-                    }
-                    KeyCode::Left if self.path_focus => self.path.move_left(shift),
-                    KeyCode::Right if self.path_focus => self.path.move_right(shift),
-                    KeyCode::Home if self.path_focus => {
-                        let head = 0;
-                        let anchor = if shift {
-                            self.path.selection().anchor
+                    // Other Alt keys are not text.
+                    _ if alt => {}
+                    code => {
+                        let handled = if self.path_focus {
+                            self.path_key(code, control, shift, clipboard)
                         } else {
-                            head
+                            self.list_key(code, control)
                         };
-                        let _ = self.path.set_selection(pica::Selection { anchor, head });
+                        action = handled.unwrap_or(Action::None);
                     }
-                    KeyCode::End if self.path_focus => {
-                        let head = self.path.text().len();
-                        let anchor = if shift {
-                            self.path.selection().anchor
-                        } else {
-                            head
-                        };
-                        let _ = self.path.set_selection(pica::Selection { anchor, head });
-                    }
-                    KeyCode::Backspace if self.path_focus => {
-                        self.path.backspace();
-                    }
-                    KeyCode::Delete if self.path_focus => {
-                        self.path.delete_forward();
-                    }
-                    KeyCode::Char(c)
-                        if self.path_focus
-                            && !key
-                                .modifiers
-                                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
-                    {
-                        self.path.insert(&c.to_string());
-                    }
-                    _ => {}
                 }
             }
             Event::Mouse(mouse) => match mouse.kind {
@@ -373,6 +510,53 @@ impl Browser {
         action
     }
 
+    /// The listing's prompt: the folder, then the filter being typed, as
+    /// one path. The folder gives way from its left when room is short.
+    fn draw_filter(&self, frame: &mut Frame, field: Rect) {
+        let colors = crate::theme::palette();
+        let buffer = frame.buffer_mut();
+        buffer.set_style(field, ui::surface());
+        if field.width < 4 {
+            return;
+        }
+        buffer.set_string(
+            field.x,
+            field.y,
+            "❯",
+            ui::surface().fg(colors.accent).add_modifier(Modifier::BOLD),
+        );
+        let room = usize::from(field.width) - 3;
+        let filter = ui::clipped_suffix(&safe_text(&self.filter), room);
+        let filter_width = UnicodeWidthStr::width(filter.as_str());
+        let mut folder = safe_text(&self.directory.display().to_string());
+        if !folder.ends_with('/') {
+            folder.push('/');
+        }
+        let folder = ui::clipped_suffix(&folder, room - filter_width);
+        let mut x = field.x + 2;
+        buffer.set_string(x, field.y, &folder, ui::muted());
+        x += UnicodeWidthStr::width(folder.as_str()) as u16;
+        buffer.set_string(
+            x,
+            field.y,
+            &filter,
+            ui::surface().add_modifier(Modifier::BOLD),
+        );
+        x += filter_width as u16;
+        const PLACEHOLDER: &str = "type to filter";
+        if self.filter.is_empty()
+            && usize::from(field.right().saturating_sub(x)) > PLACEHOLDER.len() + 2
+        {
+            buffer.set_string(
+                x + 1,
+                field.y,
+                PLACEHOLDER,
+                ui::muted().add_modifier(Modifier::ITALIC),
+            );
+        }
+        frame.set_cursor_position((x.min(field.right() - 1), field.y));
+    }
+
     pub fn draw(&mut self, frame: &mut Frame) {
         self.hits.clear();
         let area = frame.area();
@@ -392,28 +576,37 @@ impl Browser {
             width,
             area.height - 2,
         );
-        let count = format!(
-            "{} {}",
-            self.entries.len(),
-            if self.entries.len() == 1 {
-                "item"
-            } else {
-                "items"
-            }
-        );
+        let count = if self.matches.len() < self.entries.len() {
+            format!("{} of {}", self.matches.len(), self.entries.len())
+        } else {
+            format!(
+                "{} {}",
+                self.entries.len(),
+                if self.entries.len() == 1 {
+                    "item"
+                } else {
+                    "items"
+                }
+            )
+        };
         let inner = ui::panel(frame, popup, "Open file", Some(&count));
         let colors = crate::theme::palette();
         let chrome = crate::theme::chrome_palette();
         let field = Rect::new(inner.x + 1, inner.y, inner.width.saturating_sub(2), 1);
-        self.path_map = Some(draw_field(
-            frame,
-            field,
-            "❯ ",
-            &self.path,
-            Focus::Query,
-            self.path_focus,
-            None,
-        ));
+        if self.path_focus {
+            self.path_map = Some(draw_field(
+                frame,
+                field,
+                "❯ ",
+                &self.path,
+                Focus::Query,
+                true,
+                None,
+            ));
+        } else {
+            self.path_map = None;
+            self.draw_filter(frame, field);
+        }
         self.hits.push((field, Hit::Path));
         let toggle = |on: bool, name: &str| format!("{} {name}", if on { "●" } else { "○" });
         let controls = [
@@ -446,16 +639,17 @@ impl Browser {
             self.scroll = (self.selected + 1).saturating_sub(self.visible_rows);
         }
         let icons = crate::icons::current();
-        for (row, (index, entry)) in self
-            .entries
+        for (row, (position, index)) in self
+            .matches
             .iter()
             .enumerate()
             .skip(self.scroll)
             .take(self.visible_rows)
             .enumerate()
         {
+            let entry = &self.entries[*index];
             let rect = Rect::new(inner.x, inner.y + 2 + row as u16, inner.width, 1);
-            let selected = index == self.selected && !self.path_focus;
+            let selected = position == self.selected && !self.path_focus;
             let base = if selected {
                 chrome.tab_active.style()
             } else {
@@ -466,7 +660,6 @@ impl Browser {
             if selected {
                 buffer.set_string(rect.x, rect.y, "▌", base.fg(chrome.tab_indicator));
             }
-            let name = safe_text(&entry.path.file_name().unwrap_or_default().to_string_lossy());
             let icon = if icons == crate::icons::IconSet::Plain {
                 ""
             } else if entry.directory {
@@ -474,15 +667,6 @@ impl Browser {
             } else {
                 icons.path(&entry.path)
             };
-            let label = format!(
-                "{}{name}{}",
-                if icon.is_empty() {
-                    String::new()
-                } else {
-                    format!("{icon} ")
-                },
-                if entry.directory { "/" } else { "" }
-            );
             let style = if entry.directory {
                 base.fg(colors.accent)
             } else {
@@ -493,9 +677,38 @@ impl Browser {
             } else {
                 style
             };
-            let room = usize::from(rect.width.saturating_sub(3));
-            buffer.set_stringn(rect.x + 2, rect.y, clipped(&label, room), room, style);
-            self.hits.push((rect, Hit::Entry(index)));
+            let mut x = rect.x + 2;
+            let end = rect.right().saturating_sub(1);
+            if !icon.is_empty() && x + 2 < end {
+                buffer.set_string(x, rect.y, icon, style);
+                x += 2;
+            }
+            let suffix = if entry.directory { "/" } else { "" };
+            let name = clipped(
+                &safe_text(&entry.name()),
+                usize::from(end.saturating_sub(x)).saturating_sub(suffix.len()),
+            );
+            // The letters the filter matched stand out, as in the palette.
+            let marks = ui::highlights(&name, &self.filter);
+            let emphasis = base.fg(colors.accent).add_modifier(Modifier::BOLD);
+            for (grapheme, marked) in name.graphemes(true).zip(marks) {
+                let marked = marked && !self.filter.is_empty();
+                buffer.set_string(x, rect.y, grapheme, if marked { emphasis } else { style });
+                x += UnicodeWidthStr::width(grapheme) as u16;
+            }
+            buffer.set_string(x, rect.y, suffix, style);
+            self.hits.push((rect, Hit::Entry(position)));
+        }
+        if self.matches.is_empty() && self.visible_rows > 0 {
+            let empty = if self.entries.is_empty() {
+                "  Nothing to open here"
+            } else {
+                "  No matches"
+            };
+            frame.render_widget(
+                Paragraph::new(empty).style(ui::muted()),
+                Rect::new(inner.x, inner.y + 2, inner.width, 1),
+            );
         }
         if inner.height >= 4 {
             frame.render_widget(
@@ -515,9 +728,28 @@ impl Browser {
         ui::hints(
             frame,
             popup,
-            "⏎ open · ⌫ up · tab path · F2 hidden · F5 all · esc close",
+            if self.path_focus {
+                "⏎ go · tab list · alt+h hidden · alt+a all · esc close"
+            } else if self.filter.is_empty() {
+                "⏎ open · ⌫ up · tab path · alt+h hidden · alt+a all · esc close"
+            } else {
+                "⏎ open · ⌫ erase · tab path · alt+h hidden · alt+a all · esc close"
+            },
         );
     }
+}
+
+/// `~` and `~/…` name the home folder, as in a shell.
+fn expand_home(text: &str) -> PathBuf {
+    let home = || std::env::var_os("HOME").filter(|home| !home.is_empty());
+    match text.strip_prefix('~') {
+        Some("") => home().map(PathBuf::from),
+        Some(rest) if rest.starts_with('/') => {
+            home().map(|home| PathBuf::from(home).join(rest.trim_start_matches('/')))
+        }
+        _ => None,
+    }
+    .unwrap_or_else(|| PathBuf::from(text))
 }
 
 fn text_candidate(path: &Path) -> bool {
@@ -588,6 +820,294 @@ mod tests {
                     .into_owned()
             })
             .collect()
+    }
+
+    /// The names the listing shows, in order.
+    fn shown(browser: &Browser) -> Vec<String> {
+        browser
+            .matches
+            .iter()
+            .map(|index| browser.entries[*index].name())
+            .collect()
+    }
+    fn type_text(browser: &mut Browser, text: &str) {
+        for c in text.chars() {
+            key(browser, KeyCode::Char(c));
+        }
+    }
+    fn alt(browser: &mut Browser, c: char) {
+        browser.handle_event(
+            Event::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::ALT)),
+            &mut Clipboard::internal(),
+        );
+    }
+    fn screen(browser: &mut Browser, width: u16, height: u16) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal.draw(|frame| browser.draw(frame)).unwrap();
+        let buffer = terminal.backend().buffer();
+        (0..height)
+            .map(|y| {
+                let row: String = (0..width).map(|x| buffer[(x, y)].symbol()).collect();
+                format!("{}\n", row.trim_end())
+            })
+            .collect()
+    }
+    /// A folder with two folders, three files and a dot file.
+    fn project() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir(dir.path().join("docs")).unwrap();
+        fs::create_dir(dir.path().join("src")).unwrap();
+        fs::write(dir.path().join("src/app.rs"), "fn main() {}\n").unwrap();
+        fs::write(dir.path().join("Cargo.toml"), "[package]\n").unwrap();
+        fs::write(dir.path().join("README.md"), "# Read me\n").unwrap();
+        fs::write(dir.path().join("notes.md"), "notes\n").unwrap();
+        fs::write(dir.path().join(".env"), "KEY=1\n").unwrap();
+        dir
+    }
+
+    #[test]
+    fn typing_filters_the_listing_and_enter_opens_the_best_match() {
+        let dir = project();
+        let mut browser = Browser::new(dir.path().to_owned()).unwrap();
+        let all = ["docs", "src", "Cargo.toml", "README.md", "notes.md"];
+        assert_eq!(shown(&browser), all);
+        let text = screen(&mut browser, 100, 24);
+        assert!(text.contains("type to filter"), "{text}");
+        assert!(text.contains("5 items"), "{text}");
+        // Any case, and letters in order rather than in a row.
+        type_text(&mut browser, "re");
+        assert_eq!(shown(&browser), ["README.md"]);
+        let text = screen(&mut browser, 100, 24);
+        assert!(text.contains("/re") && text.contains("1 of 5"), "{text}");
+        assert!(!text.contains("type to filter") && !text.contains("notes.md"));
+        let Action::Open(path) = key(&mut browser, KeyCode::Enter) else {
+            panic!("expected the match to open")
+        };
+        assert!(path.ends_with("README.md"));
+        browser.handle_event(
+            Event::Key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL)),
+            &mut Clipboard::internal(),
+        );
+        assert_eq!(shown(&browser), all);
+        type_text(&mut browser, "NTM");
+        assert_eq!(shown(&browser), ["notes.md"]);
+        // The path field still takes text literally and never filters.
+        key(&mut browser, KeyCode::Tab);
+        type_text(&mut browser, "docs");
+        assert_eq!(browser.filter, "NTM");
+        assert_eq!(browser.path.text(), "docs");
+        key(&mut browser, KeyCode::Enter);
+        assert!(browser.directory.ends_with("docs"));
+        assert!(browser.filter.is_empty() && !browser.path_focus);
+    }
+
+    #[test]
+    fn backspace_edits_the_filter_first_and_leaves_the_folder_only_when_it_is_empty() {
+        let dir = project();
+        let home = fs::canonicalize(dir.path()).unwrap();
+        let mut browser = Browser::new(dir.path().join("src")).unwrap();
+        type_text(&mut browser, "ap");
+        assert_eq!(shown(&browser), ["app.rs"]);
+        for filter in ["a", ""] {
+            key(&mut browser, KeyCode::Backspace);
+            assert_eq!(browser.filter, filter);
+            assert_eq!(browser.directory, home.join("src"));
+        }
+        key(&mut browser, KeyCode::Backspace);
+        assert_eq!(browser.directory, home);
+        // A filter that matches nothing says so and opens nothing.
+        type_text(&mut browser, "zzz");
+        assert!(shown(&browser).is_empty());
+        assert!(screen(&mut browser, 100, 24).contains("No matches"));
+        assert!(matches!(key(&mut browser, KeyCode::Enter), Action::None));
+        assert_eq!(browser.directory, home);
+    }
+
+    #[test]
+    fn the_selection_and_the_pointer_follow_the_filtered_rows() {
+        let dir = project();
+        let mut browser = Browser::new(dir.path().to_owned()).unwrap();
+        type_text(&mut browser, "md");
+        assert_eq!(shown(&browser), ["notes.md", "README.md"]);
+        key(&mut browser, KeyCode::Down);
+        key(&mut browser, KeyCode::Down);
+        let Action::Open(path) = key(&mut browser, KeyCode::Enter) else {
+            panic!("expected the second match to open")
+        };
+        assert!(path.ends_with("README.md"));
+        key(&mut browser, KeyCode::Home);
+        assert_eq!(browser.selected, 0);
+        key(&mut browser, KeyCode::End);
+        assert_eq!(browser.selected, 1);
+        draw(&mut browser, 100, 24);
+        let first = browser
+            .hits
+            .iter()
+            .find(|(_, hit)| matches!(hit, Hit::Entry(0)))
+            .unwrap()
+            .0;
+        let opened = browser.handle_event(
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: first.x + 3,
+                row: first.y,
+                modifiers: KeyModifiers::NONE,
+            }),
+            &mut Clipboard::internal(),
+        );
+        assert!(matches!(opened, Action::Open(path) if path.ends_with("notes.md")));
+    }
+
+    #[test]
+    fn a_slash_enters_the_matched_folder_and_starts_a_path_when_nothing_is_typed() {
+        let dir = project();
+        let home = fs::canonicalize(dir.path()).unwrap();
+        let mut browser = Browser::new(dir.path().to_owned()).unwrap();
+        // "sr/ap" reads as a path: into src, then app.rs.
+        type_text(&mut browser, "sr/ap");
+        assert_eq!(browser.directory, home.join("src"));
+        assert_eq!(browser.filter, "ap");
+        assert!(matches!(
+            key(&mut browser, KeyCode::Enter),
+            Action::Open(path) if path.ends_with("src/app.rs")
+        ));
+        // After a file, a slash is nothing.
+        type_text(&mut browser, "/");
+        assert_eq!((browser.filter.as_str(), browser.path_focus), ("ap", false));
+        browser.handle_event(
+            Event::Key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL)),
+            &mut Clipboard::internal(),
+        );
+        // With nothing typed, `/` and `~` begin a path in the path field.
+        type_text(&mut browser, "/");
+        assert!(browser.path_focus);
+        assert_eq!(browser.path.text(), "/");
+        browser.handle_event(
+            Event::Paste(home.join("notes.md").display().to_string()[1..].to_owned()),
+            &mut Clipboard::internal(),
+        );
+        assert!(matches!(
+            key(&mut browser, KeyCode::Enter),
+            Action::Open(path) if path == home.join("notes.md")
+        ));
+        key(&mut browser, KeyCode::Tab);
+        type_text(&mut browser, "~");
+        assert!(browser.path_focus);
+        assert_eq!(browser.path.text(), "~");
+        if let Some(user) = std::env::var_os("HOME").filter(|home| !home.is_empty()) {
+            let user = PathBuf::from(user);
+            assert_eq!(expand_home("~"), user);
+            assert_eq!(expand_home("~/notes/a.md"), user.join("notes/a.md"));
+        }
+        for literal in ["~other/a.md", "a~", "notes/~"] {
+            assert_eq!(expand_home(literal), PathBuf::from(literal));
+        }
+    }
+
+    #[test]
+    fn a_leading_dot_finds_dot_files_and_pasted_text_goes_where_it_reads() {
+        let dir = project();
+        let mut browser = Browser::new(dir.path().to_owned()).unwrap();
+        assert!(!shown(&browser).contains(&".env".to_owned()));
+        type_text(&mut browser, ".e");
+        assert_eq!(shown(&browser), [".env"]);
+        assert!(!browser.hidden);
+        key(&mut browser, KeyCode::Backspace);
+        key(&mut browser, KeyCode::Backspace);
+        assert_eq!(shown(&browser).len(), 5);
+        // A pasted name narrows the listing; a pasted path is a path.
+        browser.handle_event(Event::Paste("notes\n".into()), &mut Clipboard::internal());
+        assert_eq!(browser.filter, "notes");
+        assert_eq!(shown(&browser), ["notes.md"]);
+        browser.handle_event(
+            Event::Paste("src/app.rs".into()),
+            &mut Clipboard::internal(),
+        );
+        assert!(browser.path_focus);
+        assert_eq!(browser.path.text(), "src/app.rs");
+        assert!(matches!(
+            key(&mut browser, KeyCode::Enter),
+            Action::Open(path) if path.ends_with("src/app.rs")
+        ));
+        // Spaces cannot start a filter, and control characters never enter one.
+        let mut browser = Browser::new(dir.path().to_owned()).unwrap();
+        type_text(&mut browser, "  ");
+        browser.handle_event(Event::Paste("\t\u{1b}".into()), &mut Clipboard::internal());
+        assert!(browser.filter.is_empty());
+        browser.handle_event(
+            Event::Paste("x".repeat(MAX_FILTER + 50)),
+            &mut Clipboard::internal(),
+        );
+        assert_eq!(browser.filter.len(), MAX_FILTER);
+    }
+
+    #[test]
+    fn alt_keys_toggle_hidden_and_all_files_and_no_function_key_is_advertised() {
+        let dir = project();
+        fs::write(dir.path().join("picture.png"), [1, 2]).unwrap();
+        let mut browser = Browser::new(dir.path().to_owned()).unwrap();
+        alt(&mut browser, 'h');
+        assert!(browser.hidden && shown(&browser).contains(&".env".to_owned()));
+        alt(&mut browser, 'A');
+        assert!(browser.all && shown(&browser).contains(&"picture.png".to_owned()));
+        // The toggles keep the filter, and plain letters are still text.
+        type_text(&mut browser, "pic");
+        alt(&mut browser, 'a');
+        assert!(!browser.all && shown(&browser).is_empty());
+        assert_eq!(browser.filter, "pic");
+        alt(&mut browser, 'a');
+        assert_eq!(shown(&browser), ["picture.png"]);
+        type_text(&mut browser, "ha");
+        assert_eq!(browser.filter, "picha");
+        assert!(browser.hidden && browser.all);
+        // In the path field they toggle too, and never type.
+        key(&mut browser, KeyCode::Tab);
+        let path = browser.path.text().to_owned();
+        alt(&mut browser, 'h');
+        assert!(!browser.hidden);
+        assert_eq!(browser.path.text(), path);
+        // Other Alt letters are not text either.
+        key(&mut browser, KeyCode::Tab);
+        alt(&mut browser, 'x');
+        assert_eq!(browser.filter, "picha");
+        for focus in [false, true] {
+            browser.path_focus = focus;
+            let text = screen(&mut browser, 100, 24);
+            assert!(text.contains("alt+h hidden · alt+a all"), "{text}");
+            for word in text.split(|c: char| !c.is_ascii_alphanumeric()) {
+                assert!(
+                    !(word.len() > 1
+                        && word.starts_with('F')
+                        && word[1..].bytes().all(|b| b.is_ascii_digit())),
+                    "{text}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_prompt_keeps_the_filter_visible_at_every_width() {
+        let dir = tempfile::tempdir().unwrap();
+        let deep = dir
+            .path()
+            .join("a-long-folder-name/another-long-folder-name");
+        fs::create_dir_all(&deep).unwrap();
+        fs::write(deep.join("target-note.md"), "x").unwrap();
+        let mut browser = Browser::new(deep).unwrap();
+        type_text(&mut browser, "target");
+        for width in [12, 20, 30, 44, 80, 120] {
+            let mut terminal = Terminal::new(TestBackend::new(width, 12)).unwrap();
+            terminal.draw(|frame| browser.draw(frame)).unwrap();
+            let buffer = terminal.backend().buffer();
+            let row: String = (0..width).map(|x| buffer[(x, 2)].symbol()).collect();
+            if width >= 20 {
+                assert!(row.contains("target"), "{width}: {row}");
+            }
+            // The caret sits just after the filter, inside the panel.
+            let cursor = terminal.get_cursor_position().unwrap();
+            assert_eq!(cursor.y, 2);
+            assert!(cursor.x > 0 && cursor.x < width - 1, "{width}: {cursor:?}");
+        }
     }
 
     #[test]
