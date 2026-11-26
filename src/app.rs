@@ -312,7 +312,7 @@ pub struct App {
     last_disk_change: Option<ExternalChange>,
     word_count: Cell<Option<(Version, usize)>>,
     /// The smallest indentation step of a revision, for indent guides.
-    indent_unit: Cell<Option<(Version, Option<usize>)>>,
+    indent_unit: Cell<Option<(Version, usize, Option<usize>)>>,
     /// The indentation style a revision's own lines show, for Tab.
     detected_indent: Cell<Option<(Version, Option<Indent>)>>,
     last_input: std::time::Instant,
@@ -2966,9 +2966,13 @@ impl App {
 
     /// The document's smallest indentation, as a guide step from 2 to 8.
     fn indent_unit(&self) -> Option<usize> {
+        // A tab-indented line is as wide as the tab width makes it, so the
+        // step belongs to that width as well as to the text.
         let revision = self.version();
-        if let Some((cached, unit)) = self.indent_unit.get()
+        let tab = pica::editing::tab_width();
+        if let Some((cached, width, unit)) = self.indent_unit.get()
             && cached == revision
+            && width == tab
         {
             return unit;
         }
@@ -2982,7 +2986,7 @@ impl App {
             }
         }
         let unit = smallest.map(|unit| unit.clamp(2, 8));
-        self.indent_unit.set(Some((revision, unit)));
+        self.indent_unit.set(Some((revision, tab, unit)));
         unit
     }
 
@@ -5416,6 +5420,36 @@ mod tests {
         assert_eq!(source_indent("  \tx"), Some(4));
         assert_eq!(app.document.text(), text);
         pica::editing::set_tab_width(4);
+    }
+
+    #[test]
+    fn indent_guides_follow_a_chosen_tab_width_at_once() {
+        let text = "func main() {\n\tif x {\n\t\trun()\n\t}\n}\n";
+        let mut app = App::new(text.into(), None, false);
+        app.guides = true;
+        // Rows two and three of the text, from its first column.
+        let rows = |app: &mut App| -> [String; 2] {
+            let terminal = draw(app, 60, 10);
+            let buffer = terminal.backend().buffer();
+            [1, 2].map(|line| {
+                (app.viewport.x..app.viewport.right())
+                    .map(|x| buffer[(x, app.viewport.y + line)].symbol())
+                    .collect::<String>()
+                    .trim_end()
+                    .to_owned()
+            })
+        };
+        let narrow = ["│   if x {", "│   │   run()"];
+        assert_eq!(rows(&mut app), narrow);
+        // One guide a level at the new width, with no edit in between.
+        pica::editing::set_tab_width(8);
+        assert_eq!(rows(&mut app), ["│       if x {", "│       │       run()"]);
+        pica::editing::set_tab_width(2);
+        assert_eq!(rows(&mut app), ["│ if x {", "│ │ run()"]);
+        pica::editing::set_tab_width(4);
+        assert_eq!(rows(&mut app), narrow);
+        assert_eq!(app.document.text(), text);
+        assert!(!app.document.can_undo());
     }
 
     #[test]
