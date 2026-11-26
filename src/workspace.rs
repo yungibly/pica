@@ -1,7 +1,7 @@
 //! Document workspace. Each tab owns its editor; clipboard and quit intent are session-wide.
 #[cfg(test)]
 mod keys_tests;
-mod matching;
+pub(crate) mod matching;
 mod navigation;
 mod palette;
 mod persistence;
@@ -2000,6 +2000,30 @@ mod tests {
                 .contains("open limit")
         );
         assert_eq!(app.tabs.len(), 2);
+    }
+
+    #[test]
+    fn typing_in_the_browser_narrows_it_and_never_reaches_the_document() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = dir.path().join("first.md");
+        std::fs::write(&first, "first\n").unwrap();
+        std::fs::write(dir.path().join("second.md"), "second\n").unwrap();
+        std::fs::write(dir.path().join("third.md"), "third\n").unwrap();
+        let mut app = Workspace::open(Some(first)).unwrap();
+        ctrl(&mut app, 'o');
+        for c in "sec".chars() {
+            plain(&mut app, c);
+        }
+        let snapshot = crate::simulation::snapshot(&mut app, 100, 24).unwrap();
+        assert!(snapshot.contains("second.md") && !snapshot.contains("third.md"));
+        assert!(snapshot.contains("1 of 3"), "{snapshot}");
+        assert_eq!(app.editor().document.text(), "first\n");
+        assert!(!app.editor().document.can_undo());
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert!(app.browser.is_none());
+        assert_eq!(app.tabs.len(), 2);
+        assert_eq!(app.editor().document.text(), "second\n");
+        assert_eq!(app.tabs[0].editor.document.text(), "first\n");
     }
 
     #[test]

@@ -8,7 +8,6 @@ use ratatui::{
     widgets::{Clear, Paragraph},
 };
 use unicode_segmentation::UnicodeSegmentation;
-use unicode_width::UnicodeWidthStr;
 
 pub(super) enum Action {
     None,
@@ -239,7 +238,7 @@ impl Picker {
         {
             let detail = format!(
                 " {} ",
-                clipped_suffix(&self.entries[index].1, usize::from(width - 8))
+                ui::clipped_suffix(&self.entries[index].1, usize::from(width - 8))
             );
             frame
                 .buffer_mut()
@@ -281,29 +280,11 @@ impl Picker {
     }
 }
 
-fn clipped_suffix(text: &str, width: usize) -> String {
-    if UnicodeWidthStr::width(text) <= width {
-        return text.to_owned();
-    }
-    if width == 0 {
-        return String::new();
-    }
-    let mut remaining = width - 1;
-    let mut start = text.len();
-    for (index, grapheme) in text.grapheme_indices(true).rev() {
-        let cells = UnicodeWidthStr::width(grapheme);
-        if cells > remaining {
-            break;
-        }
-        remaining -= cells;
-        start = index;
-    }
-    format!("…{}", &text[start..])
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui::clipped_suffix;
+    use unicode_width::UnicodeWidthStr;
 
     #[test]
     fn long_path_details_keep_the_distinguishing_tail_on_grapheme_boundaries() {

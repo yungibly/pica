@@ -35,7 +35,7 @@ The defaults follow micro's. Press **Ctrl+G** for help and **Ctrl+E** for every 
 | Key | Action | Key | Action |
 | --- | --- | --- | --- |
 | Ctrl+S | Save | Ctrl+F | Find (Ctrl+N / Ctrl+P: next / previous) |
-| Ctrl+O | Open a file | Ctrl+R in Find | Replace |
+| Ctrl+O | Open a file; type to filter | Ctrl+R in Find | Replace |
 | Ctrl+T | New tab | Ctrl+L | Go to line |
 | Alt+, / Alt+. | Previous / next tab | Ctrl+K | Cut line; repeat to collect more |
 | Ctrl+Q | Close tab; the last one quits | Ctrl+D | Duplicate line or selection |
