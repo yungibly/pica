@@ -228,6 +228,60 @@ fn hints_name_the_keys_that_now_open_commands_and_help() {
 }
 
 #[test]
+fn an_empty_page_offers_the_keys_that_lead_in_now() {
+    let launch = |keys: &str| {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("config")).unwrap();
+        if !keys.is_empty() {
+            fs::write(dir.path().join("config/keys.conf"), keys).unwrap();
+        }
+        let mut app = Workspace::open(None).unwrap();
+        configure(&mut app, dir.path());
+        (dir, app)
+    };
+    // Untouched, and with bindings that leave all three keys alone.
+    for keys in ["", "ctrl+j = duplicate\n"] {
+        let (_dir, mut app) = launch(keys);
+        let page = screen(&mut app, 100, 12);
+        assert!(
+            page.contains("Ctrl+E commands   Ctrl+O open   Ctrl+G help"),
+            "{keys:?}: {page}"
+        );
+        app.finish_state().unwrap();
+    }
+    // Each given another job, and its own moved to another key: the page
+    // names the keys that work, not ones that now duplicate a line or find.
+    let (_dir, mut app) = launch(
+        "alt+p = ctrl+e\nctrl+e = duplicate\nalt+h = help\nctrl+g = find\nalt+o = open\nctrl+o = none\n",
+    );
+    let page = screen(&mut app, 100, 12);
+    assert!(
+        page.contains("Alt+P commands   Alt+O open   Alt+H help"),
+        "{page}"
+    );
+    for old in ["Ctrl+E", "Ctrl+O", "Ctrl+G"] {
+        assert!(!page.contains(old), "{old} in {page}");
+    }
+    // The keys it names do what it says.
+    key(&mut app, KeyCode::Char('p'), KeyModifiers::ALT);
+    assert!(app.palette.is_some());
+    key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+    key(&mut app, KeyCode::Char('o'), KeyModifiers::ALT);
+    assert!(app.browser.is_some());
+    app.finish_state().unwrap();
+    // Taken away with nothing in their place: not offered.
+    let (_dir, mut app) = launch("ctrl+e = none\nctrl+o = duplicate\n");
+    let page = screen(&mut app, 100, 12);
+    assert!(page.contains("Start writing"), "{page}");
+    assert!(page.contains("Ctrl+G help"), "{page}");
+    assert!(
+        !page.contains("commands") && !page.contains(" open"),
+        "{page}"
+    );
+    app.finish_state().unwrap();
+}
+
+#[test]
 fn a_keys_conf_with_mistakes_says_so_and_keeps_its_good_lines() {
     let dir = tempfile::tempdir().unwrap();
     fs::create_dir_all(dir.path().join("config")).unwrap();

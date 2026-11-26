@@ -344,8 +344,8 @@ pub struct App {
     /// Set when the user switches live/source; the workspace remembers it.
     pub(crate) view_toggled: bool,
     /// With keys bound in `keys.conf`: the keys that now open the command
-    /// palette and the help sheet, each empty when no key does.
-    pub(crate) custom_keys: Option<(String, String)>,
+    /// palette, the help sheet and a file, each empty when no key does.
+    pub(crate) custom_keys: Option<(String, String, String)>,
     /// Find's case choice changed and has yet to be saved.
     pub(crate) case_toggled: bool,
     /// Indent guides in code and source views; the workspace sets this.
@@ -2978,13 +2978,18 @@ impl App {
                     .add_modifier(Modifier::ITALIC),
             );
             // Only an empty page offers a way in; written pages stay quiet.
+            // It names the keys that lead there now, as the status line
+            // does: one the user gave another job is not offered.
+            let (commands, help, open) = match &self.custom_keys {
+                Some((commands, help, open)) => (commands.as_str(), help.as_str(), open.as_str()),
+                None => ("Ctrl+E", "Ctrl+G", "Ctrl+O"),
+            };
             if height > 2 {
                 let mut x = self.viewport.x;
-                for (key, action) in [
-                    ("Ctrl+E", "commands"),
-                    ("Ctrl+O", "open"),
-                    ("Ctrl+G", "help"),
-                ] {
+                for (key, action) in [(commands, "commands"), (open, "open"), (help, "help")] {
+                    if key.is_empty() {
+                        continue;
+                    }
                     let room = usize::from(self.viewport.right().saturating_sub(x));
                     let label = format!("{key} {action}   ");
                     if UnicodeWidthStr::width(label.as_str()) > room {
@@ -3699,7 +3704,7 @@ impl App {
         // The two keys that lead everywhere else, as the user has them: a
         // key they took away is not offered.
         let (commands, help) = match &self.custom_keys {
-            Some((commands, help)) => (commands.as_str(), help.as_str()),
+            Some((commands, help, _)) => (commands.as_str(), help.as_str()),
             None => ("Ctrl+E", "Ctrl+G"),
         };
         let hint = |short: bool, with_commands: bool| -> String {

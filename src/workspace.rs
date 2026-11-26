@@ -1512,6 +1512,7 @@ impl Workspace {
             (
                 self.bindings.key_for("Ctrl+E"),
                 self.bindings.shortcut(Command::Help, "Ctrl+G"),
+                self.bindings.shortcut(Command::Open, "Ctrl+O"),
             )
         });
         let editor = self.editor_mut();
