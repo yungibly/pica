@@ -716,9 +716,12 @@ impl<'a> Layout<'a> {
             };
             // A rendered fence line is a flat edge of the surface. Where the
             // theme has no surface color (the terminal's own), a thin rule
-            // marks the block's edges instead.
+            // marks the block's edges instead. A surface pads its text by a
+            // cell on the left; rules have nothing to pad, so both begin at
+            // the code's own column and the two edges line up with it.
             let ruled = rendered && self.colors.code_background == self.colors.background;
             let edge = |anchor: usize| PendingFill {
+                hang: if ruled { 0 } else { -1 },
                 kind: if ruled {
                     FillKind::Rule
                 } else {
@@ -737,7 +740,13 @@ impl<'a> Layout<'a> {
                     PendingFill {
                         label: (rendered && !surface.label.is_empty()).then(|| {
                             (
-                                format!(" {} ", surface.label),
+                                // Either way the label's text starts at the
+                                // code's column.
+                                if ruled {
+                                    format!("{} ", surface.label)
+                                } else {
+                                    format!(" {} ", surface.label)
+                                },
                                 Style::default()
                                     .fg(self.colors.muted)
                                     .bg(self.colors.code_background),
