@@ -2,6 +2,8 @@
 
 Plain prose keeps **bold**, *italic*, `code`, and [links](https://example.com).
 
+[![Badge](https://example.com/badge.svg)](https://example.com/ci) sits beside ![a diagram](diagram.png).
+
 ## Tasks
 
 - [x] Finished work stays struck

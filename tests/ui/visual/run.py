@@ -903,8 +903,17 @@ def rendering(session):
     text = session.state()["text"]
     for glyph in ["╭", "┼", "╰", "▎", "▌"]:
         session.check(any(c["char"] == glyph for c in cells), f"Rendered frame draws {glyph}")
-    for literal in ["[x]", "[!NOTE]", "```", "| :---", "**bold**"]:
+    for literal in ["[x]", "[!NOTE]", "```", "| :---", "**bold**", "`code`", "badge.svg", "![", "]("]:
         session.check(literal not in text, f"Rendered frame conceals {literal}")
+    code = next(find_cells(cells, "code"))
+    prose = next(find_cells(cells, "Plain"))[0]
+    session.check(all((c["fg"], c["bg"]) != (prose["fg"], prose["bg"]) for c in code),
+                  "Inline code stands apart from prose without its backticks")
+    badge = next(find_cells(cells, "Badge"))
+    session.check(all(c["underline"] for c in badge), "A badge shows its label as a link")
+    diagram = next(find_cells(cells, "a diagram"))
+    session.check(all(c["italic"] and not c["underline"] for c in diagram),
+                  "An image shows its alt text, not as a link")
     header = next(find_cells(cells, "Name"))
     session.check(all(c["bold"] for c in header), "Table header is bold")
     count = next(find_cells(cells, "Count"))

@@ -248,6 +248,9 @@ impl Parsed {
         let mut in_head = false;
         let mut html: Option<Vec<Range<usize>>> = None;
         let mut quotes: Vec<(Range<usize>, Option<BlockQuoteKind>)> = Vec::new();
+        // Open links and images, innermost last: each one's source and
+        // where the content of its label ends so far.
+        let mut labels: Vec<(Range<usize>, usize)> = Vec::new();
         let mut snapshot =
             build_snapshot.then(|| markdown::SnapshotBuilder::new(source, self.snapshot.revision));
         let mut title: Option<OutlineEntry> = None;
@@ -287,6 +290,17 @@ impl Parsed {
                 struck = None;
             }
             let raw = &source[range.clone()];
+            // Whatever a link or image holds lies inside its label, so the
+            // label's content reaches the end of the last thing in it. A
+            // label is not always a plain slice of the source: a badge is
+            // an image inside a link.
+            let closed = match event {
+                Event::End(TagEnd::Link | TagEnd::Image) => labels.pop(),
+                _ => None,
+            };
+            for (_, content) in &mut labels {
+                *content = (*content).max(range.end);
+            }
             match event {
                 Event::Start(Tag::Heading { level, .. }) => {
                     let level = level as usize;
@@ -342,12 +356,21 @@ impl Parsed {
                             .fg(colors.link)
                             .add_modifier(Modifier::UNDERLINED),
                     ));
-                    if let Some(close) = simple_label(raw, 1) {
-                        self.syntax(range.start..range.start + 1, muted);
-                        self.syntax(range.start + close..range.end, muted);
-                    } else if raw.len() > 2 && raw.starts_with('<') && raw.ends_with('>') {
+                    if raw.len() > 2 && raw.starts_with('<') && raw.ends_with('>') {
                         self.syntax(range.start..range.start + 1, muted);
                         self.syntax(range.end - 1..range.end, muted);
+                    }
+                    labels.push((range.clone(), range.start + 1));
+                }
+                Event::End(TagEnd::Link) => {
+                    // `[label](destination)` shows its label alone.
+                    if let Some((link, content)) = closed
+                        && source[link.clone()].starts_with('[')
+                        && let Some(close) = label_close(source, &link, content)
+                        && close > link.start + 1
+                    {
+                        self.syntax(link.start..link.start + 1, muted);
+                        self.syntax(close..link.end, muted);
                     }
                 }
                 Event::Start(Tag::Image { .. }) => {
@@ -357,22 +380,30 @@ impl Parsed {
                             .fg(colors.link)
                             .add_modifier(Modifier::ITALIC),
                     ));
-                    if raw.starts_with('!')
-                        && let Some(close) = simple_label(&raw[1..], 1)
+                    labels.push((range.clone(), range.start + 2));
+                }
+                Event::End(TagEnd::Image) => {
+                    // `![alt](source)` shows its alt text, which a link
+                    // around it underlines. Without alt text there would be
+                    // nothing left to show, so that source stays as written.
+                    if let Some((image, content)) = closed
+                        && source[image.clone()].starts_with("![")
+                        && let Some(close) = label_close(source, &image, content)
+                        && close > image.start + 2
                     {
                         let icon = self.icons.image();
                         if icon.is_empty() {
-                            self.syntax(range.start..range.start + 2, muted);
+                            self.syntax(image.start..image.start + 2, muted);
                         } else {
                             self.decorations.push(Decoration {
-                                range: range.start..range.start + 1,
+                                range: image.start..image.start + 1,
                                 replacement: format!("{icon} "),
                                 style: Some(Style::default().fg(colors.link)),
                                 task: None,
                             });
-                            self.syntax(range.start + 1..range.start + 2, muted);
+                            self.syntax(image.start + 1..image.start + 2, muted);
                         }
-                        self.syntax(range.start + 1 + close..range.end, muted);
+                        self.syntax(close..image.end, muted);
                     }
                 }
                 Event::Code(_) => {
@@ -395,8 +426,11 @@ impl Parsed {
                         );
                         // Without a code surface (the terminal's own colors),
                         // padding would read as stray spaces: the backticks
-                        // stay, quietly, instead.
+                        // are hidden like other markers, and the code's
+                        // color alone sets it apart. Code that is only
+                        // spaces has no color to show, so it keeps them.
                         let padded = colors.code_background != colors.background;
+                        let blank = inner.bytes().all(|b| matches!(b, b' ' | b'\n' | b'\r'));
                         for run in [
                             range.start..range.start + ticks + strip,
                             range.end - ticks - strip..range.end,
@@ -406,6 +440,13 @@ impl Parsed {
                                 self.decorations.push(Decoration {
                                     range: run,
                                     replacement: " ".into(),
+                                    style: None,
+                                    task: None,
+                                });
+                            } else if !blank {
+                                self.decorations.push(Decoration {
+                                    range: run,
+                                    replacement: String::new(),
                                     style: None,
                                     task: None,
                                 });
@@ -917,13 +958,13 @@ fn callout(kind: BlockQuoteKind) -> usize {
     }
 }
 
-/// `[label](…)`: the offset of `](` when the label is a plain source slice.
-fn simple_label(raw: &str, open: usize) -> Option<usize> {
-    if !raw.starts_with('[') || !raw.ends_with(')') {
-        return None;
-    }
-    let close = raw.find("](")?;
-    (close >= open && !raw[open..close].contains(['[', ']', '\\'])).then_some(close)
+/// `[label](…)` or `![alt](…)` at `range`, whose label's content ends at
+/// `content`: where its `](` begins. Reference links and anything else that
+/// does not close that way give `None` and stay as written.
+fn label_close(source: &str, range: &Range<usize>, content: usize) -> Option<usize> {
+    let rest = source.get(content..range.end)?;
+    let close = content + (rest.len() - rest.trim_start().len());
+    (rest.ends_with(')') && source[close..range.end].starts_with("](")).then_some(close)
 }
 
 /// The first word of a fence info string: `rust,ignore` and `{.python}` too.
