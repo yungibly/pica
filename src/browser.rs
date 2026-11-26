@@ -669,7 +669,10 @@ impl Browser {
             } else {
                 icons.path(&entry.path)
             };
-            let style = if entry.directory {
+            // A folder takes the accent color, except on a reverse-video
+            // row, where that would turn its name into an accent block.
+            let reversed = base.add_modifier.contains(Modifier::REVERSED);
+            let style = if entry.directory && !reversed {
                 base.fg(colors.accent)
             } else {
                 base
@@ -692,7 +695,7 @@ impl Browser {
             );
             // The letters the filter matched stand out, as in the palette.
             let marks = ui::highlights(&name, &self.filter);
-            let emphasis = base.fg(colors.accent).add_modifier(Modifier::BOLD);
+            let emphasis = ui::match_emphasis(base);
             for (grapheme, marked) in name.graphemes(true).zip(marks) {
                 let marked = marked && !self.filter.is_empty();
                 buffer.set_string(x, rect.y, grapheme, if marked { emphasis } else { style });
