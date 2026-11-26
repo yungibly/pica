@@ -535,14 +535,41 @@ fn a_line_opening_with_a_long_word_or_code_keeps_its_hang() {
 fn code_surfaces_hide_fences_and_carry_a_language_tab() {
     crate::theme::set_theme(crate::theme::Theme::Terminal);
     let text = "intro\n\n```rust\nfn x() {}\n```\n";
-    // Without a surface color, thin rules mark the block's edges.
+    // Without a surface color, thin rules mark the block's edges. Both
+    // begin at the code's column, where the label's text starts too.
     let p = project(text, 0, 40, true);
-    assert_eq!(p.rows[2].fill.as_ref().unwrap().kind, FillKind::Rule);
+    for row in [2, 4] {
+        let fill = p.rows[row].fill.as_ref().unwrap();
+        assert_eq!((fill.kind, fill.from), (FillKind::Rule, 0), "row {row}");
+    }
     assert_eq!(
         p.rows[2].fill.as_ref().unwrap().label.as_ref().unwrap().0,
-        " rust "
+        "rust "
     );
-    assert_eq!(p.rows[4].fill.as_ref().unwrap().kind, FillKind::Rule);
+    assert_eq!(p.rows[4].fill.as_ref().unwrap().label, None);
+    assert_eq!(p.rows[3].glyphs[0].column, 0);
+    // Inside a quote or a list item the edges follow the code inward.
+    for (nested, column) in [
+        ("intro\n\n> ```rust\n> fn x() {}\n> ```\n", 2),
+        ("intro\n\n- item\n\n  ```rust\n  fn x() {}\n  ```\n", 2),
+    ] {
+        let p = project(nested, 0, 40, true);
+        let code = p
+            .rows
+            .iter()
+            .position(|row| row_text(row).ends_with("fn x() {}"))
+            .unwrap();
+        let text = p.rows[code].glyphs.iter().find(|g| g.text == "f").unwrap();
+        assert_eq!(text.column, column, "{nested:?}");
+        for edge in [code - 1, code + 1] {
+            let fill = p.rows[edge].fill.as_ref().unwrap();
+            assert_eq!(
+                (fill.kind, fill.from),
+                (FillKind::Rule, column as isize),
+                "{nested:?} row {edge}"
+            );
+        }
+    }
     crate::theme::set_theme(crate::theme::Theme::Dark);
     let p = project(text, 0, 40, true);
     let fence = &p.rows[2];
