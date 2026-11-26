@@ -182,7 +182,9 @@ renumbered to follow, and moved under it where they would not otherwise line
 up, as after a numbered item lifted from under a bullet.
 Tab on the first item of a list does nothing, since there is nothing to nest
 it under. With several items selected, each moves a level in turn, so a
-numbered run stays a numbered list; that is one undo step. A selection that
+numbered run stays a numbered list; that is one undo step, and an item that
+cannot move stays where it is. Thousands of items at once in a large file
+indent as plain lines instead. A selection that
 holds anything but list items, other lines, and quoted lists indent as Tab
 does everywhere else.
 
