@@ -174,6 +174,78 @@ the count of documents to recover at launch, goes away with the next
 keypress. A problem, such as a failed save, is highlighted and stays while
 you work until Esc dismisses it; the status line says so.
 
+## Your own keys
+
+pica reads `$XDG_CONFIG_HOME/pica/keys.conf` (by default
+`~/.config/pica/keys.conf`) when it starts, if the file exists, and never
+writes to it. Each line gives one key a new job:
+
+```
+# comments start with a hash
+ctrl+j = duplicate      # a command, by the names below
+alt+w  = ctrl+q         # whatever another key does by default
+ctrl+k = none           # nothing at all
+```
+
+A key is any of `ctrl`, `alt` and `shift`, then one key: a letter, digit or
+symbol, `f1` to `f12`, or `enter`, `tab`, `space`, `backspace`, `delete`,
+`up`, `down`, `left`, `right`, `home`, `end`, `pageup` or `pagedown`. A key
+you bind needs Ctrl or Alt, or must be a function key, so typing and plain
+movement always work. If a key appears twice, the later line wins.
+
+A default key keeps its job until you give that key another one. Your keys
+apply in the text and in Find, not while the command palette, a picker, the
+file browser or a prompt has the keyboard. Ctrl+E shows every command with
+the key it has now. Lines pica cannot use are skipped and named in the
+status line at startup; `--no-state` ignores the file. The terminal notes
+below apply to your keys too: some combinations never reach a program.
+
+| Name | Command |
+| --- | --- |
+| `new-tab` | New tab |
+| `open` | Open file |
+| `save` | Save document |
+| `save-as` | Save as |
+| `close-tab` | Close tab |
+| `find` | Find in document |
+| `find-next` | Find next match |
+| `find-previous` | Find previous match |
+| `replace` | Find and replace |
+| `toggle-view` | Toggle live / source view |
+| `toggle-line-numbers` | Toggle line numbers |
+| `toggle-outline` | Toggle outline sidebar |
+| `next-tab` | Next tab |
+| `previous-tab` | Previous tab |
+| `go-to-line` | Go to line |
+| `switch-document` | Switch document |
+| `go-to-heading` | Go to heading |
+| `help` | Help / keyboard shortcuts |
+| `quit` | Quit pica (all tabs) |
+| `undo` | Undo edit |
+| `redo` | Redo edit |
+| `cut-line` | Cut line |
+| `duplicate` | Duplicate line or selection |
+| `toggle-comment` | Toggle comment |
+| `bold` | Format bold |
+| `italic` | Format italic |
+| `inline-code` | Format inline code |
+| `toggle-task` | Toggle task |
+| `indent` | Indent selected lines |
+| `outdent` | Outdent selected lines |
+| `move-lines-up` | Move lines up |
+| `move-lines-down` | Move lines down |
+| `duplicate-lines-up` | Duplicate lines above |
+| `duplicate-lines-down` | Duplicate lines below |
+| `choose-theme` | Choose theme |
+| `toggle-icons` | Toggle Nerd Font icons |
+| `toggle-indent-guides` | Toggle indent guides |
+| `indentation` | Indentation: tabs or spaces |
+| `reload` | Reload file from disk |
+| `recover-documents` | Recover documents |
+
+To bind something that has no command name, such as select all or paste,
+point your key at its default key: `alt+a = ctrl+a`.
+
 ## Function keys
 
 Function keys from earlier versions still work but are not shown anywhere:
@@ -225,4 +297,5 @@ another user's file to you.
   and `tabsize` options.
 - Find matches literal text and ignores case until Alt+C asks for an exact
   match; micro's find takes a regular expression.
-- There are no macros (Ctrl+U, Ctrl+J), and keys cannot be rebound yet.
+- There are no macros (Ctrl+U, Ctrl+J). Keys are rebound in `keys.conf`,
+  described above, not in micro's `bindings.json`.

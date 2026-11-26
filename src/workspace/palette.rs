@@ -139,6 +139,52 @@ impl Command {
             Self::Recover => "Recover documents…",
         }
     }
+    /// The name `keys.conf` binds a key to. Names are part of that file's
+    /// format: add new ones freely, but never rename one.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::New => "new-tab",
+            Self::Open => "open",
+            Self::Save => "save",
+            Self::SaveAs => "save-as",
+            Self::Close => "close-tab",
+            Self::Find => "find",
+            Self::FindNext => "find-next",
+            Self::FindPrevious => "find-previous",
+            Self::Replace => "replace",
+            Self::View => "toggle-view",
+            Self::Ruler => "toggle-line-numbers",
+            Self::Sidebar => "toggle-outline",
+            Self::NextTab => "next-tab",
+            Self::PreviousTab => "previous-tab",
+            Self::GoToLine => "go-to-line",
+            Self::Documents => "switch-document",
+            Self::Headings => "go-to-heading",
+            Self::Help => "help",
+            Self::Quit => "quit",
+            Self::Undo => "undo",
+            Self::Redo => "redo",
+            Self::CutLine => "cut-line",
+            Self::Duplicate => "duplicate",
+            Self::Comment => "toggle-comment",
+            Self::Bold => "bold",
+            Self::Italic => "italic",
+            Self::InlineCode => "inline-code",
+            Self::Task => "toggle-task",
+            Self::Indent => "indent",
+            Self::Outdent => "outdent",
+            Self::MoveUp => "move-lines-up",
+            Self::MoveDown => "move-lines-down",
+            Self::DuplicateUp => "duplicate-lines-up",
+            Self::DuplicateDown => "duplicate-lines-down",
+            Self::Theme => "choose-theme",
+            Self::Icons => "toggle-icons",
+            Self::Guides => "toggle-indent-guides",
+            Self::Indentation => "indentation",
+            Self::Reload => "reload",
+            Self::Recover => "recover-documents",
+        }
+    }
     /// The primary key, if any. Function keys are silent aliases and never
     /// shown; Ctrl+R names whichever toggle it performs in this document.
     pub fn shortcut(self, markdown: bool) -> &'static str {
@@ -221,31 +267,43 @@ pub(super) struct Palette {
     pub query: Document,
     pub selected: usize,
     pub line_mode: bool,
-    /// Shortcut hints follow the active document's kind.
-    pub markdown: bool,
     pub hits: Vec<(Rect, Entry)>,
     ready: bool,
     error: Option<&'static str>,
+    /// The key shown for each command, in `Command::ALL` order: its default
+    /// unless the user's bindings say otherwise.
+    shortcuts: Vec<String>,
 }
 impl Palette {
-    pub fn new(line_mode: bool, markdown: bool) -> Self {
+    /// `markdown` picks the keys that follow the active document's kind.
+    pub fn new(line_mode: bool, markdown: bool, keys: &super::bindings::Bindings) -> Self {
         Self {
             query: Document::new(""),
             selected: 0,
             line_mode,
-            markdown,
             hits: vec![],
             ready: false,
             error: None,
+            shortcuts: Command::ALL
+                .into_iter()
+                .map(|command| keys.shortcut(command, command.shortcut(markdown)))
+                .collect(),
         }
+    }
+    /// The key shown beside `command`.
+    pub fn shortcut(&self, command: Command) -> &str {
+        Command::ALL
+            .iter()
+            .position(|other| *other == command)
+            .map_or("", |index| self.shortcuts[index].as_str())
     }
     pub fn matches(&self) -> Vec<Command> {
         let query = self.query.text().to_lowercase();
         Command::ALL
             .into_iter()
             .filter(|command| {
-                let label = format!("{} {}", command.label(), command.shortcut(self.markdown))
-                    .to_lowercase();
+                let label =
+                    format!("{} {}", command.label(), self.shortcut(*command)).to_lowercase();
                 query.split_whitespace().all(|part| label.contains(part))
             })
             .collect()
@@ -430,7 +488,7 @@ impl Palette {
                         (format!("Go to line {line}, column {column}"), "Ctrl+L")
                     }
                     Entry::Command(command) => {
-                        (command.label().to_owned(), command.shortcut(self.markdown))
+                        (command.label().to_owned(), self.shortcut(*command))
                     }
                 };
                 ui::item(

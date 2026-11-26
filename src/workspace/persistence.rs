@@ -28,6 +28,24 @@ pub(super) struct Persistence {
     last_error: Option<String>,
 }
 
+/// The user's `keys.conf`, if there is one. Only a small regular file is
+/// read, and never written.
+fn read_keys(path: &Path) -> std::io::Result<Option<String>> {
+    const LIMIT: u64 = 64 * 1024;
+    let metadata = match std::fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    if !metadata.is_file() {
+        return Err(std::io::Error::other("keys.conf is not a regular file"));
+    }
+    if metadata.len() > LIMIT {
+        return Err(std::io::Error::other("keys.conf is larger than 64 KiB"));
+    }
+    std::fs::read_to_string(path).map(Some)
+}
+
 impl Workspace {
     pub fn enable_state(&mut self, config: &Path, state: &Path, explicit_theme: bool) {
         let mut warnings = Vec::new();
@@ -63,6 +81,21 @@ impl Workspace {
                 None
             }
         };
+        match read_keys(&config.join("keys.conf")) {
+            Ok(Some(text)) => {
+                let (bindings, problems) = super::bindings::Bindings::parse(&text);
+                self.bindings = bindings;
+                if let Some(first) = problems.first() {
+                    let more = match problems.len() - 1 {
+                        0 => String::new(),
+                        more => format!(", and {more} more"),
+                    };
+                    warnings.push(format!("keys.conf {first}{more}"));
+                }
+            }
+            Ok(None) => {}
+            Err(error) => warnings.push(format!("Key bindings unavailable: {error}")),
+        }
         let mut candidates = vec![];
         let mut diagnostics = vec![];
         let store = match Store::open(state.join("recovery")) {
