@@ -62,6 +62,14 @@ impl SaveAs {
     pub(super) fn hide_question(&self) {
         self.question_visible.set(false);
     }
+
+    /// Which question is being asked, if one is.
+    pub(super) fn question_kind(&self) -> Option<u8> {
+        self.question.as_ref().map(|question| match question {
+            Question::Replace { .. } => 3,
+            Question::CreateFolder { .. } => 4,
+        })
+    }
 }
 
 /// Whether two existing paths are the same file.
