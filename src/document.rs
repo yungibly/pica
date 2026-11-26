@@ -1435,12 +1435,23 @@ impl Document {
 
     /// Indent affected physical source lines by four spaces in one transaction.
     pub fn indent_lines(&mut self) -> bool {
-        crate::editing::indent_lines(self, false)
+        self.indent_lines_by(crate::editing::Indent::Spaces(4))
     }
 
     /// Remove up to four leading spaces or one leading tab from affected lines.
     pub fn outdent_lines(&mut self) -> bool {
-        crate::editing::indent_lines(self, true)
+        self.outdent_lines_by(crate::editing::Indent::Spaces(4))
+    }
+
+    /// Indent affected physical source lines by one level of `indent`.
+    pub fn indent_lines_by(&mut self, indent: crate::editing::Indent) -> bool {
+        crate::editing::indent_lines(self, false, indent)
+    }
+
+    /// Remove one leading tab, or up to one level of leading spaces, from
+    /// affected lines.
+    pub fn outdent_lines_by(&mut self, indent: crate::editing::Indent) -> bool {
+        crate::editing::indent_lines(self, true, indent)
     }
 
     /// Move affected source lines up once, preserving separators and selection.

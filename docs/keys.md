@@ -29,14 +29,14 @@ command with its key.
 | Ctrl+K | Cut the current line, or every line the selection touches. Pressing it again right away adds the next line to the same clipboard entry; each cut is still its own undo step. |
 | Ctrl+D | Duplicate the selection, or the current line when nothing is selected |
 | Ctrl+/ or Alt+/ | Comment or uncomment the current or selected lines |
-| Tab | Insert a tab; with a selection, indent the selected lines |
+| Tab | Indent to the next stop, the way the file is indented; with a selection, indent the selected lines |
 | Shift+Tab | Outdent the current or selected lines |
 | Ctrl+] / Ctrl+[ | Indent / outdent lines |
 | Alt+Up / Alt+Down | Move lines up / down |
 | Alt+Shift+Up / Alt+Shift+Down | Duplicate lines above / below |
 | Enter | New line that keeps the current line's indentation |
 | Alt+Enter or Shift+Enter | Plain new line, without indentation or list continuation |
-| Backspace / Delete | Delete a character |
+| Backspace / Delete | Delete a character; Backspace in a line's leading spaces returns to the previous indent stop |
 | Ctrl+Backspace / Ctrl+Delete | Delete a word (Alt also works) |
 
 Enter copies the spaces and tabs at the start of the current line, up to the
@@ -44,6 +44,17 @@ caret, in every kind of file, including fenced code in Markdown. A line left
 holding only that indentation is cleared, as micro does, so no trailing
 whitespace stays behind. New lines use the line ending around them (LF, CRLF
 or CR).
+
+Tab follows the file. A file whose lines start with tabs gets a tab; a file
+indented with spaces gets spaces to its own width, read from the most common
+step between its lines, so Tab never mixes the two. A file with no
+indentation yet uses its type's convention: tabs for Makefiles, Go and
+tab-separated values, two spaces for YAML, JSON, JavaScript, TypeScript, HTML,
+CSS, Ruby and a few others, and four spaces otherwise. Tab characters are
+always drawn four columns wide. To use one style in every file, choose
+**Indentation: tabs or spaces** from Ctrl+E: tabs, or two, four or eight
+spaces; "Follow each file" returns to the default. Indenting a selection
+leaves its empty lines empty.
 
 Comments use the file's language: `//` for Rust, C, Go, JavaScript and
 similar, `#` for Python, shell, YAML, TOML and plain text, `--` for SQL, Lua
@@ -91,8 +102,17 @@ indentation. The whole change is one undo step.
 | Alt+` | Inline code |
 | Alt+T | Toggle the task under the caret |
 | Enter | Continue a list item or task; on an empty item, leave the list |
+| Tab / Shift+Tab | On a list item's first line, nest it under the item above / lift it out a level |
 
 Ctrl+B and Alt+T do nothing in other kinds of file.
+
+Nesting moves the item's continuation lines and children with it and lines
+it up under the text of the item above. A numbered item takes the number its
+new place needs (Markdown only lets a numbered list begin inside another item
+at 1), and numbered items it gains as children are renumbered to follow.
+Tab on the first item of a list does nothing, since there is nothing to nest
+it under. With a selection, on other lines, and in quoted lists, Tab indents
+as it does everywhere else.
 
 ## View and commands
 
@@ -104,7 +124,7 @@ Ctrl+B and Alt+T do nothing in other kinds of file.
 
 The palette also holds the commands without a key of their own: Save as,
 Reload, Quit pica (all tabs), the outline sidebar, Switch document, Go to
-heading, themes, icons and document recovery. In the palette, pickers and
+heading, themes, icons, indentation and document recovery. In the palette, pickers and
 the go-to-line prompt, Esc or Ctrl+Q closes them without doing anything.
 
 ## Function keys
@@ -154,4 +174,6 @@ another user's file to you.
 - Alt+Shift+Up / Down duplicate lines; pica has no multiple cursors.
 - Ctrl+R toggles the live view in Markdown files, where the source view is
   the numbered one.
+- Tab follows each file's own indentation, where micro uses its `tabstospaces`
+  and `tabsize` options.
 - There are no macros (Ctrl+U, Ctrl+J), and keys cannot be rebound yet.
