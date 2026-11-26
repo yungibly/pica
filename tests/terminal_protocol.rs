@@ -373,6 +373,44 @@ fn sgr_clicks_and_drags_on_a_lone_documents_top_row_reach_the_text() {
 }
 
 #[test]
+fn save_as_completes_a_name_and_replaces_a_file_only_after_y() {
+    let mut session = Session::start("mine\n");
+    let taken = session.fixture.with_file_name("taken.md");
+    fs::write(&taken, "theirs\n").unwrap();
+    session.send(b"x");
+    // Save as, from the palette. The path opens on the document's own with
+    // its name selected, so typing replaces the name and Tab completes it.
+    session.send(b"\x05save as\r");
+    session.until("save as dialog", |s| {
+        count(&s.transcript, b"Tab completes names") > 0
+    });
+    // Frames are sent as differences, so wait for one word of the question
+    // that nothing drawn there before could supply.
+    session.send(b"ta\t\r");
+    session.until("question before replacing", |s| {
+        count(&s.transcript, b"exists") > 0
+    });
+    assert_eq!(fs::read_to_string(&taken).unwrap(), "theirs\n");
+    // N returns to the path without touching the file; Enter asks again.
+    session.send(b"n\r");
+    session.until("second question", |s| count(&s.transcript, b"exists") > 1);
+    assert_eq!(fs::read_to_string(&taken).unwrap(), "theirs\n");
+    session.send(b"y");
+    session.until("replaced file", |_| {
+        fs::read_to_string(&taken).is_ok_and(|text| text == "xmine\n")
+    });
+    assert_eq!(fs::read_to_string(&session.fixture).unwrap(), "mine\n");
+    // No temporary file is left beside them.
+    let mut names: Vec<_> = fs::read_dir(taken.parent().unwrap())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect();
+    names.sort();
+    assert_eq!(names, ["protocol.md", "taken.md"]);
+    session.finish();
+}
+
+#[test]
 fn crash_recovery_and_saved_themes_survive_a_real_process_restart() {
     recovery_restart(false);
 }

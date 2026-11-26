@@ -350,6 +350,41 @@ fn recovery_answers_are_notices_and_a_recovered_tab_says_so_once() {
 }
 
 #[test]
+fn a_recovered_copy_can_be_saved_back_over_its_original_after_asking() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("draft.md");
+    fs::write(&file, "disk\n").unwrap();
+    {
+        let mut crashed = Workspace::open(Some(file.clone())).unwrap();
+        configure(&mut crashed, dir.path());
+        crashed.editor_mut().document.insert("unsaved ");
+        checkpoint(&mut crashed);
+    }
+    let mut app = Workspace::open(None).unwrap();
+    configure(&mut app, dir.path());
+    app.recover_document(0);
+    let row = status_row(&mut app);
+    assert!(
+        row.starts_with(" Recovered as an unsaved copy · Ctrl+S saves it"),
+        "{row}"
+    );
+    // Ctrl+S opens Save As on the file the copy came from, and replacing
+    // that file is asked about like any other.
+    key(&mut app, KeyCode::Char('s'), KeyModifiers::CONTROL);
+    assert!(app.editor().saving_as());
+    assert_eq!(app.editor().pending_save_path(), Some(file.clone()));
+    key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    assert_eq!(fs::read_to_string(&file).unwrap(), "disk\n");
+    let snapshot = crate::simulation::snapshot(&mut app, 100, 24).unwrap();
+    assert!(snapshot.contains("draft.md already exists."), "{snapshot}");
+    key(&mut app, KeyCode::Char('y'), KeyModifiers::NONE);
+    assert_eq!(fs::read_to_string(&file).unwrap(), "unsaved disk\n");
+    assert_eq!(app.editor().path(), Some(file.as_path()));
+    assert!(!app.editor().document.is_dirty());
+    app.finish_state().unwrap();
+}
+
+#[test]
 fn save_clears_recovery_and_cancelled_quit_retains_all_dirty_tabs() {
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("draft.md");

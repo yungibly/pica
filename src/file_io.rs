@@ -120,11 +120,13 @@ impl FileState {
         ))
     }
 
+    /// A file that does not exist yet. Saving creates it and never replaces
+    /// anything that appears there in the meantime.
     pub fn new_target(path: PathBuf) -> io::Result<Self> {
         if fs::symlink_metadata(&path).is_ok() {
             return Err(io::Error::new(
                 io::ErrorKind::AlreadyExists,
-                "Save As requires a new filename; existing files are protected",
+                "A file with that name already exists",
             ));
         }
         Ok(Self {
@@ -134,6 +136,64 @@ impl FileState {
             observed: None,
             external: ExternalChange::Unchanged,
         })
+    }
+
+    /// An existing file that Save As may replace once the user agrees. What
+    /// it holds now, text or not, becomes the baseline: the save replaces
+    /// exactly the file that was asked about and refuses one that changed
+    /// since. Everything `save` would refuse is refused here, before asking:
+    /// folders and other non-regular files, read-only files, files with other
+    /// hard links, and files of another user. A symbolic link is followed as
+    /// when opening, so its target is what gets replaced.
+    pub fn replacing(path: PathBuf, max_bytes: usize) -> io::Result<Self> {
+        let link_target = resolve_link(&path)?;
+        let target = link_target.as_deref().unwrap_or(&path);
+        if !fs::metadata(target)?.is_file() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Only regular files can be replaced",
+            ));
+        }
+        let metadata = writable_target_metadata(target)?
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "That file no longer exists"))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            // SAFETY: geteuid has no preconditions and cannot fail.
+            let user = unsafe { libc::geteuid() };
+            if user != 0 && metadata.uid() != user {
+                return Err(another_users_file());
+            }
+        }
+        #[cfg(not(unix))]
+        let _ = metadata;
+        let baseline = open_regular_file(target)
+            .and_then(|file| read_limited(file, max_bytes))
+            .map_err(|error| {
+                if error.kind() == io::ErrorKind::InvalidData {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "That file is too large for pica to replace safely",
+                    )
+                } else {
+                    error
+                }
+            })?;
+        if let Some(target) = &link_target {
+            verify_link(&path, target)?;
+        }
+        Ok(Self {
+            path,
+            link_target,
+            baseline: Some(baseline),
+            observed: None,
+            external: ExternalChange::Unchanged,
+        })
+    }
+
+    /// Where a symbolic link leads, when the document was opened through one.
+    pub fn link_target(&self) -> Option<&Path> {
+        self.link_target.as_deref()
     }
 
     /// Advisory periodic check. Unchanged metadata avoids a content read; save
@@ -148,7 +208,7 @@ impl FileState {
                 }
                 // Pointing elsewhere now: Reload follows the link afresh.
                 Err(error) if error.kind() == io::ErrorKind::Other => Some(ExternalChange::Changed),
-                Err(error) => Some(ExternalChange::Unreadable(error.to_string())),
+                Err(error) => Some(ExternalChange::Unreadable(explain(&error))),
             };
             if let Some(status) = status {
                 self.observed = None;
@@ -172,7 +232,7 @@ impl FileState {
                         ExternalChange::Missing
                     }
                 } else {
-                    ExternalChange::Unreadable(error.to_string())
+                    ExternalChange::Unreadable(explain(&error))
                 };
                 return self.external.clone();
             }
@@ -188,7 +248,7 @@ impl FileState {
                 Some(baseline) => match matches_baseline(file, baseline) {
                     Ok(true) => ExternalChange::Unchanged,
                     Ok(false) => ExternalChange::Changed,
-                    Err(error) => ExternalChange::Unreadable(error.to_string()),
+                    Err(error) => ExternalChange::Unreadable(explain(&error)),
                 },
                 None => ExternalChange::Changed,
             },
@@ -199,7 +259,7 @@ impl FileState {
                     ExternalChange::Missing
                 }
             }
-            Err(error) => ExternalChange::Unreadable(error.to_string()),
+            Err(error) => ExternalChange::Unreadable(explain(&error)),
         };
         self.observed = Some(fingerprint);
         self.external.clone()
@@ -223,7 +283,7 @@ impl FileState {
         };
         if relinked || !path.is_file() || before != after || after != Fingerprint::of(&path) {
             return Err(io::Error::other(
-                "File changed while reloading; your text is intact. Try Reload again",
+                "The file changed while it was being read; try Reload again",
             ));
         }
         Self::from_baseline(self.path.clone(), link_target, Some(bytes))
@@ -254,18 +314,20 @@ impl FileState {
             use std::os::unix::fs::PermissionsExt;
             builder.permissions(fs::Permissions::from_mode(0o666));
         }
+        // The error names the temporary file, which means nothing to anyone.
         let mut temporary = builder.tempfile_in(parent).map_err(|error| {
-            if matches!(
-                error.kind(),
-                io::ErrorKind::PermissionDenied | io::ErrorKind::ReadOnlyFilesystem
-            ) {
-                io::Error::new(
-                    io::ErrorKind::PermissionDenied,
-                    "Saving writes a new file into the folder, but the folder is read-only. Your edits are intact; use Save As",
-                )
-            } else {
-                error
-            }
+            let kind = error.kind();
+            let reason = match kind {
+                io::ErrorKind::PermissionDenied | io::ErrorKind::ReadOnlyFilesystem => {
+                    return io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        "Saving writes a new file into the folder, but the folder is read-only",
+                    );
+                }
+                io::ErrorKind::NotFound => "The folder does not exist",
+                kind => sentence(kind).unwrap_or("A file could not be created in the folder"),
+            };
+            io::Error::new(kind, reason)
         })?;
         temporary.write_all(text.as_bytes())?;
         if let Some(metadata) = metadata {
@@ -300,31 +362,27 @@ impl FileState {
         let Some(target) = &self.link_target else {
             return Ok(());
         };
-        verify_link(&self.path, target).map_err(|error| {
-            io::Error::new(
-                error.kind(),
-                format!("{error}. Your edits are intact; use Save As from Ctrl+E"),
-            )
-        })
+        verify_link(&self.path, target)
     }
 
     fn check_baseline(&self) -> io::Result<()> {
         // A file may have grown arbitrarily since opening it. Compare a bounded
         // stream with the accepted baseline instead of allocating the new file.
-        let unchanged = match open_regular_file(self.file_path()) {
+        let reason = match open_regular_file(self.file_path()) {
             Ok(file) => match &self.baseline {
-                Some(baseline) => matches_baseline(file, baseline)?,
-                None => false,
+                Some(baseline) if matches_baseline(file, baseline)? => return Ok(()),
+                Some(_) => "The file changed on disk",
+                None => "A file with that name has appeared on disk",
             },
-            Err(error) if error.kind() == io::ErrorKind::NotFound => self.baseline.is_none(),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                if self.baseline.is_none() {
+                    return Ok(());
+                }
+                "The file was removed from disk"
+            }
             Err(error) => return Err(error),
         };
-        if !unchanged {
-            return Err(io::Error::other(
-                "File changed or was removed on disk. Your edits are intact; use Save As from Ctrl+E",
-            ));
-        }
-        Ok(())
+        Err(io::Error::other(reason))
     }
 }
 
@@ -495,15 +553,10 @@ fn writable_target_metadata(path: &Path) -> io::Result<Option<fs::Metadata>> {
     };
     if metadata.file_type().is_symlink() || !metadata.is_file() {
         return Err(io::Error::other(
-            "The file became a link or a non-regular file since it was opened. Your edits are intact; use Save As from Ctrl+E",
+            "The file became a link or a non-regular file since it was opened",
         ));
     }
-    let read_only = || {
-        io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            "The file is read-only. Your edits are intact; use Save As",
-        )
-    };
+    let read_only = || io::Error::new(io::ErrorKind::PermissionDenied, "The file is read-only");
     if metadata.permissions().readonly() {
         return Err(read_only());
     }
@@ -512,7 +565,7 @@ fn writable_target_metadata(path: &Path) -> io::Result<Option<fs::Metadata>> {
         use std::os::unix::fs::MetadataExt;
         if metadata.nlink() > 1 {
             return Err(io::Error::other(
-                "This file has hard links; use Save As to avoid breaking them",
+                "This file has other hard links, which saving would break",
             ));
         }
         // Replacing through a writable folder would bypass the file's own
@@ -550,12 +603,51 @@ fn keep_owner(replacement: &fs::File, target: &fs::Metadata) -> io::Result<()> {
     }
     match fchown(replacement, Some(target.uid()), Some(target.gid())) {
         Ok(()) => Ok(()),
-        Err(_) if created.uid() != target.uid() => Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            "This file belongs to another user, and saving would make it yours. Your edits are intact; use Save As",
-        )),
+        Err(_) if created.uid() != target.uid() => Err(another_users_file()),
         // Outside the file's group, the copy keeps this user's default group.
         Err(_) => Ok(()),
+    }
+}
+
+#[cfg(unix)]
+fn another_users_file() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::PermissionDenied,
+        "This file belongs to another user, and saving would make it yours",
+    )
+}
+
+/// A plain sentence for the common ways the system refuses file work.
+fn sentence(kind: io::ErrorKind) -> Option<&'static str> {
+    Some(match kind {
+        io::ErrorKind::NotFound => "No such file or folder",
+        io::ErrorKind::PermissionDenied => "You do not have permission for that",
+        io::ErrorKind::ReadOnlyFilesystem => "The disk is read-only",
+        io::ErrorKind::StorageFull => "The disk is full",
+        io::ErrorKind::QuotaExceeded => "Your disk quota is used up",
+        io::ErrorKind::FileTooLarge => "The file is too large for this disk",
+        io::ErrorKind::IsADirectory => "That is a folder, not a file",
+        io::ErrorKind::NotADirectory => "Part of that path is a file, not a folder",
+        io::ErrorKind::InvalidFilename => "That name is too long or not allowed here",
+        io::ErrorKind::ResourceBusy | io::ErrorKind::ExecutableFileBusy => "The file is in use",
+        io::ErrorKind::TimedOut => "The disk did not answer in time",
+        _ => return None,
+    })
+}
+
+/// What went wrong, for the status line: pica's own sentences as they are,
+/// and the system's without its error number.
+pub fn explain(error: &io::Error) -> String {
+    if error.raw_os_error().is_none() {
+        return error.to_string();
+    }
+    if let Some(sentence) = sentence(error.kind()) {
+        return sentence.to_owned();
+    }
+    let text = error.to_string();
+    match text.rfind(" (os error ") {
+        Some(at) => text[..at].to_owned(),
+        None => text,
     }
 }
 
@@ -930,6 +1022,119 @@ mod tests {
         assert!(FileState::open(path.clone()).is_err());
         assert!(file.save("new").is_err());
         assert_eq!(fs::read(&path).unwrap(), [0xff]);
+    }
+
+    #[test]
+    fn replacing_holds_what_is_there_and_refuses_a_file_that_changed_since() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("other.bin");
+        // Whatever is there, text or not, is what the user is asked about.
+        let bytes = [0xff, 0x00, b'x'];
+        fs::write(&path, bytes).unwrap();
+        let mut staged = FileState::replacing(path.clone(), 1024).unwrap();
+        assert_eq!(staged.baseline.as_deref(), Some(bytes.as_slice()));
+        assert!(staged.link_target().is_none());
+        let error = FileState::replacing(path.clone(), 2).err().unwrap();
+        assert!(error.to_string().contains("too large"), "{error}");
+        fs::write(&path, "newer").unwrap();
+        let error = staged.save("mine").unwrap_err();
+        assert_eq!(error.to_string(), "The file changed on disk");
+        assert_eq!(fs::read_to_string(&path).unwrap(), "newer");
+        let mut staged = FileState::replacing(path.clone(), 1024).unwrap();
+        staged.save("mine").unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "mine");
+        assert_eq!(staged.external_change(), ExternalChange::Unchanged);
+        // Removed after the question: nothing is created in its place.
+        let mut staged = FileState::replacing(path.clone(), 1024).unwrap();
+        fs::remove_file(&path).unwrap();
+        let error = staged.save("again").unwrap_err();
+        assert_eq!(error.to_string(), "The file was removed from disk");
+        assert!(!path.exists());
+        // Only an existing regular file can be staged.
+        let error = FileState::replacing(path, 1024).err().unwrap();
+        assert_eq!(error.kind(), io::ErrorKind::NotFound);
+        assert!(FileState::replacing(dir.path().to_owned(), 1024).is_err());
+        // A new target that appears before the save is never overwritten.
+        let fresh = dir.path().join("fresh.md");
+        let mut file = FileState::new_target(fresh.clone()).unwrap();
+        fs::write(&fresh, "someone else").unwrap();
+        let error = file.save("mine").unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "A file with that name has appeared on disk"
+        );
+        assert_eq!(fs::read_to_string(fresh).unwrap(), "someone else");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn replacing_refuses_up_front_what_a_save_refuses() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("note.md");
+        fs::write(&path, "text").unwrap();
+        let second = dir.path().join("second-name.md");
+        fs::hard_link(&path, &second).unwrap();
+        let error = FileState::replacing(path.clone(), 1024).err().unwrap();
+        assert!(error.to_string().contains("hard links"), "{error}");
+        fs::remove_file(&second).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o444)).unwrap();
+        let refused = FileState::replacing(path.clone(), 1024);
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        if unsafe { libc::geteuid() } != 0 {
+            assert_eq!(
+                refused.err().unwrap().kind(),
+                io::ErrorKind::PermissionDenied
+            );
+        }
+        // Through a link, the file it leads to is staged and later replaced.
+        let link = dir.path().join("link.md");
+        symlink(&path, &link).unwrap();
+        let mut staged = FileState::replacing(link.clone(), 1024).unwrap();
+        assert_eq!(
+            staged.link_target(),
+            Some(fs::canonicalize(&path).unwrap().as_path())
+        );
+        staged.save("through the link").unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "through the link");
+        assert!(is_link(&link));
+        let dangling = dir.path().join("dangling.md");
+        symlink(dir.path().join("nowhere.md"), &dangling).unwrap();
+        let error = FileState::replacing(dangling, 1024).err().unwrap();
+        assert!(error.to_string().contains("does not exist"), "{error}");
+        assert!(!dir.path().join("nowhere.md").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn system_errors_become_sentences_without_numbers_or_temporary_names() {
+        for (code, sentence) in [
+            (libc::ENOENT, "No such file or folder"),
+            (libc::EACCES, "You do not have permission for that"),
+            (libc::ENOSPC, "The disk is full"),
+            (libc::EROFS, "The disk is read-only"),
+            (libc::EISDIR, "That is a folder, not a file"),
+            (libc::ENOTDIR, "Part of that path is a file, not a folder"),
+            (
+                libc::ENAMETOOLONG,
+                "That name is too long or not allowed here",
+            ),
+        ] {
+            assert_eq!(explain(&io::Error::from_raw_os_error(code)), sentence);
+        }
+        // An unlisted error keeps the system's words and loses its number.
+        let other = explain(&io::Error::from_raw_os_error(libc::EMLINK));
+        assert!(!other.is_empty() && !other.contains("os error"), "{other}");
+        // pica's own sentences pass through untouched.
+        let own = io::Error::new(io::ErrorKind::PermissionDenied, "The file is read-only");
+        assert_eq!(explain(&own), "The file is read-only");
+        // Saving into a folder that is gone never names the temporary file.
+        let dir = tempfile::tempdir().unwrap();
+        let mut file = FileState::new_target(dir.path().join("gone/notes.md")).unwrap();
+        let error = file.save("text").unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::NotFound);
+        assert_eq!(explain(&error), "The folder does not exist");
+        assert_eq!(error.to_string(), "The folder does not exist");
     }
 
     #[test]

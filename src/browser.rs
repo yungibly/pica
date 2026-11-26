@@ -111,8 +111,10 @@ impl Browser {
         Ok(browser)
     }
 
-    pub fn set_error(&mut self, error: impl ToString) {
-        self.message = error.to_string();
+    /// Say why something could not be opened, without the system's error
+    /// numbers.
+    pub fn set_error(&mut self, error: io::Error) {
+        self.message = crate::file_io::explain(&error);
     }
 
     fn reload(&mut self) -> io::Result<()> {
@@ -234,7 +236,7 @@ impl Browser {
 
     fn enter(&mut self) -> Action {
         if self.path_focus {
-            let typed = expand_home(self.path.text());
+            let typed = crate::paths::expand_home(self.path.text());
             let path = if typed.is_absolute() {
                 typed
             } else {
@@ -739,19 +741,6 @@ impl Browser {
     }
 }
 
-/// `~` and `~/…` name the home folder, as in a shell.
-fn expand_home(text: &str) -> PathBuf {
-    let home = || std::env::var_os("HOME").filter(|home| !home.is_empty());
-    match text.strip_prefix('~') {
-        Some("") => home().map(PathBuf::from),
-        Some(rest) if rest.starts_with('/') => {
-            home().map(|home| PathBuf::from(home).join(rest.trim_start_matches('/')))
-        }
-        _ => None,
-    }
-    .unwrap_or_else(|| PathBuf::from(text))
-}
-
 fn text_candidate(path: &Path) -> bool {
     if let Some(extension) = path.extension().and_then(|s| s.to_str()) {
         match extension.to_ascii_lowercase().as_str() {
@@ -994,14 +983,6 @@ mod tests {
         type_text(&mut browser, "~");
         assert!(browser.path_focus);
         assert_eq!(browser.path.text(), "~");
-        if let Some(user) = std::env::var_os("HOME").filter(|home| !home.is_empty()) {
-            let user = PathBuf::from(user);
-            assert_eq!(expand_home("~"), user);
-            assert_eq!(expand_home("~/notes/a.md"), user.join("notes/a.md"));
-        }
-        for literal in ["~other/a.md", "a~", "notes/~"] {
-            assert_eq!(expand_home(literal), PathBuf::from(literal));
-        }
     }
 
     #[test]

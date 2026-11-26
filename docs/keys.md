@@ -17,8 +17,34 @@ command with its key.
 | Ctrl+PageUp / Ctrl+PageDown | Previous / next tab |
 | Ctrl+Q | Close the current tab, asking first if it has unsaved changes. Closing the last tab quits. |
 | Ctrl+E, then "Quit pica" | Quit, checking every unsaved tab |
-| Ctrl+E, then "Save as" | Save to a new filename |
+| Ctrl+E, then "Save as" | Save under another name or in another place; see below |
 | Ctrl+E, then "Reload" | Reload the file from disk |
+
+## Save as
+
+Ctrl+S in a document that has no file yet, or "Save as" from Ctrl+E, asks
+for a path. It starts from the document's own path with the name selected,
+so typing renames it in the same folder; an untitled document starts in the
+working folder.
+
+| Key | Action |
+| --- | --- |
+| Enter | Save. A new name saves at once. |
+| Tab | Complete the folder or name from what is on disk. When several match, they are listed and the path is completed as far as they agree. |
+| Y / N | Answer when pica asks before replacing an existing file or creating a missing folder. N goes back to the path. |
+| Left / Right, Home / End, Shift with them | Move and select in the path; Ctrl+Left / Ctrl+Right move by word |
+| Ctrl+A, Ctrl+U | Select the whole path; clear it |
+| Ctrl+C / Ctrl+X / Ctrl+V, Ctrl+Z / Ctrl+Y | Copy, cut and paste; undo and redo, in the path |
+| Esc | Cancel |
+
+`~` is your home folder. A path that starts with `/` or `~`, pasted, or
+typed over the selected name, replaces the whole path. Saving onto a file
+asks first and then replaces it atomically, keeping its permissions. pica
+never asks about, and never replaces, a folder, a file with other hard
+links, a read-only file or another user's file: choose another name for
+those. Saving a document onto its own file is an ordinary save, unless the
+file changed on disk since you opened it; then Save as asks whether to
+replace the version on disk.
 
 ## File browser
 

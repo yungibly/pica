@@ -215,7 +215,7 @@ enum Overlay {
     Help,
     Quit,
     Reload,
-    SaveAs { path: String, quit_after: bool },
+    SaveAs { quit_after: bool },
     Search { replace: bool },
 }
 
@@ -307,6 +307,10 @@ pub struct App {
     pub(crate) case_toggled: bool,
     /// Indent guides in code and source views; the workspace sets this.
     pub(crate) guides: bool,
+    /// The Save As dialog, while `Overlay::SaveAs` is open.
+    save_as: save_as::SaveAs,
+    /// Where Save As starts for a document without a file of its own.
+    save_hint: Option<PathBuf>,
 }
 
 impl App {
@@ -439,7 +443,10 @@ impl App {
             Err(error) => {
                 self.overlay = Overlay::None;
                 self.reload_prompt_visible.set(false);
-                self.set_message(format!("Reload failed: {error}. Your text is intact"));
+                self.set_message(format!(
+                    "Reload failed: {}. Your text is intact",
+                    crate::file_io::explain(&error)
+                ));
             }
         }
     }
@@ -460,13 +467,6 @@ impl App {
             self.overlay,
             Overlay::SaveAs { .. } | Overlay::Quit | Overlay::Reload
         )
-    }
-
-    pub(crate) fn pending_save_path(&self) -> Option<PathBuf> {
-        match &self.overlay {
-            Overlay::SaveAs { path, .. } if !path.is_empty() => Some(PathBuf::from(path)),
-            _ => None,
-        }
     }
 
     pub(crate) fn saving_as(&self) -> bool {
@@ -514,6 +514,7 @@ impl App {
         self.document.break_undo_group();
         self.reload_prompt_visible.set(false);
         self.overlay = Overlay::None;
+        self.close_save_as();
         if !self.search.query.text().is_empty() {
             self.last_query = self.search.query.text().to_owned();
         }
@@ -708,6 +709,8 @@ impl App {
             view_toggled: false,
             case_toggled: false,
             guides: false,
+            save_as: save_as::SaveAs::default(),
+            save_hint: None,
         };
         app.refresh_mode();
         app
@@ -758,8 +761,8 @@ impl App {
                 self.field_drag = None;
                 if matches!(self.overlay, Overlay::Search { .. }) {
                     self.insert_search_text(&text);
-                } else if let Overlay::SaveAs { path, .. } = &mut self.overlay {
-                    path.push_str(&text.replace(['\n', '\r', '\0'], ""));
+                } else if self.saving_as() {
+                    self.save_as_insert(&text, true);
                 } else if self.overlay == Overlay::None {
                     self.finish_gesture();
                     self.document.insert(&text);
@@ -771,6 +774,7 @@ impl App {
             Event::Mouse(event) if self.overlay == Overlay::None => self.mouse(event),
             Event::Resize(width, height) => {
                 self.reload_prompt_visible.set(false);
+                self.save_as.hide_question();
                 self.terminal_height = height;
                 self.terminal_width = width;
                 self.dragging = false;
@@ -2267,27 +2271,17 @@ impl App {
         }
     }
 
-    fn start_save_as(&mut self, quit_after: bool) {
-        self.overlay = Overlay::SaveAs {
-            path: String::new(),
-            quit_after,
-        };
-    }
-
     fn save(&mut self, quit_after: bool) {
         if let Some(file) = &mut self.file {
             match file.save(self.document.text()) {
-                Ok(()) => {
-                    self.document.mark_saved();
-                    self.last_disk_change = None;
-                    self.message = format!("Saved {}", safe_text(&file.path.display().to_string()));
-                    self.message_is_error = false;
-                    self.message_origin = MessageOrigin::General;
-                    self.overlay = Overlay::None;
-                    self.should_exit = quit_after;
-                }
+                Ok(()) => self.saved(None, quit_after),
                 Err(error) => {
-                    self.set_message(error.to_string());
+                    // Whatever stopped the save, the text is still here and
+                    // Save as can put it somewhere.
+                    self.set_message(format!(
+                        "{}. Your edits are intact · Ctrl+E: Save as",
+                        crate::file_io::explain(&error)
+                    ));
                     self.overlay = Overlay::None;
                 }
             }
@@ -2300,6 +2294,11 @@ impl App {
         if key.code == KeyCode::Esc {
             self.overlay = Overlay::None;
             self.reload_prompt_visible.set(false);
+            self.close_save_as();
+            return;
+        }
+        if let Overlay::SaveAs { quit_after } = self.overlay {
+            self.save_as_key(key, quit_after);
             return;
         }
         if self.overlay == Overlay::Reload {
@@ -2341,47 +2340,7 @@ impl App {
                 KeyCode::Char('n' | 'N') => self.should_exit = true,
                 _ => {}
             },
-            Overlay::SaveAs { path, quit_after } => match key.code {
-                KeyCode::Enter if !path.is_empty() => {
-                    let target = PathBuf::from(path.clone());
-                    let quit_after = *quit_after;
-                    match FileState::new_target(target).and_then(|mut file| {
-                        file.save(self.document.text())?;
-                        Ok(file)
-                    }) {
-                        Ok(file) => {
-                            self.markdown = is_markdown(&file.path);
-                            self.live &= self.markdown;
-                            self.message =
-                                format!("Saved {}", safe_text(&file.path.display().to_string()));
-                            self.message_is_error = false;
-                            self.message_origin = MessageOrigin::General;
-                            self.file = Some(file);
-                            self.last_disk_change = None;
-                            self.document.mark_saved();
-                            self.overlay = Overlay::None;
-                            self.should_exit = quit_after;
-                            self.refresh_mode();
-                            self.layout_key = None;
-                        }
-                        Err(error) => self.set_message(error.to_string()),
-                    }
-                }
-                KeyCode::Backspace => {
-                    if let Some((start, _)) = path.grapheme_indices(true).next_back() {
-                        path.truncate(start);
-                    }
-                }
-                KeyCode::Char(c)
-                    if !key
-                        .modifiers
-                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
-                {
-                    path.push(c)
-                }
-                _ => {}
-            },
-            Overlay::None | Overlay::Search { .. } | Overlay::Reload => {}
+            Overlay::None | Overlay::Search { .. } | Overlay::Reload | Overlay::SaveAs { .. } => {}
         }
     }
 
@@ -3337,36 +3296,7 @@ impl App {
                     64,
                 );
             }
-            Overlay::SaveAs { path, .. } => {
-                let colors = palette();
-                let mut body = vec![
-                    Line::from(vec![
-                        Span::styled(
-                            "❯ ",
-                            ui::surface().fg(colors.accent).add_modifier(Modifier::BOLD),
-                        ),
-                        Span::raw(safe_text(path)),
-                        Span::styled("▏", ui::surface().fg(colors.accent)),
-                    ]),
-                    Line::from(Span::styled(
-                        "Existing files are protected; enter a new path.",
-                        ui::muted(),
-                    )),
-                ];
-                if !self.message.is_empty() {
-                    body.push(Line::from(Span::styled(
-                        safe_text(&self.message),
-                        ui::surface().fg(colors.warning),
-                    )));
-                }
-                ui::dialog(
-                    frame,
-                    "Save As · new filename",
-                    &body,
-                    &[("⏎", "Save"), ("Esc", "Cancel")],
-                    78,
-                );
-            }
+            Overlay::SaveAs { .. } => self.draw_save_as(frame),
         }
     }
 
@@ -3961,6 +3891,9 @@ fn is_markdown(path: &std::path::Path) -> bool {
     })
 }
 
+#[path = "app_save_as.rs"]
+mod save_as;
+
 #[cfg(test)]
 #[path = "app_window_tests.rs"]
 mod window_tests;
@@ -4333,10 +4266,7 @@ mod tests {
             Overlay::Help,
             Overlay::Quit,
             Overlay::Reload,
-            Overlay::SaveAs {
-                path: String::new(),
-                quit_after: false,
-            },
+            Overlay::SaveAs { quit_after: false },
         ] {
             app.overlay = overlay;
             let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();

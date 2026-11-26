@@ -222,6 +222,33 @@ pub fn dialog(
     keys_row: &[(&str, &str)],
     max_width: u16,
 ) -> bool {
+    let rows = |width: usize| {
+        body.iter()
+            .map(|line| line.width().max(1).div_ceil(width) as u16)
+            .sum()
+    };
+    let Some(text) = dialog_frame(frame, title, rows, keys_row, max_width) else {
+        return false;
+    };
+    frame.render_widget(
+        ratatui::widgets::Paragraph::new(body.to_vec())
+            .wrap(ratatui::widgets::Wrap { trim: false })
+            .style(surface()),
+        text,
+    );
+    true
+}
+
+/// The frame and keys of a centered dialog whose body takes `rows` rows at
+/// a given width. Returns the body's area for the caller to fill, or `None`
+/// when the dialog does not fit and a resize notice stands in for it.
+pub fn dialog_frame(
+    frame: &mut Frame,
+    title: &str,
+    rows: impl FnOnce(usize) -> u16,
+    keys_row: &[(&str, &str)],
+    max_width: u16,
+) -> Option<Rect> {
     let area = frame.area();
     if !dialog_fits(area) {
         frame.render_widget(Clear, area);
@@ -231,15 +258,11 @@ pub fn dialog(
                 .style(surface()),
             area,
         );
-        return false;
+        return None;
     }
     let width = area.width.saturating_sub(4).min(max_width);
     let inner_width = usize::from(width.saturating_sub(4)).max(1);
-    let lines: u16 = body
-        .iter()
-        .map(|line| line.width().max(1).div_ceil(inner_width) as u16)
-        .sum();
-    let height = (lines + 5).min(area.height.saturating_sub(2));
+    let height = (rows(inner_width) + 5).min(area.height.saturating_sub(2));
     let rect = Rect::new(
         area.x + (area.width - width) / 2,
         area.y + (area.height - height) / 3,
@@ -247,24 +270,17 @@ pub fn dialog(
         height,
     );
     let inner = panel(frame, rect, title, None);
-    let text = Rect::new(
-        inner.x + 1,
-        inner.y + 1,
-        inner.width - 2,
-        inner.height.saturating_sub(3),
-    );
-    frame.render_widget(
-        ratatui::widgets::Paragraph::new(body.to_vec())
-            .wrap(ratatui::widgets::Wrap { trim: false })
-            .style(surface()),
-        text,
-    );
     keys(
         frame,
         Rect::new(inner.x + 1, inner.bottom() - 1, inner.width - 2, 1),
         keys_row,
     );
-    true
+    Some(Rect::new(
+        inner.x + 1,
+        inner.y + 1,
+        inner.width - 2,
+        inner.height.saturating_sub(3),
+    ))
 }
 
 /// Keys drawn as quiet chips followed by their action, for dialogs.
