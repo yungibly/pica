@@ -180,23 +180,41 @@ pub fn bare_url(text: &str, offset: usize) -> Option<Range<usize>> {
             break;
         };
         let rest = &line[start..];
-        let mut end = rest
-            .find(|c: char| c.is_whitespace() || c.is_control() || "<>\"'`|\\^{}".contains(c))
-            .unwrap_or(rest.len());
-        // A sentence's own punctuation, and a bracket the address did not open.
-        loop {
-            let address = &rest[..end];
-            let Some(last) = address.chars().next_back() else {
-                break;
+        // The address ends at a space, a quote, or a bracket it did not
+        // open: `(see https://example.com/a_(b))` ends after `(b)`.
+        let mut end = rest.len();
+        let (mut round, mut square) = (0usize, 0usize);
+        for (at, c) in rest.char_indices() {
+            let closes = |depth: &mut usize| match depth.checked_sub(1) {
+                Some(less) => {
+                    *depth = less;
+                    false
+                }
+                None => true,
             };
-            let closes = |open: char, close: char| {
-                last == close && address.matches(close).count() > address.matches(open).count()
+            let stops = match c {
+                '(' => {
+                    round += 1;
+                    false
+                }
+                '[' => {
+                    square += 1;
+                    false
+                }
+                ')' => closes(&mut round),
+                ']' => closes(&mut square),
+                c => c.is_whitespace() || c.is_control() || "<>\"'`|\\^{}".contains(c),
             };
-            if ".,;:!?*_~".contains(last) || closes('(', ')') || closes('[', ']') {
-                end -= last.len_utf8();
-            } else {
+            if stops {
+                end = at;
                 break;
             }
+        }
+        // A sentence's own punctuation is not part of it either.
+        while let Some(last) = rest[..end].chars().next_back()
+            && ".,;:!?*_~".contains(last)
+        {
+            end -= last.len_utf8();
         }
         let range = line_start + start..line_start + start + end;
         let scheme_end = rest.find(':').map_or(0, |at| at + 1);
@@ -444,6 +462,23 @@ mod tests {
             Some("HTTPS://UPPER.example")
         );
         assert_eq!(bare_url("", 0), None);
+        // A bracket the address did not open ends it, wherever it falls;
+        // an address inside another's path does not.
+        let nested = "(see https://example.com/a_(b))x [https://x.example/y]z https://web.example/save/https://kept.example/page";
+        for (needle, address) in [
+            ("example.com", "https://example.com/a_(b)"),
+            ("x.example", "https://x.example/y"),
+            (
+                "kept.example",
+                "https://web.example/save/https://kept.example/page",
+            ),
+        ] {
+            let at = nested.find(needle).unwrap();
+            assert_eq!(
+                bare_url(nested, at).map(|range| &nested[range]),
+                Some(address)
+            );
+        }
         // Only the text near the caret is read, however long the line: an
         // address there is found whole, and the far ends are not scanned.
         let filler = "界x ".repeat(300_000);

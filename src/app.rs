@@ -966,14 +966,22 @@ impl App {
     /// kind of file. A link also answers at its end, where a caret that has
     /// just passed it sits. The analysis must be current.
     fn link_at(&self, offset: usize) -> Option<(std::ops::Range<usize>, String)> {
-        if self.markdown_analysis()
-            && self.analyzed == self.version()
-            && let Some(link) = self.parsed.link_at(offset)
+        let marked = (self.markdown_analysis() && self.analyzed == self.version())
+            .then(|| self.parsed.link_at(offset))
+            .flatten()
+            .map(|link| (link.range.clone(), link.destination.clone()));
+        // A link the offset is inside comes before an address it is in or
+        // beside, and that before a link it only touches the end of.
+        if marked
+            .as_ref()
+            .is_some_and(|(range, _)| range.contains(&offset))
         {
-            return Some((link.range.clone(), link.destination.clone()));
+            return marked;
         }
         let text = self.document.text();
-        crate::links::bare_url(text, offset).map(|range| (range.clone(), text[range].to_owned()))
+        crate::links::bare_url(text, offset)
+            .map(|range| (range.clone(), text[range].to_owned()))
+            .or(marked)
     }
 
     /// The destination of the link under the caret, for the command that

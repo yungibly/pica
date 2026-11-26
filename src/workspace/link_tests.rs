@@ -176,6 +176,19 @@ fn addresses_written_out_in_code_and_plain_text_open_too() {
     follow(&mut app);
     assert_eq!(opened(), Vec::<String>::new());
     assert!(status(&mut app).contains("No link under the caret"));
+    // Where a Markdown link ends and an address begins, the caret is on the
+    // address it is about to enter, not the link it has just left.
+    let (_directory, mut app) = workspace(
+        "joined.md",
+        "x\n\n[first](https://first.example)https://second.example/x done\n",
+    );
+    caret(&mut app, "https://second", 0);
+    follow(&mut app);
+    assert_eq!(opened(), ["https://second.example/x"]);
+    caret(&mut app, "https://second", 0);
+    key(&mut app, KeyCode::Left, KeyModifiers::NONE);
+    follow(&mut app);
+    assert_eq!(opened(), ["https://first.example"]);
 }
 
 #[test]
