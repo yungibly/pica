@@ -78,6 +78,15 @@ indentation. The whole change is one undo step.
 | PageUp / PageDown | Scroll a screen. The caret moves with the view and keeps its row on screen; at either end of the file it goes on to the first or last line. |
 | Ctrl+L | Go to a line, or `line:column` |
 | Ctrl+A | Select all |
+| Click, Shift+click, drag | Place the caret, extend the selection to the pointer, select |
+| Double click | Select the word; dragging on extends word by word |
+| Triple click | Select the whole line; dragging on extends line by line |
+
+A double click keeps `can't` and `3.14` whole and stops at the dots and
+colons between names, so it selects `name` in `self.name`. On a space or a
+punctuation mark it selects that run. In the live Markdown view the first
+click may reveal a block's source and move its text; the second click still
+selects the word first clicked.
 
 ## Finding and replacing
 

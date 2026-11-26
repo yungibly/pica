@@ -1411,6 +1411,56 @@ impl Document {
         self.ceil_grapheme_boundary(target)
     }
 
+    /// The word a double click at `offset` selects: the Unicode word segment
+    /// that starts at or holds `offset` on its line, so `can't` and `3.14`
+    /// stay whole, split further at `.` and `:` unless digits surround them,
+    /// so `self.name` selects one name. Whitespace and punctuation select
+    /// their own run. Past the last character, the line's last segment.
+    pub fn word_at(&self, offset: usize) -> Range<usize> {
+        let text = self.text();
+        let offset = self.floor_grapheme_boundary(offset.min(text.len()));
+        let line = self.line_range(offset);
+        let mut last = offset..offset;
+        for (start, segment) in text[line.clone()].split_word_bound_indices() {
+            let range = line.start + start..line.start + start + segment.len();
+            if offset < range.end {
+                last = range;
+                break;
+            }
+            last = range;
+        }
+        let bytes = text.as_bytes();
+        let digit = |at: usize| bytes.get(at).is_some_and(u8::is_ascii_digit);
+        let mut start = last.start;
+        for at in last.clone() {
+            let separator = matches!(bytes[at], b'.' | b':')
+                && !(at > last.start && digit(at - 1) && digit(at + 1));
+            if !separator {
+                continue;
+            }
+            if offset < at {
+                return start..at;
+            }
+            if offset == at {
+                return at..at + 1;
+            }
+            start = at + 1;
+        }
+        start..last.end
+    }
+
+    /// The source line holding `offset` with its line ending, as a triple
+    /// click selects it.
+    pub fn line_with_ending(&self, offset: usize) -> Range<usize> {
+        let line = self.line_range(offset.min(self.text().len()));
+        let ending = match &self.text().as_bytes()[line.end..] {
+            [b'\r', b'\n', ..] => 2,
+            [b'\r' | b'\n', ..] => 1,
+            _ => 0,
+        };
+        line.start..line.end + ending
+    }
+
     pub fn delete_word_backward(&mut self) -> bool {
         let selection = self.selection();
         let range = if selection.is_empty() {

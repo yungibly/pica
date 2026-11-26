@@ -122,6 +122,19 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
     ),
 ];
 
+/// Presses on one cell this close together are one double or triple click.
+const MULTI_CLICK: std::time::Duration = std::time::Duration::from_millis(400);
+
+/// A left press on the text: when and where, the caret it placed, the text
+/// it saw, and its place in a run of clicks.
+struct Click {
+    at: std::time::Instant,
+    cell: (u16, u16),
+    offset: usize,
+    version: Version,
+    count: u8,
+}
+
 thread_local! {
     /// The indentation chosen for every file, or `None` to follow each file.
     static INDENT: Cell<Option<Indent>> = const { Cell::new(None) };
@@ -268,6 +281,12 @@ pub struct App {
     /// The indentation style a revision's own lines show, for Tab.
     detected_indent: Cell<Option<(Version, Option<Indent>)>>,
     last_input: std::time::Instant,
+    /// The latest left press on the text, for telling a double or triple
+    /// click from separate ones.
+    last_click: Option<Click>,
+    /// What a double or triple click selected, and whether by word or line;
+    /// a drag from it extends by the same unit.
+    click_unit: Option<(u8, std::ops::Range<usize>)>,
     pub should_exit: bool,
     message: String,
     message_is_error: bool,
@@ -671,6 +690,8 @@ impl App {
             indent_unit: Cell::new(None),
             detected_indent: Cell::new(None),
             last_input: std::time::Instant::now(),
+            last_click: None,
+            click_unit: None,
             should_exit: false,
             message: String::new(),
             message_is_error: false,
@@ -1243,6 +1264,8 @@ impl App {
     }
 
     fn key(&mut self, key: KeyEvent) {
+        // A key between two presses makes them separate clicks.
+        self.last_click = None;
         if matches!(self.overlay, Overlay::Search { .. }) {
             self.search_key(key);
             return;
@@ -1739,26 +1762,115 @@ impl App {
                     self.follow_cursor = false;
                     return;
                 }
-                self.move_to(hit.offset, event.modifiers.contains(KeyModifiers::SHIFT));
-                self.affinity = hit.affinity;
+                let shift = event.modifiers.contains(KeyModifiers::SHIFT);
+                let now = std::time::Instant::now();
+                let cell = (event.column, event.row);
+                // A second or third press on the same cell selects the word
+                // or line at the caret the first press placed. The text may
+                // have reflowed under the pointer since, as a clicked block
+                // shows its source, so the pointer is not hit-tested again.
+                let repeat = self.last_click.take().filter(|click| {
+                    !shift
+                        && click.count < 3
+                        && click.cell == cell
+                        && click.version == self.version()
+                        && now.duration_since(click.at) <= MULTI_CLICK
+                });
+                let (offset, count) = match &repeat {
+                    Some(click) => (click.offset, click.count + 1),
+                    None => (hit.offset, 1),
+                };
+                if count == 1 {
+                    self.move_to(hit.offset, shift);
+                    self.affinity = hit.affinity;
+                    self.click_unit = None;
+                } else {
+                    let unit = self.click_range(count, offset);
+                    self.select_unit(count, unit.clone(), unit);
+                }
+                self.last_click = Some(Click {
+                    at: now,
+                    cell,
+                    offset: if count == 1 {
+                        self.document.selection().head
+                    } else {
+                        offset
+                    },
+                    version: self.version(),
+                    count,
+                });
                 self.dragging = true; // Keep exactly the current hit geometry until button-up.
                 self.preferred_column = None;
                 self.follow_cursor = false;
-                self.anchor_screen_row = Some(row.saturating_sub(self.scroll));
+                // A word or line selection ends away from the pointer, so
+                // only a plain press pins the caret to the pointer's row.
+                self.anchor_screen_row = (count == 1).then(|| row.saturating_sub(self.scroll));
             }
-            MouseEventKind::Drag(MouseButton::Left) if self.dragging => {
-                self.move_to(hit.offset, true);
-                self.affinity = hit.affinity;
-                self.anchor_screen_row = Some(row.saturating_sub(self.scroll));
-            }
-            MouseEventKind::Up(MouseButton::Left) if self.dragging => {
-                self.move_to(hit.offset, true);
-                self.affinity = hit.affinity;
-                self.dragging = false;
-                self.follow_cursor = true;
-                self.anchor_screen_row = Some(row.saturating_sub(self.scroll));
+            MouseEventKind::Drag(MouseButton::Left) | MouseEventKind::Up(MouseButton::Left)
+                if self.dragging =>
+            {
+                // The clicked cell itself adds nothing: the text under it
+                // may be other text since the first press reflowed its block.
+                let cell = (event.column, event.row);
+                let home = self.last_click.as_ref().is_some_and(|c| c.cell == cell);
+                match self.click_unit.clone() {
+                    // After a double or triple click, extend by words or lines.
+                    Some((count, base)) => {
+                        let unit = if home {
+                            base.clone()
+                        } else {
+                            self.click_range(count, hit.offset)
+                        };
+                        self.select_unit(count, base, unit);
+                    }
+                    None => {
+                        self.move_to(hit.offset, true);
+                        self.affinity = hit.affinity;
+                    }
+                }
+                if event.kind == MouseEventKind::Up(MouseButton::Left) {
+                    self.dragging = false;
+                    self.follow_cursor = true;
+                }
+                self.anchor_screen_row = self
+                    .click_unit
+                    .is_none()
+                    .then(|| row.saturating_sub(self.scroll));
             }
             _ => {}
+        }
+    }
+
+    /// The word (a double click) or whole line (a triple click) at `offset`.
+    fn click_range(&self, count: u8, offset: usize) -> std::ops::Range<usize> {
+        if count == 2 {
+            self.document.word_at(offset)
+        } else {
+            self.document.line_with_ending(offset)
+        }
+    }
+
+    /// Select from the clicked unit `base` through `unit`, the one under the
+    /// pointer, with the head on the pointer's side.
+    fn select_unit(
+        &mut self,
+        count: u8,
+        base: std::ops::Range<usize>,
+        unit: std::ops::Range<usize>,
+    ) {
+        let (anchor, head) = if unit.start < base.start {
+            (base.end, unit.start)
+        } else {
+            (base.start, unit.end.max(base.end))
+        };
+        self.click_unit = Some((count, base));
+        self.affinity = Affinity::Downstream;
+        let selection = Selection {
+            anchor: self.document.floor_grapheme_boundary(anchor),
+            head: self.document.floor_grapheme_boundary(head),
+        };
+        if let Err(error) = self.document.set_selection(selection) {
+            self.set_message(error.to_string());
         }
     }
 
@@ -4499,6 +4611,146 @@ mod tests {
         assert_eq!(app.document.text(), "firstsecondx");
         key(&mut app, KeyCode::Char('z'), KeyModifiers::CONTROL);
         assert_eq!(app.document.text(), "firstsecond");
+    }
+
+    fn press_at(app: &mut App, kind: MouseEventKind, source: usize) {
+        let (row, col) = app.projection.cursor(source);
+        app.handle_event(Event::Mouse(MouseEvent {
+            kind,
+            column: app.viewport.x + col as u16,
+            row: app.viewport.y + (row - app.scroll) as u16,
+            modifiers: KeyModifiers::NONE,
+        }));
+    }
+
+    #[test]
+    fn double_click_selects_a_word_and_triple_click_its_line() {
+        let text = "alpha beta.gamma delta\nsecond line here\nthird\n";
+        let mut app = App::new(text.into(), None, false);
+        draw(&mut app, 60, 12);
+        let beta = text.find("beta").unwrap() + 2;
+        click(&mut app, beta, true);
+        assert!(app.document.selection().is_empty());
+        click(&mut app, beta, true);
+        assert_eq!(app.document.selected_text(), "beta");
+        draw(&mut app, 60, 12);
+        click(&mut app, beta, true);
+        assert_eq!(app.document.selected_text(), "alpha beta.gamma delta\n");
+        // A fourth press starts over with a caret.
+        click(&mut app, beta, true);
+        assert!(app.document.selection().is_empty());
+        assert_eq!(app.document.selection().head, beta);
+        assert_eq!(app.document.text(), text);
+        // Clicks apart in time, on different cells, or separated by a key
+        // stay single.
+        click(&mut app, beta, true);
+        app.last_click.as_mut().unwrap().at -= MULTI_CLICK * 2;
+        click(&mut app, beta, true);
+        assert!(app.document.selection().is_empty());
+        click(&mut app, beta + 1, true);
+        assert!(app.document.selection().is_empty());
+        key(&mut app, KeyCode::Left, KeyModifiers::NONE);
+        click(&mut app, beta + 1, true);
+        assert!(app.document.selection().is_empty());
+        // Shift+click extends instead of counting as a second click.
+        click(&mut app, beta, true);
+        let event = |app: &App, kind| {
+            let (row, col) = app.projection.cursor(beta);
+            Event::Mouse(MouseEvent {
+                kind,
+                column: app.viewport.x + col as u16 + 9,
+                row: app.viewport.y + (row - app.scroll) as u16,
+                modifiers: KeyModifiers::SHIFT,
+            })
+        };
+        let down = event(&app, MouseEventKind::Down(MouseButton::Left));
+        app.handle_event(down);
+        let up = event(&app, MouseEventKind::Up(MouseButton::Left));
+        app.handle_event(up);
+        assert_eq!(app.document.selected_text(), "ta.gamma ");
+    }
+
+    #[test]
+    fn dragging_after_a_double_or_triple_click_extends_by_words_or_lines() {
+        let text = "alpha beta gamma delta\nsecond line here\nthird\n";
+        let mut app = App::new(text.into(), None, false);
+        draw(&mut app, 60, 12);
+        let at = |needle: &str| text.find(needle).unwrap() + 1;
+        let left = MouseButton::Left;
+        // Double click "gamma", drag right into "delta", then back to "alpha".
+        click(&mut app, at("gamma"), true);
+        click(&mut app, at("gamma"), false);
+        press_at(&mut app, MouseEventKind::Drag(left), at("delta"));
+        assert_eq!(app.document.selected_text(), "gamma delta");
+        assert!(app.document.selection().anchor < app.document.selection().head);
+        press_at(&mut app, MouseEventKind::Drag(left), at("alpha"));
+        assert_eq!(app.document.selected_text(), "alpha beta gamma");
+        assert!(app.document.selection().anchor > app.document.selection().head);
+        press_at(&mut app, MouseEventKind::Drag(left), at("gamma"));
+        assert_eq!(app.document.selected_text(), "gamma");
+        press_at(&mut app, MouseEventKind::Up(left), at("beta"));
+        assert_eq!(app.document.selected_text(), "beta gamma");
+        // Triple click the second line and drag onto the third.
+        draw(&mut app, 60, 12);
+        key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        for release in [true, true, false] {
+            click(&mut app, at("second"), release);
+        }
+        assert_eq!(app.document.selected_text(), "second line here\n");
+        press_at(&mut app, MouseEventKind::Drag(left), at("third"));
+        assert_eq!(app.document.selected_text(), "second line here\nthird\n");
+        press_at(&mut app, MouseEventKind::Up(left), at("alpha"));
+        assert_eq!(
+            app.document.selected_text(),
+            "alpha beta gamma delta\nsecond line here\n"
+        );
+        assert_eq!(app.document.text(), text);
+    }
+
+    #[test]
+    fn double_click_in_rendered_markdown_selects_the_word_first_clicked() {
+        // The first press reveals the paragraph's source, which moves the
+        // text under the pointer; the second press must not hit-test again.
+        let text = "# Title\n\nSome **bold** and `code` then plain words.\n";
+        let mut app = App::new(text.into(), None, true);
+        draw(&mut app, 60, 12);
+        let plain = text.find("plain").unwrap() + 2;
+        let (row, col) = app.projection.cursor(plain);
+        let (column, screen) = (app.viewport.x + col as u16, app.viewport.y + row as u16);
+        let left = MouseButton::Left;
+        for kind in [
+            MouseEventKind::Down(left),
+            MouseEventKind::Up(left),
+            MouseEventKind::Down(left),
+            MouseEventKind::Up(left),
+        ] {
+            app.handle_event(Event::Mouse(MouseEvent {
+                kind,
+                column,
+                row: screen,
+                modifiers: KeyModifiers::NONE,
+            }));
+            draw(&mut app, 60, 12);
+        }
+        assert_eq!(app.document.selected_text(), "plain");
+        // Where the pointer now is, the revealed source shows other text.
+        assert_ne!(app.projection.hit(row, col).offset, plain);
+        // A third press selects the line; its end on the next line must not
+        // be taken for the pointer's row and scroll the view.
+        for kind in [MouseEventKind::Down(left), MouseEventKind::Up(left)] {
+            app.handle_event(Event::Mouse(MouseEvent {
+                kind,
+                column,
+                row: screen,
+                modifiers: KeyModifiers::NONE,
+            }));
+            draw(&mut app, 60, 12);
+        }
+        assert_eq!(
+            app.document.selected_text(),
+            "Some **bold** and `code` then plain words.\n"
+        );
+        assert_eq!(app.scroll, 0);
     }
 
     #[test]
