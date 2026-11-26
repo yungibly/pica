@@ -14,8 +14,10 @@ pub enum ExternalChange {
     Unreadable(String),
 }
 
+/// What tells one version of a file on disk from the next without reading
+/// it: size, times, permissions and, on Unix, which file it is.
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct Fingerprint {
+pub struct Fingerprint {
     len: u64,
     modified: Option<SystemTime>,
     readonly: bool,
@@ -265,6 +267,24 @@ impl FileState {
         self.external.clone()
     }
 
+    /// The version now on disk, to recognize it later without reading it.
+    pub fn disk_stamp(&self) -> Option<Fingerprint> {
+        fs::metadata(self.file_path())
+            .ok()
+            .map(|metadata| Fingerprint::of(&metadata))
+    }
+
+    /// Whether the file was last written at least `quiet` ago. A file
+    /// written this instant may be half written: many programs empty a file
+    /// and then fill it.
+    pub fn settled(&self, quiet: std::time::Duration) -> bool {
+        fs::metadata(self.file_path())
+            .and_then(|metadata| metadata.modified())
+            .ok()
+            .and_then(|modified| modified.elapsed().ok())
+            .is_none_or(|age| age >= quiet)
+    }
+
     /// Read an existing regular file and stage a replacement FileState. A failed
     /// reload never changes the accepted baseline. Detect replacement or writes
     /// during the read and ask the caller to retry rather than accepting a mix.
@@ -282,7 +302,9 @@ impl FileState {
             None => false,
         };
         if relinked || !path.is_file() || before != after || after != Fingerprint::of(&path) {
-            return Err(io::Error::other(
+            // `Interrupted`: nothing is wrong, and trying again will do.
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
                 "The file changed while it was being read; try Reload again",
             ));
         }

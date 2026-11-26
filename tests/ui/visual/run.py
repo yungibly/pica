@@ -588,17 +588,29 @@ def chrome(session):
 def reliability(session):
     source = session.original_source
     external = source + "\nFirst external edit\n"
+    before = session.state()["text"]
     session.fixture.write_text(external)
-    session.call("expect", "text", "Disk file changed", "--timeout", 4000)
-    session.check("Reload" in session.state()["text"] and "F5" not in session.state()["text"],
-                  "External file changes offer a reload action without advertising function keys")
+    # Without unsaved edits the buffer follows its file: no question, a
+    # brief notice, and the same place on screen.
+    session.call("expect", "text", "Changed on disk: reloaded", "--timeout", 4000)
+    text = session.state()["text"]
+    session.check("Disk file changed" not in text and "Ctrl+Z" in text and "F5" not in text,
+                  "A clean buffer reloads a changed file and says how to go back")
+    session.check(text.splitlines()[:8] == before.splitlines()[:8],
+                  "The reader's place is kept across the reload")
     session.capture("01-external-change")
-    session.key("F5")
+    session.key("Ctrl+s")
+    session.check(session.saved(external.encode()), "The reloaded text is the file's new baseline")
     session.key("Ctrl+End")
     session.paste("local draft")
     local = external + "local draft"
     newer = source + "\nSecond external edit\n"
     session.fixture.write_text(newer)
+    # With unsaved edits nothing is loaded: the change is reported.
+    session.call("expect", "text", "Disk file changed", "--timeout", 4000)
+    session.check("Reload" in session.state()["text"] and "F5" not in session.state()["text"],
+                  "With unsaved edits, a change on disk offers Reload without advertising function keys")
+    session.capture("01b-external-change-with-edits")
     session.key("F5")
     session.check("Replace local edits with disk text?" in session.state()["text"], "Dirty reload requires an explicit confirmation")
     session.capture("02-dirty-reload")

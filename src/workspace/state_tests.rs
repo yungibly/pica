@@ -566,14 +566,31 @@ fn external_change_checks_run_even_without_persistent_state() {
     let file = dir.path().join("draft.md");
     fs::write(&file, "before").unwrap();
     let mut app = Workspace::open(Some(file.clone())).unwrap();
+    // Written a few seconds ago, so it is whole. The tick loads it into the
+    // clean buffer, and says so.
     fs::write(&file, "after").unwrap();
+    fs::File::options()
+        .write(true)
+        .open(&file)
+        .unwrap()
+        .set_modified(std::time::SystemTime::now() - Duration::from_secs(5))
+        .unwrap();
     app.last_tick = Instant::now() - Duration::from_secs(2);
     assert!(app.tick());
+    assert_eq!(app.editor().document.text(), "after");
+    assert!(status_row(&mut app).starts_with(" Changed on disk: reloaded"));
+    // Reload has nothing more to fetch, and undo still has the old text.
     app.run_command(Command::Reload);
     assert_eq!(app.editor().document.text(), "after");
     key(&mut app, KeyCode::Char('z'), KeyModifiers::CONTROL);
     assert_eq!(app.editor().document.text(), "before");
     assert!(app.editor().document.is_dirty());
+    // Now there are edits to lose: a further change waits for a decision.
+    fs::write(&file, "later").unwrap();
+    app.last_tick = Instant::now() - Duration::from_secs(2);
+    assert!(app.tick());
+    assert_eq!(app.editor().document.text(), "before");
+    assert!(status_row(&mut app).starts_with(" Disk file changed; your text is intact"));
 }
 
 #[test]

@@ -186,6 +186,10 @@ const LARGE_FENCE: usize = 8 * 1024;
 /// when typing pauses.
 const EAGER_WORD_COUNT: usize = 8 * 1024;
 
+/// A file changed on disk is reloaded into a clean buffer only once it has
+/// been left alone this long, so a file caught half written is not shown.
+const SETTLE: std::time::Duration = std::time::Duration::from_millis(100);
+
 /// Windows skip at least this many rows of a long line when they resume
 /// inside it; nearer rows are cheaper to lay out than to look up.
 const LONG_LINE_ROWS: usize = 32;
@@ -307,6 +311,11 @@ pub struct App {
     pub(crate) case_toggled: bool,
     /// Indent guides in code and source views; the workspace sets this.
     pub(crate) guides: bool,
+    /// A version on disk that could not be loaded into a clean buffer, so
+    /// the reason is said once and not every second.
+    unloadable: Option<crate::file_io::Fingerprint>,
+    /// How long a changed file must be left alone before it is reloaded.
+    settle: std::time::Duration,
     /// The Save As dialog, while `Overlay::SaveAs` is open.
     save_as: save_as::SaveAs,
     /// Where Save As starts for a document without a file of its own.
@@ -354,17 +363,24 @@ impl App {
         app
     }
 
-    /// Poll advisory disk status without changing document text, selection or
-    /// typing groups. Returns whether the visible status needs a redraw.
+    /// Poll the file on disk. A buffer without unsaved edits follows its
+    /// file: a changed file is reloaded in place, keeping the reader's place.
+    /// A buffer with edits is never touched: the change is reported, and
+    /// Reload and Save as decide. Typing groups are left alone either way.
+    /// Returns whether to redraw.
     pub(crate) fn check_external_change(&mut self) -> bool {
         let Some(file) = &mut self.file else {
             return false;
         };
         let status = file.external_change();
+        if status == ExternalChange::Changed && !self.document.is_dirty() {
+            return self.follow_disk();
+        }
         if self.last_disk_change.as_ref() == Some(&status) {
             return false;
         }
         self.last_disk_change = Some(status.clone());
+        self.unloadable = None;
         let message = match status {
             ExternalChange::Unchanged => {
                 if self.message_origin == MessageOrigin::Disk {
@@ -408,6 +424,89 @@ impl App {
         }
     }
 
+    /// A clean buffer's file changed: load the new version where the reader
+    /// is. Nothing of the user's is replaced, and Ctrl+Z brings the previous
+    /// text back. A file still being written, or one that cannot be read as
+    /// text, is left for a later look; the second is said once.
+    fn follow_disk(&mut self) -> bool {
+        // Not under a dialog or a drag in progress; the next look will do.
+        if self.has_modal() || self.dragging {
+            return false;
+        }
+        let Some(file) = &self.file else {
+            return false;
+        };
+        let stamp = file.disk_stamp();
+        if stamp.is_some() && stamp == self.unloadable {
+            return false;
+        }
+        if !file.settled(self.settle) {
+            return false;
+        }
+        // `None`: nothing to say, the next look will do.
+        let result = file
+            .reload_bounded(8 * 1024 * 1024)
+            .map_err(|error| match error.kind() {
+                io::ErrorKind::Interrupted => None,
+                io::ErrorKind::InvalidData => {
+                    Some("On disk the file is no longer text pica can open".to_owned())
+                }
+                _ => Some(format!(
+                    "The file changed on disk and cannot be loaded: {}",
+                    crate::file_io::explain(&error)
+                )),
+            })
+            .and_then(|(text, file)| {
+                self.accept_disk(text, file)
+                    .map_err(|error| Some(error.to_string()))
+            });
+        match result {
+            Ok(_) => {
+                // A notice, unless a problem of another kind is showing.
+                if !self.message_is_error || self.message_origin == MessageOrigin::Disk {
+                    self.message =
+                        "Changed on disk: reloaded · Ctrl+Z restores the previous text".into();
+                    self.message_is_error = false;
+                    self.message_origin = MessageOrigin::General;
+                }
+                true
+            }
+            Err(None) => false,
+            Err(Some(reason)) => {
+                self.unloadable = stamp;
+                self.last_disk_change = Some(ExternalChange::Changed);
+                self.set_message(format!("{reason}. Your text is intact"));
+                self.message_origin = MessageOrigin::Disk;
+                true
+            }
+        }
+    }
+
+    /// Take `text` from disk as the document, one undo step, with `file` as
+    /// its new baseline. The caret and the top of the view stay with the
+    /// text they were on.
+    fn accept_disk(&mut self, text: String, file: FileState) -> Result<bool, pica::EditError> {
+        let top = self.top.line.min(self.document.line_count() - 1);
+        let top =
+            pica::document::carried(self.document.text(), &text, self.document.line_start(top));
+        let changed = self.document.reload_saved(text)?;
+        self.file = Some(file);
+        self.last_disk_change = None;
+        self.unloadable = None;
+        if changed {
+            let line = self.document.line_index(top);
+            if self.document.line_start(line) != top {
+                // The top line itself changed; begin at its first row.
+                self.top.row = 0;
+            }
+            self.top.line = line;
+        }
+        self.refresh_mode();
+        self.layout_key = None;
+        self.affinity = Affinity::Downstream;
+        Ok(changed)
+    }
+
     fn reload_from_disk(&mut self) {
         let result = self
             .file
@@ -415,15 +514,10 @@ impl App {
             .ok_or_else(|| io::Error::other("This buffer has no disk file"))
             .and_then(|file| file.reload_bounded(8 * 1024 * 1024));
         match result {
-            Ok((text, file)) => match self.document.reload_saved(text) {
+            Ok((text, file)) => match self.accept_disk(text, file) {
                 Ok(changed) => {
-                    self.file = Some(file);
-                    self.last_disk_change = None;
                     self.deactivate();
-                    self.refresh_mode();
-                    self.layout_key = None;
                     self.preferred_column = None;
-                    self.affinity = Affinity::Downstream;
                     self.follow_cursor = true;
                     self.message = if changed {
                         "Reloaded disk version · Ctrl+Z restores previous text"
@@ -709,6 +803,8 @@ impl App {
             view_toggled: false,
             case_toggled: false,
             guides: false,
+            unloadable: None,
+            settle: SETTLE,
             save_as: save_as::SaveAs::default(),
             save_hint: None,
         };
@@ -3895,6 +3991,10 @@ fn is_markdown(path: &std::path::Path) -> bool {
 mod save_as;
 
 #[cfg(test)]
+#[path = "app_disk_tests.rs"]
+mod disk_tests;
+
+#[cfg(test)]
 #[path = "app_window_tests.rs"]
 mod window_tests;
 
@@ -4294,29 +4394,44 @@ mod tests {
     #[test]
     fn save_as_starts_fresh_external_status_for_the_new_path() {
         let (dir, old, mut app) = disk_app("base");
+        // Unsaved edits make a change on disk something to report.
+        app.document.insert("mine ");
         std::fs::write(&old, "external old").unwrap();
-        app.check_external_change();
+        assert!(app.check_external_change());
+        assert!(app.message.contains("Disk file changed"));
         let new = dir.path().join("new.md");
         key(&mut app, KeyCode::F(4), KeyModifiers::NONE);
         app.handle_event(Event::Paste(new.display().to_string()));
         key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(std::fs::read_to_string(&new).unwrap(), "mine base");
+        // The old file is no longer this document's concern.
+        assert!(!app.check_external_change());
+        app.document.insert("more ");
         std::fs::write(&new, "external new").unwrap();
         assert!(app.check_external_change());
         assert_eq!(app.message_origin, MessageOrigin::Disk);
         assert!(app.message.contains("Disk file changed"));
-        assert_eq!(app.document.text(), "base");
+        assert_eq!(app.document.text(), "mine more base");
     }
 
     #[test]
     fn disk_poll_reports_changes_and_recovery_without_mutating_editor() {
-        let (_dir, path, mut app) = disk_app("e\u{301} original\r\n");
+        let baseline = "e\u{301} original\r\n";
+        let (_dir, path, mut app) = disk_app(baseline);
+        // With unsaved edits the poll only reports; a clean buffer follows
+        // its file instead (see `app_disk_tests.rs`).
+        app.document.insert("mine ");
         app.document
             .set_selection(Selection {
                 anchor: app.document.text().len(),
-                head: 3,
+                head: 8,
             })
             .unwrap();
-        let selection = app.document.selection();
+        let before = (
+            app.document.text().to_owned(),
+            app.document.selection(),
+            app.document.revision(),
+        );
         assert!(!app.check_external_change());
         std::fs::write(&path, "external edit").unwrap();
         assert!(app.check_external_change());
@@ -4324,9 +4439,14 @@ mod tests {
         assert!(app.message.contains("Reload"));
         assert!(!app.message.contains("F5"));
         assert!(!app.check_external_change());
-        assert_eq!(app.document.text(), "e\u{301} original\r\n");
-        assert_eq!(app.document.selection(), selection);
-        assert!(!app.document.can_undo());
+        let unchanged = |app: &App| {
+            (
+                app.document.text().to_owned(),
+                app.document.selection(),
+                app.document.revision(),
+            )
+        };
+        assert_eq!(unchanged(&app), before);
         std::fs::remove_file(&path).unwrap();
         assert!(app.check_external_change());
         assert!(app.message.contains("missing"));
@@ -4334,8 +4454,9 @@ mod tests {
         assert!(app.check_external_change());
         assert!(app.message.contains("Cannot read"));
         std::fs::remove_dir(&path).unwrap();
-        std::fs::write(&path, app.document.text()).unwrap();
+        std::fs::write(&path, baseline).unwrap();
         assert!(app.check_external_change());
+        assert_eq!(unchanged(&app), before);
         assert!(app.message.is_empty());
         assert!(!app.message_is_error);
         app.set_message("Different actionable error");
