@@ -94,7 +94,9 @@ or CR).
 
 Tab follows the file. A file whose lines start with tabs gets a tab; a file
 indented with spaces gets spaces to its own width, read from the most common
-step between its lines, so Tab never mixes the two. A file with no
+step between its lines, so Tab never mixes the two. A line that carries on
+an argument list or a command, after a comma or a backslash, does not count
+as a step. A file with no
 indentation yet uses its type's convention: tabs for Makefiles, Go and
 tab-separated values, two spaces for YAML, JSON, JavaScript, TypeScript, HTML,
 CSS, Ruby and a few others, and four spaces otherwise. Tab characters are
@@ -178,8 +180,10 @@ at 1). Lifting an item leaves the items after it as its children: they are
 renumbered to follow, and moved under it where they would not otherwise line
 up, as after a numbered item lifted from under a bullet.
 Tab on the first item of a list does nothing, since there is nothing to nest
-it under. With a selection, on other lines, and in quoted lists, Tab indents
-as it does everywhere else.
+it under. With several items selected, each moves a level in turn, so a
+numbered run stays a numbered list; that is one undo step. A selection that
+holds anything but list items, other lines, and quoted lists indent as Tab
+does everywhere else.
 
 ## Links
 
