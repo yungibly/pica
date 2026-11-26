@@ -277,8 +277,8 @@ A default key keeps its job until you give that key another one. Your keys
 apply in the text and in Find, not while the command palette, a picker, the
 file browser or a prompt has the keyboard. Ctrl+E shows every command with
 the key it has now, and the status line names the keys that now open the
-commands and the help; the help sheet itself always lists the defaults, and
-says so once you have changed any.
+commands and the help, as do the hints on an empty page; the help sheet
+itself always lists the defaults, and says so once you have changed any.
 
 In Find your key wins over Find's own, so a binding on one of them changes
 what it does there too: Find uses Enter, Tab, Esc, PageUp, PageDown, Ctrl+N,
