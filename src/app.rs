@@ -1450,6 +1450,20 @@ impl App {
                     }
                     _ => self.place_caret(screen_row, false),
                 }
+                // Revealing a block's source can add rows above the caret.
+                // Following them must not scroll past a full last page: a
+                // document that fits the view stays whole, and the text
+                // moves under the pointer instead.
+                if self.projection.complete() {
+                    let last = self
+                        .projection
+                        .row_count()
+                        .saturating_sub(self.page_height());
+                    if self.scroll > last {
+                        self.scroll = last;
+                        self.top = self.anchor_at(self.scroll);
+                    }
+                }
             }
         } else {
             self.anchor_screen_row = None;
@@ -5027,6 +5041,50 @@ mod tests {
             row: app.viewport.y + (row - app.scroll) as u16,
             modifiers: KeyModifiers::NONE,
         }));
+    }
+
+    #[test]
+    fn a_click_that_reveals_longer_source_keeps_a_short_document_whole() {
+        // Hidden link addresses wrap to several rows once the paragraph
+        // shows its source, all of them above the clicked word.
+        let document = |links: usize| {
+            let links: Vec<String> = (0..links)
+                .map(|n| {
+                    format!("[link{n}](https://example.com/a/very/long/path/number/{n}/that/wraps)")
+                })
+                .collect();
+            format!(
+                "# Title\n\nIntro paragraph.\n\nSee {} and the END word.\n\nAfter one.\n\nLast line.\n",
+                links.join(" ")
+            )
+        };
+        let text = document(4);
+        let end = text.find("END").unwrap();
+        let mut app = App::new(text.clone(), None, true);
+        draw(&mut app, 60, 20);
+        let height = usize::from(app.viewport.height);
+        let rendered = app.projection.row_count();
+        click(&mut app, end, true);
+        draw(&mut app, 60, 20);
+        // The source is taller than the rendering but still fits the view.
+        assert!(app.projection.row_count() > rendered + 3);
+        assert!(app.projection.row_count() <= height);
+        assert_eq!(app.scroll, 0);
+        assert_eq!(app.document.selection().head, end);
+        // Where the source does not fit, the last page stays full and the
+        // caret stays in view.
+        let text = document(8);
+        let end = text.find("END").unwrap();
+        let mut app = App::new(text.clone(), None, true);
+        draw(&mut app, 60, 12);
+        click(&mut app, end, true);
+        draw(&mut app, 60, 12);
+        let height = usize::from(app.viewport.height);
+        let (row, _) = app.caret_cell().unwrap();
+        assert!(app.projection.row_count() > height);
+        assert!(app.scroll + height <= app.projection.row_count());
+        assert!(row >= app.scroll && row < app.scroll + height);
+        assert_eq!(app.document.text(), text);
     }
 
     #[test]
