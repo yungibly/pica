@@ -343,7 +343,8 @@ pub fn nest_item(
 /// The most text `nest_selected` reads to move a selection: the items it
 /// moves times the bytes of the document, each move parsing it again. About
 /// a quarter of a second of work; 800 items of a 20 KiB file fit, or 60 of
-/// a 256 KiB one.
+/// a 256 KiB one. A file made only of the selected items reaches it at
+/// about 650 of them.
 const MOVE_BUDGET: usize = 16 * 1024 * 1024;
 
 /// Tab or Shift+Tab over a selection of list items: each selected item
