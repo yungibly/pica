@@ -1769,8 +1769,12 @@ impl App {
     /// Tab or Shift+Tab on a Markdown list item's first line nests or lifts
     /// the item. False where ordinary indentation applies instead.
     fn nest_item(&mut self, outward: bool) -> bool {
-        if !self.document.selection().is_empty() || !self.markdown_analysis() {
+        if !self.markdown_analysis() {
             return false;
+        }
+        if !self.document.selection().is_empty() {
+            // Selected items each move a level; other selections indent.
+            return pica::editing::nest_selected(&mut self.document, outward).is_some();
         }
         self.ensure_parsed();
         pica::editing::nest_item(&mut self.document, Some(&self.parsed.snapshot), outward).is_some()
@@ -5395,6 +5399,26 @@ mod tests {
         app.document.select_all();
         key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
         assert_eq!(app.document.text(), "    - one\n    - two\n\n    text");
+        // Selected items nest one by one and stay a numbered list; a
+        // selection that is not all list items indents as before.
+        let mut app = App::new("1. one\n2. two\n3. three\n\ntext".into(), None, true);
+        app.document
+            .set_selection(Selection {
+                anchor: 8,
+                head: 20,
+            })
+            .unwrap();
+        key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+        assert_eq!(
+            app.document.text(),
+            "1. one\n   1. two\n   2. three\n\ntext"
+        );
+        assert_eq!(app.document.selected_text(), "   1. two\n   2. three");
+        key(&mut app, KeyCode::BackTab, KeyModifiers::SHIFT);
+        assert_eq!(app.document.text(), "1. one\n2. two\n3. three\n\ntext");
+        key(&mut app, KeyCode::Char('z'), KeyModifiers::CONTROL);
+        key(&mut app, KeyCode::Char('z'), KeyModifiers::CONTROL);
+        assert!(!app.document.can_undo());
         // A list in a plain-text file is only text.
         let mut app = App::new("- one\n- two".into(), None, false);
         key(&mut app, KeyCode::End, KeyModifiers::CONTROL);
