@@ -35,7 +35,7 @@ The defaults follow micro's. Press **Ctrl+G** for help and **Ctrl+E** for every 
 | Key | Action | Key | Action |
 | --- | --- | --- | --- |
 | Ctrl+S | Save | Ctrl+F | Find (Ctrl+N / Ctrl+P: next / previous) |
-| Ctrl+O | Open a file | Ctrl+R in Find | Replace |
+| Ctrl+O | Open a file | Ctrl+R / Alt+C in Find | Replace / match case |
 | Ctrl+T | New tab | Ctrl+L | Go to line |
 | Alt+, / Alt+. | Previous / next tab | Ctrl+K | Cut line; repeat to collect more |
 | Ctrl+Q | Close tab; the last one quits | Ctrl+D | Duplicate line or selection |
@@ -60,7 +60,7 @@ The default **Terminal** theme uses your terminal's own background, foreground, 
 
 A lone document has no tab row: just the text and one status line naming the file, its position, kind, and size. Tabs appear when a second document opens, or above the outline when it is showing. Indent guides for code are off until you choose them from Ctrl+E. **Nerd Font icons** are on by default in Ghostty, Kitty, and WezTerm outside tmux, and off elsewhere. Toggle them from Ctrl+E, or launch with `--icons nerd` or `--icons plain`.
 
-Theme, icon, outline, guide, indentation, and view choices are saved to `$XDG_CONFIG_HOME/pica/settings.conf` (by default `~/.config/pica/settings.conf`). `--no-state` disables preferences and recovery.
+Theme, icon, outline, guide, indentation, Find, and view choices are saved to `$XDG_CONFIG_HOME/pica/settings.conf` (by default `~/.config/pica/settings.conf`). `--no-state` disables preferences and recovery.
 
 ## Files and safety
 

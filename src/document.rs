@@ -1030,6 +1030,67 @@ impl Document {
         matches
     }
 
+    /// `find_matches`, or with `match_case` false the same search ignoring
+    /// letter case: each character of the text and the query is compared
+    /// through its Unicode lowercase mapping, and a match still starts and
+    /// ends on whole characters and graphemes of the source.
+    pub fn find_matches_with(&self, query: &str, match_case: bool) -> Vec<Range<usize>> {
+        if match_case {
+            return self.find_matches(query);
+        }
+        let text = self.text();
+        let needle: Vec<char> = query.chars().flat_map(char::to_lowercase).collect();
+        let Some(&first) = needle.first() else {
+            return Vec::new();
+        };
+        // Where a match may begin: an ASCII query only at its first letter
+        // in either case, which skips nearly all of a large file quickly.
+        let ascii = query.is_ascii().then(|| {
+            let lower = first as u8;
+            (lower, lower.to_ascii_uppercase())
+        });
+        let bytes = text.as_bytes();
+        let mut matches = Vec::new();
+        let mut cursor = 0;
+        while cursor < text.len() {
+            if let Some((lower, upper)) = ascii {
+                match bytes[cursor..]
+                    .iter()
+                    .position(|byte| *byte == lower || *byte == upper)
+                {
+                    Some(skip) => cursor += skip,
+                    None => break,
+                }
+            }
+            let end = if ascii.is_some() {
+                bytes
+                    .get(cursor..cursor + query.len())
+                    .filter(|candidate| candidate.eq_ignore_ascii_case(query.as_bytes()))
+                    .map(|_| cursor + query.len())
+            } else {
+                folded_match(text, cursor, &needle)
+            };
+            match end {
+                Some(end)
+                    if self.is_grapheme_boundary(cursor) && self.is_grapheme_boundary(end) =>
+                {
+                    matches.push(cursor..end);
+                    cursor = end;
+                }
+                _ => cursor += text[cursor..].chars().next().unwrap().len_utf8(),
+            }
+        }
+        matches
+    }
+
+    /// `replace_all` over the matches `find_matches_with` finds. Matches
+    /// that already read as the replacement make the whole command a no-op.
+    pub fn replace_all_with(&mut self, query: &str, replacement: &str, match_case: bool) -> usize {
+        self.break_undo_group();
+        let matches = self.find_matches_with(query, match_case);
+        self.replace_matches(matches, replacement)
+    }
+
     /// Replace all accepted source matches in one undo transaction. Returns
     /// the match count, even if replacement equals query (a complete no-op).
     /// Replacement text is literal and is never searched again in this command.
@@ -1039,8 +1100,15 @@ impl Document {
     pub fn replace_all(&mut self, query: &str, replacement: &str) -> usize {
         self.break_undo_group();
         let matches = self.find_matches(query);
+        self.replace_matches(matches, replacement)
+    }
+
+    fn replace_matches(&mut self, matches: Vec<Range<usize>>, replacement: &str) -> usize {
         let count = matches.len();
-        if count == 0 || query == replacement {
+        if matches
+            .iter()
+            .all(|range| &self.text()[range.clone()] == replacement)
+        {
             return count;
         }
         let selection = self.selection();
@@ -1604,6 +1672,25 @@ fn delta(old: &str, new: &str) -> (usize, usize, usize) {
 /// come from local context, so finding one costs the same anywhere in a
 /// document; between two ASCII characters other than CRLF there always is
 /// one.
+/// The end of a match of `needle`, lowercase characters, against the text
+/// from `start` with each of its characters lowercased; a match takes
+/// whole characters of the text.
+fn folded_match(text: &str, start: usize, needle: &[char]) -> Option<usize> {
+    let mut matched = 0;
+    for (offset, c) in text[start..].char_indices() {
+        if matched == needle.len() {
+            return Some(start + offset);
+        }
+        for folded in c.to_lowercase() {
+            if needle.get(matched) != Some(&folded) {
+                return None;
+            }
+            matched += 1;
+        }
+    }
+    (matched == needle.len()).then_some(text.len())
+}
+
 pub fn is_boundary(text: &str, offset: usize) -> bool {
     let bytes = text.as_bytes();
     if offset == 0 || offset == bytes.len() {

@@ -92,7 +92,8 @@ selects the word first clicked.
 
 | Key | Action |
 | --- | --- |
-| Ctrl+F | Find. The selection, if any, becomes the query. |
+| Ctrl+F | Find, ignoring letter case. The selection, if any, becomes the query. |
+| Alt+C, in Find | Match case, or ignore it again; the **Aa** toggle beside the count does the same |
 | Ctrl+N / Ctrl+P | Next / previous match. With Find closed, they reuse the last query; with no query yet, they open Find. |
 | Enter / Shift+Enter | Next / previous match, in Find |
 | Ctrl+R, in Find | Expand Find to Replace |
@@ -100,6 +101,11 @@ selects the word first clicked.
 | Enter, in With | Replace this match and go to the next |
 | Alt+R / Alt+A | Replace one / replace all |
 | Esc | Close Find |
+
+Find matches text literally and ignores letter case: `pica` finds `Pica` and
+`PICA`, and `école` finds `École`. Alt+C switches to an exact match and back.
+The choice applies to Replace as well, holds for every document, and is
+remembered. Find has no regular expressions or whole-word matching.
 
 ## Markdown
 
@@ -196,4 +202,6 @@ another user's file to you.
   the numbered one.
 - Tab follows each file's own indentation, where micro uses its `tabstospaces`
   and `tabsize` options.
+- Find matches literal text and ignores case until Alt+C asks for an exact
+  match; micro's find takes a regular expression.
 - There are no macros (Ctrl+U, Ctrl+J), and keys cannot be rebound yet.

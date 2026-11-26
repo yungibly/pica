@@ -102,6 +102,38 @@ fn chosen_indentation_applies_at_once_survives_restart_and_can_follow_files_agai
 }
 
 #[test]
+fn find_case_choice_is_saved_when_toggled_and_restored_on_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = Workspace::open(None).unwrap();
+    configure(&mut app, dir.path());
+    app.editor_mut().document.insert("Pica pica");
+    draw(&mut app, 100, 24);
+    key(&mut app, KeyCode::Char('f'), KeyModifiers::CONTROL);
+    app.handle_event(Event::Paste("pica".into()));
+    draw(&mut app, 100, 24);
+    assert!(!dir.path().join("config/settings.conf").exists());
+    key(&mut app, KeyCode::Char('c'), KeyModifiers::ALT);
+    draw(&mut app, 100, 24);
+    let saved = fs::read_to_string(dir.path().join("config/settings.conf")).unwrap();
+    assert!(saved.contains("find-case=match\n"), "{saved}");
+    assert_eq!(app.editor().document.text(), "Pica pica");
+    app.finish_state().unwrap();
+
+    crate::search::set_match_case(false);
+    let mut restarted = Workspace::open(None).unwrap();
+    configure(&mut restarted, dir.path());
+    assert!(crate::search::match_case());
+    draw(&mut restarted, 100, 24);
+    key(&mut restarted, KeyCode::Char('f'), KeyModifiers::CONTROL);
+    key(&mut restarted, KeyCode::Char('c'), KeyModifiers::ALT);
+    draw(&mut restarted, 100, 24);
+    let saved = fs::read_to_string(dir.path().join("config/settings.conf")).unwrap();
+    assert!(saved.contains("find-case=ignore\n"), "{saved}");
+    restarted.finish_state().unwrap();
+    crate::search::set_match_case(false);
+}
+
+#[test]
 fn icon_preference_survives_restart_without_changing_source_or_selection() {
     use crate::icons::{self, IconSet};
     let original = icons::current();
