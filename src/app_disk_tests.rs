@@ -326,3 +326,54 @@ fn a_version_that_cannot_be_loaded_is_reported_once_and_tried_again_when_it_chan
     assert_eq!(app.document.text(), "back\n");
     assert!(!app.check_external_change());
 }
+
+#[test]
+fn undone_edits_are_not_dropped_by_a_change_on_disk() {
+    let (_dir, path, mut app) = open("notes.md", "one\ntwo\n");
+    // Type, then undo back to the saved text: the buffer has no unsaved
+    // edits, and the typing is one Ctrl+Y away.
+    key(&mut app, KeyCode::End, KeyModifiers::CONTROL);
+    app.handle_event(Event::Paste("a paragraph worth keeping\n".into()));
+    assert!(app.document.is_dirty());
+    key(&mut app, KeyCode::Char('z'), KeyModifiers::CONTROL);
+    assert_eq!(app.document.text(), "one\ntwo\n");
+    assert!(!app.document.is_dirty() && app.document.can_redo());
+
+    // A reload would begin history again from the disk's text and lose it,
+    // so the change is reported and nothing is loaded.
+    write_settled(&path, "one\ntwo\nfrom elsewhere\n");
+    assert!(app.check_external_change());
+    assert_eq!(app.document.text(), "one\ntwo\n");
+    assert!(app.document.can_redo());
+    let line = status(&mut app);
+    assert!(
+        line.starts_with(" Disk file changed; not reloaded, so Ctrl+Y can still redo"),
+        "{line}"
+    );
+    assert!(app.message_is_error);
+    // Said once, however long the file stays changed.
+    assert!(!app.check_external_change());
+    write_settled(&path, "one\ntwo\nfrom elsewhere again\n");
+    assert!(!app.check_external_change());
+    assert_eq!(app.document.text(), "one\ntwo\n");
+
+    // Ctrl+Y still brings the typing back, whole.
+    key(&mut app, KeyCode::Char('y'), KeyModifiers::CONTROL);
+    assert_eq!(app.document.text(), "one\ntwo\na paragraph worth keeping\n");
+    assert!(app.document.is_dirty());
+    // And with it unsaved the file is left alone, as for any edit.
+    assert!(!app.check_external_change());
+    assert_eq!(app.document.text(), "one\ntwo\na paragraph worth keeping\n");
+
+    // Reload stays the explicit way to take the disk's version, and the
+    // text it replaces is one undo away.
+    key(&mut app, KeyCode::Char('z'), KeyModifiers::CONTROL);
+    key(&mut app, KeyCode::F(5), KeyModifiers::NONE);
+    assert_eq!(app.document.text(), "one\ntwo\nfrom elsewhere again\n");
+    assert!(!app.document.is_dirty() && !app.document.can_redo());
+    // With nothing left to redo, the buffer follows its file again.
+    write_settled(&path, "one\ntwo\nthird version\n");
+    assert!(app.check_external_change());
+    assert_eq!(app.document.text(), "one\ntwo\nthird version\n");
+    assert!(app.message.contains("reloaded"));
+}

@@ -396,14 +396,17 @@ impl App {
     /// Poll the file on disk. A buffer without unsaved edits follows its
     /// file: a changed file is reloaded in place, keeping the reader's place.
     /// A buffer with edits is never touched: the change is reported, and
-    /// Reload and Save as decide. Typing groups are left alone either way.
-    /// Returns whether to redraw.
+    /// Reload and Save as decide. Edits that were undone count, while Ctrl+Y
+    /// can still bring them back: a reload starts history afresh from the
+    /// disk's text and would drop them. Typing groups are left alone either
+    /// way. Returns whether to redraw.
     pub(crate) fn check_external_change(&mut self) -> bool {
         let Some(file) = &mut self.file else {
             return false;
         };
         let status = file.external_change();
-        if status == ExternalChange::Changed && !self.document.is_dirty() {
+        let undone = !self.document.is_dirty() && self.document.can_redo();
+        if status == ExternalChange::Changed && !self.document.is_dirty() && !undone {
             return self.follow_disk();
         }
         if self.last_disk_change.as_ref() == Some(&status) {
@@ -420,6 +423,9 @@ impl App {
                     return true;
                 }
                 return false;
+            }
+            ExternalChange::Changed if undone => {
+                "Disk file changed; not reloaded, so Ctrl+Y can still redo. Ctrl+E: Reload".into()
             }
             ExternalChange::Changed => {
                 "Disk file changed; your text is intact. Ctrl+E: Reload or Save as".into()
