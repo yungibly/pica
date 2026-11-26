@@ -2983,7 +2983,7 @@ impl App {
             let count_fits = query_row.width >= 8 + 8 + 1 + count_width;
             // The case toggle joins the count where both leave the input
             // its eight cells; Alt+C works at any width.
-            let case_fits = query_row.width >= 8 + 8 + 1 + count_width + CASE_WIDTH + 1;
+            let case_fits = query_row.width >= 8 + 8 + 2 + count_width + CASE_WIDTH;
             let field_width = if case_fits {
                 query_row.width - count_width - CASE_WIDTH - 2
             } else if count_fits {
@@ -5799,7 +5799,8 @@ mod tests {
         key(&mut app, KeyCode::Char('c'), KeyModifiers::ALT);
         assert!(crate::search::match_case() && app.case_toggled);
         let terminal = draw(&mut app, 100, 12);
-        assert_eq!(app.search.matches, [10..14]);
+        assert_eq!(app.search.matches.len(), 1);
+        assert_eq!(app.search.matches[0], 10..14);
         assert!(status_text(&terminal, 11).contains("Find matches case"));
         let lit = terminal.backend().buffer()[(toggle.area.x + 1, toggle.area.y)].style();
         assert_ne!(quiet, lit);
