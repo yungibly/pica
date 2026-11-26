@@ -40,9 +40,9 @@ Keys, as in micro (Ctrl+G lists them all):
   Ctrl+R  Line numbers; in Markdown, live or source view; in Find, Replace
   Markdown: Ctrl+B bold, Alt+I italic, Alt+T task, Enter continues lists
 
-Saving never overwrites a file that changed on disk, and Save As (from
-Ctrl+E) needs a new filename. Saving through a symbolic link replaces the
-file it points to and keeps the link.
+Saving never overwrites a file that changed on disk without asking, and
+Save as (from Ctrl+E) asks before it replaces any existing file. Saving
+through a symbolic link replaces the file it points to and keeps the link.
 ";
 
 /// A 1-based line and grapheme column.

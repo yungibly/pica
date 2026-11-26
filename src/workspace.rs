@@ -195,7 +195,11 @@ impl Workspace {
                     let context = |error: io::Error| {
                         io::Error::new(
                             error.kind(),
-                            format!("{}: {error}", safe_text(&path.display().to_string())),
+                            format!(
+                                "{}: {}",
+                                safe_text(&path.display().to_string()),
+                                crate::file_io::explain(&error)
+                            ),
                         )
                     };
                     let identity = path_identity(&path).map_err(context)?;
@@ -300,7 +304,11 @@ impl Workspace {
             .unwrap_or_else(|| PathBuf::from("."));
         match Browser::new(directory) {
             Ok(browser) => self.browser = Some(browser),
-            Err(error) => self.editor_mut().set_message(error.to_string()),
+            Err(error) => {
+                let problem = crate::file_io::explain(&error);
+                self.editor_mut()
+                    .set_message(format!("Cannot open the folder: {problem}"));
+            }
         }
         self.tab_hits.clear();
         self.sidebar.invalidate();
@@ -413,11 +421,12 @@ impl Workspace {
             Ok(None) => true,
             Ok(Some(_)) => {
                 self.editor_mut()
-                    .set_message("That path is open in another tab. Choose a different filename.");
+                    .save_as_problem("That path is open in another tab. Choose another name.");
                 false
             }
             Err(error) => {
-                self.editor_mut().set_message(error.to_string());
+                let problem = crate::file_io::explain(&error);
+                self.editor_mut().save_as_problem(problem);
                 false
             }
         }
@@ -1137,7 +1146,10 @@ impl Workspace {
     fn forward(&mut self, event: Event) {
         self.tab_hits.clear();
         self.sidebar.invalidate();
-        let save_target = if matches!(&event, Event::Key(key) if key.code == KeyCode::Enter) {
+        // Enter saves to a new name; Y answers a question Save As asked.
+        let save_target = if matches!(&event, Event::Key(key)
+            if matches!(key.code, KeyCode::Enter | KeyCode::Char('y' | 'Y')))
+        {
             self.editor()
                 .pending_save_path()
                 .and_then(|path| path_identity(&path).ok().map(|identity| (path, identity)))
@@ -2031,6 +2043,58 @@ mod tests {
     }
 
     #[test]
+    fn save_as_over_a_file_asks_and_then_owns_the_path_among_tabs() {
+        let dir = tempfile::tempdir().unwrap();
+        let taken = dir.path().join("taken.md");
+        std::fs::write(&taken, "old").unwrap();
+        let mut app = Workspace::open(None).unwrap();
+        app.handle_event(Event::Paste("mine".into()));
+        key(&mut app, KeyCode::F(4), KeyModifiers::NONE);
+        app.handle_event(Event::Paste(taken.display().to_string()));
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert!(app.editor().saving_as());
+        assert_eq!(std::fs::read_to_string(&taken).unwrap(), "old");
+        let snapshot = crate::simulation::snapshot(&mut app, 100, 24).unwrap();
+        assert!(snapshot.contains("Replace file?"), "{snapshot}");
+        plain(&mut app, 'y');
+        assert_eq!(std::fs::read_to_string(&taken).unwrap(), "mine");
+        assert!(!app.editor().saving_as() && !app.editor().document.is_dirty());
+        assert_eq!(app.editor().path(), Some(taken.as_path()));
+        // The tab now is that file: opening it again comes back here.
+        assert_eq!(
+            app.tabs[0].identity,
+            Some(std::fs::canonicalize(&taken).unwrap())
+        );
+        app.open_path(taken.clone()).unwrap();
+        assert_eq!(app.tabs.len(), 1);
+        // Another tab cannot take the path: that is refused, not asked.
+        ctrl(&mut app, 't');
+        app.handle_event(Event::Paste("second".into()));
+        key(&mut app, KeyCode::F(4), KeyModifiers::NONE);
+        app.handle_event(Event::Paste(taken.display().to_string()));
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        let snapshot = crate::simulation::snapshot(&mut app, 100, 24).unwrap();
+        assert!(snapshot.contains("open in another tab"), "{snapshot}");
+        assert!(!snapshot.contains("Replace file?"), "{snapshot}");
+        plain(&mut app, 'y');
+        assert!(app.editor().saving_as());
+        assert_eq!(std::fs::read_to_string(&taken).unwrap(), "mine");
+        // Closing with Save, then replacing a third file, closes the tab.
+        key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        let third = dir.path().join("third.md");
+        std::fs::write(&third, "third").unwrap();
+        ctrl(&mut app, 'q');
+        plain(&mut app, 'y');
+        app.handle_event(Event::Paste(third.display().to_string()));
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(app.tabs.len(), 2);
+        crate::simulation::snapshot(&mut app, 100, 24).unwrap();
+        plain(&mut app, 'y');
+        assert_eq!(app.tabs.len(), 1);
+        assert_eq!(std::fs::read_to_string(third).unwrap(), "second");
+    }
+
+    #[test]
     fn typing_in_the_browser_narrows_it_and_never_reaches_the_document() {
         let dir = tempfile::tempdir().unwrap();
         let first = dir.path().join("first.md");
@@ -2577,7 +2641,7 @@ mod tests {
         key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
         key(&mut app, KeyCode::F(4), KeyModifiers::NONE);
         let text = crate::simulation::snapshot(&mut app, 120, 36).unwrap();
-        assert!(text.contains("Save As · new filename"));
+        assert!(text.contains("Save as") && text.contains("Tab completes names."));
         assert!(app.sidebar.hits.is_empty());
     }
 

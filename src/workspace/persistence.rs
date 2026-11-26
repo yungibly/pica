@@ -407,12 +407,15 @@ impl Workspace {
             return;
         };
         let snap = &candidate.snapshot;
-        let editor = App::recovered(
+        let mut editor = App::recovered(
             snap.source.clone(),
             snap.selection,
             snap.live,
             snap.markdown,
         );
+        // Save As starts from the file the copy came from; saving there
+        // asks first, like replacing any other file.
+        editor.suggest_save_path(snap.original_path.clone());
         let number = self.next_number;
         let recovered = Some((snap.label.clone(), snap.original_path.clone()));
         let tab = Tab {
@@ -454,7 +457,7 @@ impl Workspace {
         match result {
             Ok(()) => self
                 .editor_mut()
-                .inform("Recovered as an unsaved copy. Save As chooses a new filename."),
+                .inform("Recovered as an unsaved copy · Ctrl+S saves it"),
             Err(error) => self.editor_mut().set_message(format!(
                 "Recovered in memory; old recovery copy retained: {error}"
             )),
