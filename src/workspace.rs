@@ -101,6 +101,9 @@ enum ChoiceMode {
     Indent {
         choices: Vec<Option<Indent>>,
     },
+    TabWidth {
+        widths: Vec<usize>,
+    },
     Documents {
         numbers: Vec<usize>,
     },
@@ -677,6 +680,10 @@ impl Workspace {
                 self.open_indentation();
                 return;
             }
+            Command::TabWidth => {
+                self.open_tab_width();
+                return;
+            }
             Command::Icons => {
                 let next = match crate::icons::current() {
                     crate::icons::IconSet::Plain => crate::icons::IconSet::Nerd,
@@ -782,6 +789,32 @@ impl Workspace {
         self.sidebar.invalidate();
     }
 
+    /// Choose how many columns a tab character spans in every view.
+    fn open_tab_width(&mut self) {
+        self.editor_mut().deactivate();
+        let widths = vec![2, 4, 8];
+        let current = pica::editing::tab_width();
+        let entries = widths
+            .iter()
+            .map(|width| (format!("{width} columns"), String::new()))
+            .collect();
+        let selected = widths
+            .iter()
+            .position(|width| *width == current)
+            .unwrap_or(1);
+        self.choice = Some(Choice {
+            picker: Picker::new(
+                "Tab width",
+                "↑↓ select · ⏎ apply · esc cancel",
+                entries,
+                selected,
+            ),
+            mode: ChoiceMode::TabWidth { widths },
+        });
+        self.tab_hits.clear();
+        self.sidebar.invalidate();
+    }
+
     fn handle_choice(&mut self, event: Event) {
         let mut choice = self.choice.take().expect("open picker");
         match choice.picker.handle(event) {
@@ -809,6 +842,14 @@ impl Workspace {
                             None => format!("Tab follows each file: {name} here"),
                             Some(_) => format!("Tab indents with {name} in every file"),
                         });
+                    }
+                }
+                ChoiceMode::TabWidth { widths } => {
+                    if let Some(width) = widths.get(index) {
+                        pica::editing::set_tab_width(*width);
+                        self.persist_tab_width();
+                        self.editor_mut()
+                            .inform(format!("Tabs are {width} columns wide"));
                     }
                 }
                 ChoiceMode::Documents { numbers } => {

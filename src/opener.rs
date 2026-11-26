@@ -1,6 +1,6 @@
 //! Hands a web or mail address to the platform's opener: `xdg-open` on
-//! Linux and the BSDs, `/usr/bin/open` on macOS. Callers pass only addresses that
-//! `links::classify` accepted, and only when the user asked.
+//! Linux and the BSDs, `/usr/bin/open` on macOS. Callers pass only
+//! addresses that `links::classify` accepted, and only when the user asked.
 //!
 //! The opener is run directly, never through a shell, with the address as
 //! its one argument, so nothing in an address is ever interpreted. It gets

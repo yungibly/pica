@@ -241,6 +241,40 @@ fn bound_keys_stay_out_of_prompts_pickers_and_the_browser() {
 }
 
 #[test]
+fn a_chosen_tab_width_is_saved_and_restored_on_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = Workspace::open(None).unwrap();
+    configure(&mut app, dir.path());
+    assert_eq!(pica::editing::tab_width(), 4);
+    // The picker opens on the current width; Esc changes nothing.
+    app.run_command(Command::TabWidth);
+    let shown = screen(&mut app, 80, 24);
+    assert!(
+        shown.contains("2 columns") && shown.contains("8 columns"),
+        "{shown}"
+    );
+    key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+    assert!(!dir.path().join("config/settings.conf").exists());
+    app.run_command(Command::TabWidth);
+    draw(&mut app, 80, 24);
+    key(&mut app, KeyCode::Down, KeyModifiers::NONE);
+    draw(&mut app, 80, 24);
+    key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    assert_eq!(pica::editing::tab_width(), 8);
+    assert!(screen(&mut app, 80, 24).contains("Tabs are 8 columns wide"));
+    let saved = fs::read_to_string(dir.path().join("config/settings.conf")).unwrap();
+    assert!(saved.contains("tab-width=8\n"), "{saved}");
+    app.finish_state().unwrap();
+
+    pica::editing::set_tab_width(4);
+    let mut restarted = Workspace::open(None).unwrap();
+    configure(&mut restarted, dir.path());
+    assert_eq!(pica::editing::tab_width(), 8);
+    restarted.finish_state().unwrap();
+    pica::editing::set_tab_width(4);
+}
+
+#[test]
 fn find_case_choice_is_saved_when_toggled_and_restored_on_restart() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = Workspace::open(None).unwrap();

@@ -98,7 +98,8 @@ step between its lines, so Tab never mixes the two. A file with no
 indentation yet uses its type's convention: tabs for Makefiles, Go and
 tab-separated values, two spaces for YAML, JSON, JavaScript, TypeScript, HTML,
 CSS, Ruby and a few others, and four spaces otherwise. Tab characters are
-always drawn four columns wide. To use one style in every file, choose
+drawn four columns wide; **Tab width** in Ctrl+E changes that to two or
+eight, in every file. To use one style in every file, choose
 **Indentation: tabs or spaces** from Ctrl+E: tabs, or two, four or eight
 spaces; "Follow each file" returns to the default. Indenting a selection
 leaves its empty lines empty.
@@ -223,7 +224,7 @@ generated files quick to edit.
 
 The palette also holds the commands without a key of their own: Save as,
 Reload, Quit pica (all tabs), the outline sidebar, Switch document, Go to
-heading, themes, icons, indentation and document recovery. In the palette, pickers and
+heading, themes, icons, indentation, tab width and document recovery. In the palette, pickers and
 the go-to-line prompt, Esc or Ctrl+Q closes them without doing anything.
 
 The outline sidebar is a preference: once turned on, it shows beside every
@@ -305,6 +306,7 @@ below apply to your keys too: some combinations never reach a program.
 | `toggle-icons` | Toggle Nerd Font icons |
 | `toggle-indent-guides` | Toggle indent guides |
 | `indentation` | Indentation: tabs or spaces |
+| `tab-width` | Tab width |
 | `reload` | Reload file from disk |
 | `recover-documents` | Recover documents |
 

@@ -170,6 +170,8 @@ type LayoutKey = (
     bool,
     Theme,
     crate::icons::IconSet,
+    // The width of a tab character.
+    usize,
 );
 
 /// Files larger than this open in large-file mode: plain source, without
@@ -215,6 +217,8 @@ struct Wraps {
     document: u64,
     revision: u64,
     width: usize,
+    /// The width of a tab character these rows were laid out with.
+    tab: usize,
     /// The line's start, which is its first row's.
     start: usize,
     rows: Vec<usize>,
@@ -1095,6 +1099,7 @@ impl App {
             live,
             theme::current_theme(),
             crate::icons::current(),
+            pica::editing::tab_width(),
         )
     }
 
@@ -1167,7 +1172,11 @@ impl App {
         let Some(wraps) = &mut self.wraps else {
             return;
         };
-        if wraps.document != id || wraps.width != width || live {
+        if wraps.document != id
+            || wraps.width != width
+            || wraps.tab != pica::editing::tab_width()
+            || live
+        {
             self.wraps = None;
             return;
         }
@@ -1265,6 +1274,7 @@ impl App {
                     document: id,
                     revision,
                     width,
+                    tab: pica::editing::tab_width(),
                     start,
                     rows: starts.collect(),
                 });
@@ -3883,12 +3893,13 @@ fn row_width(row: &crate::projection::VisualRow) -> usize {
 }
 
 /// The display column where a source line's text begins, or `None` for a
-/// blank line. Tabs advance to the next multiple of four.
+/// blank line. Tabs advance to the next tab stop.
 fn source_indent(line: &str) -> Option<usize> {
+    let tab = pica::editing::tab_width();
     let mut column = 0;
     for c in line.trim_start_matches('\u{feff}').chars() {
         match c {
-            '\t' => column += 4 - column % 4,
+            '\t' => column += tab - column % tab,
             c if c.is_whitespace() => column += 1,
             _ => return Some(column),
         }
@@ -5321,6 +5332,32 @@ mod tests {
         key(&mut app, KeyCode::End, KeyModifiers::CONTROL);
         key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
         assert_eq!(app.document.text(), "- one\n- two   ");
+    }
+
+    #[test]
+    fn a_chosen_tab_width_redraws_tabs_at_once() {
+        let text = "\tone\n\t\ttwo\na\tb\n";
+        let mut app = App::new(text.into(), None, false);
+        app.ruler = false;
+        let column = |app: &mut App, needle: &str| {
+            draw(app, 60, 10);
+            app.projection.cursor(text.find(needle).unwrap()).1
+        };
+        assert_eq!(column(&mut app, "one"), 4);
+        assert_eq!(column(&mut app, "two"), 8);
+        assert_eq!(column(&mut app, "b"), 4);
+        pica::editing::set_tab_width(8);
+        assert_eq!(column(&mut app, "one"), 8);
+        assert_eq!(column(&mut app, "two"), 16);
+        assert_eq!(column(&mut app, "b"), 8);
+        assert_eq!(source_indent("\tx"), Some(8));
+        pica::editing::set_tab_width(2);
+        assert_eq!(column(&mut app, "one"), 2);
+        assert_eq!(column(&mut app, "two"), 4);
+        assert_eq!(column(&mut app, "b"), 2);
+        assert_eq!(source_indent("  \tx"), Some(4));
+        assert_eq!(app.document.text(), text);
+        pica::editing::set_tab_width(4);
     }
 
     #[test]

@@ -51,11 +51,12 @@ pub(super) enum Command {
     Icons,
     Guides,
     Indentation,
+    TabWidth,
     Reload,
     Recover,
 }
 impl Command {
-    pub const ALL: [Self; 42] = [
+    pub const ALL: [Self; 43] = [
         Self::New,
         Self::Open,
         Self::Save,
@@ -96,6 +97,7 @@ impl Command {
         Self::Icons,
         Self::Guides,
         Self::Indentation,
+        Self::TabWidth,
         Self::Reload,
         Self::Recover,
     ];
@@ -141,6 +143,7 @@ impl Command {
             Self::Icons => "Toggle Nerd Font icons",
             Self::Guides => "Toggle indent guides",
             Self::Indentation => "Indentation: tabs or spaces…",
+            Self::TabWidth => "Tab width…",
             Self::Reload => "Reload file from disk",
             Self::Recover => "Recover documents…",
         }
@@ -189,6 +192,7 @@ impl Command {
             Self::Icons => "toggle-icons",
             Self::Guides => "toggle-indent-guides",
             Self::Indentation => "indentation",
+            Self::TabWidth => "tab-width",
             Self::Reload => "reload",
             Self::Recover => "recover-documents",
         }

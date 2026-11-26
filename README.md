@@ -60,7 +60,7 @@ The default **Terminal** theme uses your terminal's own background, foreground, 
 
 A lone document has no tab row: just the text and one status line naming the file, its position, kind, and size. Tabs appear when a second document opens, or above the outline when it is showing. Indent guides for code are off until you choose them from Ctrl+E. **Nerd Font icons** are on by default in Ghostty, Kitty, and WezTerm outside tmux, and off elsewhere. Toggle them from Ctrl+E, or launch with `--icons nerd` or `--icons plain`.
 
-Theme, icon, outline, guide, indentation, Find, word wrap, and view choices are saved to `$XDG_CONFIG_HOME/pica/settings.conf` (by default `~/.config/pica/settings.conf`). `--no-state` disables preferences and recovery.
+Theme, icon, outline, guide, indentation, tab width, Find, word wrap, and view choices are saved to `$XDG_CONFIG_HOME/pica/settings.conf` (by default `~/.config/pica/settings.conf`). `--no-state` disables preferences and recovery.
 
 ## Files and safety
 
