@@ -598,3 +598,35 @@ fn clicks_in_an_unwrapped_view_scrolled_sideways_reach_the_text_under_them() {
     session.save_and_expect(&expected);
     session.finish();
 }
+
+#[test]
+fn ctrl_click_on_a_relative_link_opens_that_file_in_a_tab() {
+    // Only a local link is followed here: nothing in this suite may start
+    // the platform's opener.
+    let source = "See [other](other.md) here.\n";
+    let mut session = Session::start(source);
+    let other = session.fixture.with_file_name("other.md");
+    fs::write(&other, "target\n").unwrap();
+    // The live prose column starts six cells in, and the caret's own block
+    // shows its source, so terminal column 13 is the "t" of the label.
+    // Button 16 is a left press with Ctrl held.
+    let named = count(&session.transcript, b"other.md");
+    session.send(b"\x1b[<16;13;1M\x1b[<16;13;1m");
+    session.until("the linked file's tab", |s| {
+        count(&s.transcript, b"other.md") > named
+    });
+    // Typing and saving now reach the linked file, not the first one.
+    session.send(b"!");
+    session.send(SAVE);
+    session.until("the linked file saved", |_| {
+        fs::read_to_string(&other).unwrap() == "!target\n"
+    });
+    assert_eq!(fs::read_to_string(&session.fixture).unwrap(), source);
+    // Closing its tab returns to the first document, which then quits.
+    let shown = count(&session.transcript, b"protocol.md");
+    session.send(QUIT);
+    session.until("the first document again", |s| {
+        count(&s.transcript, b"protocol.md") > shown
+    });
+    session.finish();
+}

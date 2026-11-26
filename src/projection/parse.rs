@@ -90,6 +90,17 @@ pub struct Parsed {
     pub(super) headings: Vec<Heading>,
     pub(super) rules: Vec<Range<usize>>,
     pub(super) tables: Vec<Table>,
+    /// Links and images in source order, with where each one leads.
+    links: Vec<Link>,
+}
+
+/// A link or image: its whole source and the destination the parser
+/// resolved for it, which for a reference link is its definition's.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Link {
+    pub range: Range<usize>,
+    pub destination: String,
+    pub image: bool,
 }
 
 impl Parsed {
@@ -134,6 +145,7 @@ impl Parsed {
             headings: Vec::new(),
             rules: Vec::new(),
             tables: Vec::new(),
+            links: Vec::new(),
         };
         let colors = theme::palette();
         if markdown {
@@ -187,6 +199,29 @@ impl Parsed {
             );
         }
         code_styles(spans)
+    }
+
+    /// The link at `offset`: the one holding it, or else one it touches
+    /// the end of, as a caret just after a link does. A badge is an image
+    /// inside a link, and there the link wins, as a click on it would.
+    pub fn link_at(&self, offset: usize) -> Option<&Link> {
+        let after = self
+            .links
+            .partition_point(|link| link.range.start <= offset);
+        let mut touching = None;
+        let mut inside: Option<&Link> = None;
+        for link in self.links[..after].iter().rev() {
+            if offset < link.range.end {
+                // Outer links come first in the source, so later finds win
+                // unless an image is all that held the offset so far.
+                if inside.is_none_or(|found| found.image || !link.image) {
+                    inside = Some(link);
+                }
+            } else if offset == link.range.end && touching.is_none() {
+                touching = Some(link);
+            }
+        }
+        inside.or(touching)
     }
 
     fn measure_reach(&mut self) {
@@ -349,7 +384,12 @@ impl Parsed {
                         .push((range.clone(), muted.add_modifier(Modifier::CROSSED_OUT)));
                     self.delimiters(source, range, &["~~", "~"], muted);
                 }
-                Event::Start(Tag::Link { .. }) => {
+                Event::Start(Tag::Link { dest_url, .. }) => {
+                    self.links.push(Link {
+                        range: range.clone(),
+                        destination: dest_url.into_string(),
+                        image: false,
+                    });
                     self.styles.push((
                         range.clone(),
                         Style::default()
@@ -373,7 +413,12 @@ impl Parsed {
                         self.syntax(close..link.end, muted);
                     }
                 }
-                Event::Start(Tag::Image { .. }) => {
+                Event::Start(Tag::Image { dest_url, .. }) => {
+                    self.links.push(Link {
+                        range: range.clone(),
+                        destination: dest_url.into_string(),
+                        image: true,
+                    });
                     self.styles.push((
                         range.clone(),
                         Style::default()

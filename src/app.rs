@@ -118,6 +118,7 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
         &[
             ("Ctrl+R", "Line numbers in code"),
             ("Alt+Z", "Word wrap on or off"),
+            ("Alt+L", "Open link; or Ctrl+click"),
             ("Ctrl+E", "Outline, headings, themes"),
             ("Ctrl+G", "This help"),
         ],
@@ -279,6 +280,11 @@ pub struct App {
     pub(crate) wrap: bool,
     /// The first visible column of an unwrapped view.
     side: usize,
+    /// The destination of a link the pointer asked to follow; the workspace
+    /// takes it, since opening one may add a tab.
+    pub(crate) link_request: Option<String>,
+    /// The key that opens links, for the status line; the workspace sets it.
+    pub(crate) link_key: String,
     preferred_column: Option<usize>,
     affinity: Affinity,
     dragging: bool,
@@ -790,6 +796,8 @@ impl App {
             top: Anchor::default(),
             wrap: true,
             side: 0,
+            link_request: None,
+            link_key: String::new(),
             preferred_column: None,
             affinity: Affinity::Downstream,
             dragging: false,
@@ -951,6 +959,57 @@ impl App {
 
     fn page_height(&self) -> usize {
         usize::from(self.viewport.height).max(1)
+    }
+
+    /// The link at `offset` and what it covers: a Markdown link or image
+    /// there, or else a web or mail address written out in the text of any
+    /// kind of file. A link also answers at its end, where a caret that has
+    /// just passed it sits. The analysis must be current.
+    fn link_at(&self, offset: usize) -> Option<(std::ops::Range<usize>, String)> {
+        if self.markdown_analysis()
+            && self.analyzed == self.version()
+            && let Some(link) = self.parsed.link_at(offset)
+        {
+            return Some((link.range.clone(), link.destination.clone()));
+        }
+        let text = self.document.text();
+        crate::links::bare_url(text, offset).map(|range| (range.clone(), text[range].to_owned()))
+    }
+
+    /// The destination of the link under the caret, for the command that
+    /// opens it.
+    pub(crate) fn link_at_caret(&mut self) -> Option<String> {
+        self.ensure_parsed();
+        self.link_at(self.document.selection().head)
+            .map(|(_, destination)| destination)
+    }
+
+    /// The destination of the link drawn in a cell of the window: only a
+    /// cell holding the link's own text counts, not the blank beside it.
+    fn link_under(&self, row: usize, column: usize) -> Option<String> {
+        let glyph = self
+            .projection
+            .rows(row..row + 1)
+            .first()?
+            .glyphs
+            .iter()
+            .find(|glyph| glyph.column <= column && column < glyph.column + glyph.width)?;
+        let offset = glyph.source.start;
+        (!glyph.source.is_empty())
+            .then(|| self.link_at(offset))
+            .flatten()
+            .filter(|(range, _)| range.contains(&offset))
+            .map(|(_, destination)| destination)
+    }
+
+    /// The folder relative links are taken from: the document's own, or the
+    /// working directory for one that has no file yet.
+    pub(crate) fn folder(&self) -> PathBuf {
+        self.file
+            .as_ref()
+            .and_then(|file| file.path.parent())
+            .map(PathBuf::from)
+            .unwrap_or_default()
     }
 
     /// Whether lines stay on one row each and the view scrolls sideways:
@@ -1975,6 +2034,16 @@ impl App {
                         Ok(_) => self.inform("Task toggled · Ctrl+Z undo"),
                         Err(error) => self.set_message(error.to_string()),
                     }
+                    self.follow_cursor = false;
+                    return;
+                }
+                // Ctrl+click follows the link drawn in that cell, and
+                // leaves the caret and the view where they are.
+                if event.modifiers.contains(KeyModifiers::CONTROL)
+                    && let Some(destination) = self.link_under(row, col)
+                {
+                    self.link_request = Some(destination);
+                    self.last_click = None;
                     self.follow_cursor = false;
                     return;
                 }
@@ -3478,6 +3547,31 @@ impl App {
         if !bar.push(Side::Left, &location, base, false) {
             bar.push(Side::Left, &format!("{line}:{col}"), base, false);
         }
+        // On a link, the right side says where it leads and which key
+        // follows it: in the live view its destination is otherwise hidden,
+        // and a reference link's is somewhere else in the file.
+        if let Some((_, destination)) = self.link_at(self.document.selection().head) {
+            let key = if self.link_key.is_empty() {
+                String::new()
+            } else {
+                format!("{} opens", self.link_key)
+            };
+            for hint in [key.as_str(), ""] {
+                let mut trial = bar.clone();
+                if !hint.is_empty() && !trial.push(Side::Right, hint, base, false) {
+                    continue;
+                }
+                let whole = format!("→ {}", safe_text(&destination));
+                let shown = ui::clipped(&whole, trial.room());
+                // Too little of an address to tell it from another is noise.
+                if (shown == whole || UnicodeWidthStr::width(shown.as_str()) >= 16)
+                    && trial.push(Side::Right, &shown, base, false)
+                {
+                    trial.draw(frame);
+                    return;
+                }
+            }
+        }
         let newline = match pica::editing::preferred_newline(self.document.text(), 0) {
             "\r\n" => "CRLF",
             "\r" => "CR",
@@ -3891,6 +3985,12 @@ impl StatusBar {
 
     fn cells(&self, text: &str, badge: bool) -> usize {
         UnicodeWidthStr::width(text) + 2 + 2 * usize::from(badge && self.rounded)
+    }
+
+    /// The widest plain text that still fits as one more segment.
+    fn room(&self) -> usize {
+        let gaps = usize::from(!self.left.is_empty()) + usize::from(!self.right.is_empty());
+        usize::from(self.area.width).saturating_sub(self.used + gaps + 3)
     }
 
     /// Room for the segment and a one-cell gap from its neighbours.

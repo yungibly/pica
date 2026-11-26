@@ -24,6 +24,7 @@ pub(super) enum Command {
     Ruler,
     Wrap,
     Sidebar,
+    OpenLink,
     NextTab,
     PreviousTab,
     GoToLine,
@@ -54,7 +55,7 @@ pub(super) enum Command {
     Recover,
 }
 impl Command {
-    pub const ALL: [Self; 41] = [
+    pub const ALL: [Self; 42] = [
         Self::New,
         Self::Open,
         Self::Save,
@@ -68,6 +69,7 @@ impl Command {
         Self::Ruler,
         Self::Wrap,
         Self::Sidebar,
+        Self::OpenLink,
         Self::NextTab,
         Self::PreviousTab,
         Self::GoToLine,
@@ -111,6 +113,7 @@ impl Command {
             Self::View => "Toggle live / source view",
             Self::Ruler => "Toggle line numbers",
             Self::Wrap => "Toggle word wrap",
+            Self::OpenLink => "Open link under caret",
             Self::Sidebar => "Toggle outline sidebar",
             Self::NextTab => "Next tab",
             Self::PreviousTab => "Previous tab",
@@ -158,6 +161,7 @@ impl Command {
             Self::View => "toggle-view",
             Self::Ruler => "toggle-line-numbers",
             Self::Wrap => "toggle-word-wrap",
+            Self::OpenLink => "open-link",
             Self::Sidebar => "toggle-outline",
             Self::NextTab => "next-tab",
             Self::PreviousTab => "previous-tab",
@@ -203,6 +207,7 @@ impl Command {
             Self::View if markdown => "Ctrl+R",
             Self::Ruler if !markdown => "Ctrl+R",
             Self::Wrap => "Alt+Z",
+            Self::OpenLink => "Alt+L",
             Self::NextTab => "Alt+.",
             Self::PreviousTab => "Alt+,",
             Self::GoToLine => "Ctrl+L",
