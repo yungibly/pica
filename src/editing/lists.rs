@@ -335,15 +335,26 @@ pub fn nest_item(
     Some(replace_many(document, edits))
 }
 
+/// The most text `nest_selected` reads to move a selection: the items it
+/// moves times the bytes of the document, each move parsing it again. About
+/// a quarter of a second of work; 800 items of a 20 KiB file fit, or 60 of
+/// a 256 KiB one.
+const MOVE_BUDGET: usize = 16 * 1024 * 1024;
+
 /// Tab or Shift+Tab over a selection of list items: each selected item
 /// moves a level, in order, as `nest_item` moves one, and the whole move is
 /// one undo step. Items selected along with their parent move with it. The
 /// selection then covers the same lines.
 ///
+/// A later item that cannot move, such as one already at the top level
+/// among items being lifted, stays where it is.
+///
 /// `None`, leaving ordinary indentation to the caller, when the selection
 /// is empty, touches a line that is not part of a selected list item, or
 /// starts at an item that cannot move that way: the first of its list for
-/// Tab, a top-level one for Shift+Tab.
+/// Tab, a top-level one for Shift+Tab. Also when the move would take more
+/// than `MOVE_BUDGET` of work: every item is found afresh in the text the
+/// moves before it left, so thousands at once in a large file would stall.
 pub fn nest_selected(document: &mut Document, outward: bool) -> Option<bool> {
     let selection = document.selection();
     if selection.is_empty() {
@@ -357,20 +368,25 @@ pub fn nest_selected(document: &mut Document, outward: bool) -> Option<bool> {
     let open_ended = last > first && document.line_start(last) == range.end;
     last -= usize::from(open_ended);
     let snapshot = document.markdown();
-    let items: Vec<&Block> = snapshot
+    // Every item, by where the line it begins on starts.
+    let mut items: Vec<(usize, &Block)> = snapshot
         .blocks
         .iter()
         .filter(|block| block.kind == BlockKind::ListItem)
+        .map(|block| (line_range(source, block.range.start).start, block))
         .collect();
+    items.sort_by_key(|(start, _)| *start);
     // The selected items that are not inside another selected item, and
     // how far the lines they hold reach.
     let mut tops = Vec::new();
     let mut covered = 0;
     for line in first..=last {
         let content = document.line_content(line);
-        let mut here = items
+        let from = items.partition_point(|(start, _)| *start < content.start);
+        let mut here = items[from..]
             .iter()
-            .filter(|block| line_range(source, block.range.start).start == content.start);
+            .take_while(|(start, _)| *start == content.start)
+            .map(|(_, block)| *block);
         match (here.next(), here.next()) {
             (Some(item), None) if content.start >= covered => {
                 marker(source, &item.range)?;
@@ -384,6 +400,9 @@ pub fn nest_selected(document: &mut Document, outward: bool) -> Option<bool> {
             _ => return None,
         }
     }
+    if tops.len().saturating_mul(source.len()) > MOVE_BUDGET {
+        return None;
+    }
     // Lines keep their numbers through every move, so each item is found
     // again by its line in a copy that takes the moves one at a time.
     let mut moved = Document::new(source);
@@ -392,10 +411,10 @@ pub fn nest_selected(document: &mut Document, outward: bool) -> Option<bool> {
         moved.set_caret(at).ok()?;
         match nest_item(&mut moved, None, outward) {
             Some(true) => {}
-            // Nothing above the first item to nest under: indent instead.
-            Some(false) if index == 0 => return None,
-            Some(false) => {}
-            None => return None,
+            // The first item has nowhere to go that way: indent instead.
+            Some(false) | None if index == 0 => return None,
+            // A later one stays put; the rest still move.
+            Some(false) | None => {}
         }
     }
     if tops.is_empty() {
@@ -548,6 +567,53 @@ mod tests {
             assert_eq!(outcome, None, "{marked:?}");
             assert_eq!(text, marked, "{marked:?}");
         }
+    }
+
+    #[test]
+    fn a_later_item_that_cannot_lift_stays_and_keeps_its_own_lines() {
+        // `b` is already at the top level. Outdenting every selected line
+        // instead would pull its second paragraph out of the list.
+        let (outcome, text) = run_selected("- a\n«  - a1\n- b\n\n  para in b»\n- c\n", true);
+        assert_eq!(outcome, Some(true));
+        assert_eq!(text, "- a\n«- a1\n- b\n\n  para in b»\n- c\n");
+        // A later item with nothing to nest under is skipped the same way.
+        let (outcome, text) = run_selected("- a\n«- b\n\npara\n\n- c»\n", false);
+        assert_eq!(outcome, None, "prose between the items keeps plain Tab");
+        assert_eq!(text, "- a\n«- b\n\npara\n\n- c»\n");
+    }
+
+    #[test]
+    fn a_move_too_large_to_do_at_once_is_left_to_ordinary_indentation() {
+        // Each move parses the document again; past the budget that would
+        // freeze the editor, so the selection indents as plain lines.
+        let item = "- item with enough text to make the document large\n";
+        let count = MOVE_BUDGET / (item.len() * 200) + 1;
+        let fits: String = item.repeat(200);
+        assert!(200 * fits.len() <= MOVE_BUDGET);
+        let mut document = Document::new(fits.clone());
+        document
+            .set_selection(crate::Selection {
+                anchor: item.len(),
+                head: fits.len(),
+            })
+            .unwrap();
+        assert_eq!(nest_selected(&mut document, false), Some(true));
+        assert!(document.text().starts_with("- item"));
+        assert_eq!(document.text().matches("\n  - item").count(), 199);
+
+        let large: String = item.repeat(count.max(2000));
+        assert!((count.max(2000) - 1).saturating_mul(large.len()) > MOVE_BUDGET);
+        let mut document = Document::new(large.clone());
+        document
+            .set_selection(crate::Selection {
+                anchor: item.len(),
+                head: large.len(),
+            })
+            .unwrap();
+        let started = std::time::Instant::now();
+        assert_eq!(nest_selected(&mut document, false), None);
+        assert_eq!(document.text(), large);
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
     }
 
     #[test]
