@@ -885,3 +885,48 @@ fn line_operations_keep_unicode_boundaries_and_round_trip_every_selection() {
         }
     }
 }
+
+#[test]
+fn double_click_words_and_triple_click_lines() {
+    let text =
+        "Can't stop: self.name = 3.14, v0.3.1;  x\r\n\u{754c}\u{9650} naïve_id e\u{301}t\n\nlast";
+    let doc = Document::new(text);
+    let word = |needle: &str, within: usize| {
+        let at = text.find(needle).unwrap() + within;
+        &text[doc.word_at(at)]
+    };
+    for (needle, within, expected) in [
+        ("Can't", 0, "Can't"),
+        ("Can't", 4, "Can't"),
+        ("stop", 2, "stop"),
+        // Punctuation and whitespace are their own selections.
+        (": self", 0, ":"),
+        (" stop", 0, " "),
+        (";  x", 1, "  "),
+        // A dot between names splits them; between digits it does not.
+        ("self.name", 1, "self"),
+        ("self.name", 4, "."),
+        ("self.name", 5, "name"),
+        ("3.14", 0, "3.14"),
+        ("3.14", 2, "3.14"),
+        ("v0.3.1", 3, "v0.3.1"),
+        ("naïve_id", 3, "naïve_id"),
+        ("e\u{301}t", 0, "e\u{301}t"),
+        ("last", 3, "last"),
+    ] {
+        assert_eq!(word(needle, within), expected, "{needle:?} at {within}");
+    }
+    // Past the last character of a line: its last segment. An empty line: nothing.
+    assert_eq!(&text[doc.word_at(text.find("\r\n").unwrap())], "x");
+    assert_eq!(&text[doc.word_at(text.len())], "last");
+    let empty = text.find("\n\n").unwrap() + 1;
+    assert_eq!(doc.word_at(empty), empty..empty);
+    assert_eq!(Document::new("").word_at(0), 0..0);
+
+    let line = |needle: &str| &text[doc.line_with_ending(text.find(needle).unwrap())];
+    assert_eq!(line("stop"), "Can't stop: self.name = 3.14, v0.3.1;  x\r\n");
+    assert_eq!(line("naïve"), "\u{754c}\u{9650} naïve_id e\u{301}t\n");
+    assert_eq!(&text[doc.line_with_ending(empty)], "\n");
+    assert_eq!(line("last"), "last");
+    assert_eq!(&text[doc.line_with_ending(text.len() + 10)], "last");
+}
