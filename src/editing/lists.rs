@@ -335,6 +335,101 @@ pub fn nest_item(
     Some(replace_many(document, edits))
 }
 
+/// Tab or Shift+Tab over a selection of list items: each selected item
+/// moves a level, in order, as `nest_item` moves one, and the whole move is
+/// one undo step. Items selected along with their parent move with it. The
+/// selection then covers the same lines.
+///
+/// `None`, leaving ordinary indentation to the caller, when the selection
+/// is empty, touches a line that is not part of a selected list item, or
+/// starts at an item that cannot move that way: the first of its list for
+/// Tab, a top-level one for Shift+Tab.
+pub fn nest_selected(document: &mut Document, outward: bool) -> Option<bool> {
+    let selection = document.selection();
+    if selection.is_empty() {
+        return None;
+    }
+    let source = document.text();
+    let range = selection.range();
+    let first = document.line_index(range.start);
+    let mut last = document.line_index(range.end);
+    // A selection ending at a line's start does not include that line.
+    let open_ended = last > first && document.line_start(last) == range.end;
+    last -= usize::from(open_ended);
+    let snapshot = document.markdown();
+    let items: Vec<&Block> = snapshot
+        .blocks
+        .iter()
+        .filter(|block| block.kind == BlockKind::ListItem)
+        .collect();
+    // The selected items that are not inside another selected item, and
+    // how far the lines they hold reach.
+    let mut tops = Vec::new();
+    let mut covered = 0;
+    for line in first..=last {
+        let content = document.line_content(line);
+        let mut here = items
+            .iter()
+            .filter(|block| line_range(source, block.range.start).start == content.start);
+        match (here.next(), here.next()) {
+            (Some(item), None) if content.start >= covered => {
+                marker(source, &item.range)?;
+                tops.push(line);
+                covered = item.range.end.max(content.end);
+            }
+            // Two items on one line, as in `- - inner`.
+            (Some(_), Some(_)) => return None,
+            // A line of an item already taken, or a blank line between.
+            _ if content.start < covered || source[content.clone()].trim().is_empty() => {}
+            _ => return None,
+        }
+    }
+    // Lines keep their numbers through every move, so each item is found
+    // again by its line in a copy that takes the moves one at a time.
+    let mut moved = Document::new(source);
+    for (index, line) in tops.iter().enumerate() {
+        let at = content_start(moved.text(), moved.line_start(*line));
+        moved.set_caret(at).ok()?;
+        match nest_item(&mut moved, None, outward) {
+            Some(true) => {}
+            // Nothing above the first item to nest under: indent instead.
+            Some(false) if index == 0 => return None,
+            Some(false) => {}
+            None => return None,
+        }
+    }
+    if tops.is_empty() {
+        return None;
+    }
+    if moved.text() == source {
+        return Some(false);
+    }
+    let start = content_start(moved.text(), moved.line_start(first));
+    let end = if open_ended {
+        moved.line_start(last + 1)
+    } else {
+        moved.line_content(last).end
+    };
+    let after = if selection.anchor <= selection.head {
+        crate::Selection {
+            anchor: start,
+            head: end,
+        }
+    } else {
+        crate::Selection {
+            anchor: end,
+            head: start,
+        }
+    };
+    let (whole, text) = (0..source.len(), moved.text().to_owned());
+    document.break_undo_group();
+    Some(
+        document
+            .replace_with_selection(whole, &text, after)
+            .expect("whole source boundaries"),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -349,6 +444,130 @@ mod tests {
         let mut text = document.text().to_owned();
         text.insert(document.selection().head, '|');
         (outcome, text)
+    }
+
+    /// Run on the selection between `«` and `»`; the result is marked the
+    /// same way.
+    fn run_selected(marked: &str, outward: bool) -> (Option<bool>, String) {
+        let (start, end) = (
+            marked.find('«').unwrap(),
+            marked.find('»').unwrap() - '«'.len_utf8(),
+        );
+        let mut document = Document::new(marked.replace(['«', '»'], ""));
+        document
+            .set_selection(crate::Selection {
+                anchor: start,
+                head: end,
+            })
+            .unwrap();
+        let outcome = nest_selected(&mut document, outward);
+        let range = document.selection().range();
+        let mut text = document.text().to_owned();
+        text.insert(range.end, '»');
+        text.insert(range.start, '«');
+        (outcome, text)
+    }
+
+    /// How many list items the marked text parses as.
+    fn items(marked: &str) -> usize {
+        Document::new(marked.replace(['«', '»'], ""))
+            .markdown()
+            .blocks
+            .iter()
+            .filter(|block| block.kind == BlockKind::ListItem)
+            .count()
+    }
+
+    #[test]
+    fn tab_over_selected_items_nests_each_and_keeps_them_a_list() {
+        for (before, after) in [
+            // Indented as plain text, `2. two` would be read as part of
+            // `one`: each item takes the number its new place needs.
+            (
+                "1. one\n«2. two\n3. three»\n4. four\n",
+                "1. one\n«   1. two\n   2. three»\n4. four\n",
+            ),
+            ("- a\n«- b\n- c\n»- d\n", "- a\n«  - b\n  - c\n»- d\n"),
+            // A partial selection moves the whole items it touches.
+            ("- a\n- b«bb\n- c»cc\n", "- a\n«  - bbb\n  - ccc»\n"),
+            // Children selected with their parent move once, with it.
+            (
+                "- a\n«- b\n  - b1\n  - b2\n- c»\n",
+                "- a\n«  - b\n    - b1\n    - b2\n  - c»\n",
+            ),
+            // Blank lines between loose items stay empty.
+            ("- a\n\n«- b\n\n- c»\n", "- a\n\n«  - b\n\n  - c»\n"),
+            (
+                "- [ ] a\n«- [ ] b\n- [x] c»\n",
+                "- [ ] a\n«  - [ ] b\n  - [x] c»\n",
+            ),
+        ] {
+            let (outcome, text) = run_selected(before, false);
+            assert_eq!(outcome, Some(true), "{before:?}");
+            assert_eq!(text, after, "{before:?}");
+            // Every item is still an item.
+            assert_eq!(items(&text), items(before), "{before:?}");
+        }
+    }
+
+    #[test]
+    fn shift_tab_over_selected_items_lifts_each_in_order() {
+        for (before, after) in [
+            (
+                "1. one\n«   1. two\n   2. three»\n4. four\n",
+                "1. one\n«2. two\n3. three»\n4. four\n",
+            ),
+            ("- a\n«  - b\n  - c»\n", "- a\n«- b\n- c»\n"),
+            (
+                "- a\n«  - b\n    - b1\n  - c»\n  - d\n",
+                "- a\n«- b\n  - b1\n- c»\n  - d\n",
+            ),
+        ] {
+            let (outcome, text) = run_selected(before, true);
+            assert_eq!(outcome, Some(true), "{before:?}");
+            assert_eq!(text, after, "{before:?}");
+        }
+    }
+
+    #[test]
+    fn selections_that_are_not_whole_list_items_keep_ordinary_indentation() {
+        for (marked, outward) in [
+            // The first item of a list has nothing to nest under.
+            ("«- a\n- b»\n", false),
+            // Top-level items have nowhere to lift to.
+            ("- a\n«- b\n- c»\n", true),
+            // Prose in the selection, before or after the items.
+            ("- a\n«- b\n\npara»\n", false),
+            ("«intro\n- a\n- b»\n", false),
+            ("«plain\ntext»\n", false),
+            // A continuation line without its item's first line.
+            ("- a\n- b\n  «more\n- c»\n", false),
+            ("> - a\n«> - b»\n", false),
+        ] {
+            let (outcome, text) = run_selected(marked, outward);
+            assert_eq!(outcome, None, "{marked:?}");
+            assert_eq!(text, marked, "{marked:?}");
+        }
+    }
+
+    #[test]
+    fn a_selected_move_is_one_undo_step_and_keeps_its_direction() {
+        let mut document = Document::new("1. a\n2. b\n3. c\n4. d\n");
+        // Selected upward, from the end of `c` to inside `b`.
+        document
+            .set_selection(crate::Selection {
+                anchor: 14,
+                head: 8,
+            })
+            .unwrap();
+        assert_eq!(nest_selected(&mut document, false), Some(true));
+        assert_eq!(document.text(), "1. a\n   1. b\n   2. c\n4. d\n");
+        let selection = document.selection();
+        assert!(selection.anchor > selection.head);
+        assert_eq!(document.selected_text(), "   1. b\n   2. c");
+        assert!(document.undo());
+        assert_eq!(document.text(), "1. a\n2. b\n3. c\n4. d\n");
+        assert!(!document.can_undo());
     }
 
     #[test]

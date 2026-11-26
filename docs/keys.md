@@ -94,7 +94,9 @@ or CR).
 
 Tab follows the file. A file whose lines start with tabs gets a tab; a file
 indented with spaces gets spaces to its own width, read from the most common
-step between its lines, so Tab never mixes the two. A file with no
+step between its lines, so Tab never mixes the two. A line that carries on
+an argument list or a command, after a comma or a backslash, does not count
+as a step. A file with no
 indentation yet uses its type's convention: tabs for Makefiles, Go and
 tab-separated values, two spaces for YAML, JSON, JavaScript, TypeScript, HTML,
 CSS, Ruby and a few others, and four spaces otherwise. Tab characters are
@@ -146,6 +148,7 @@ selects the word first clicked.
 | Alt+C, in Find | Match case, or ignore it again; the **Aa** toggle beside the count does the same |
 | Ctrl+N / Ctrl+P | Next / previous match. With Find closed, they reuse the last query; with no query yet, they open Find. |
 | Enter / Shift+Enter | Next / previous match, in Find |
+| PageUp / PageDown, in Find | Scroll the text a screen without leaving the current match |
 | Ctrl+R, in Find | Expand Find to Replace |
 | Tab | Switch between the Find and With fields |
 | Enter, in With | Replace this match and go to the next |
@@ -178,8 +181,10 @@ at 1). Lifting an item leaves the items after it as its children: they are
 renumbered to follow, and moved under it where they would not otherwise line
 up, as after a numbered item lifted from under a bullet.
 Tab on the first item of a list does nothing, since there is nothing to nest
-it under. With a selection, on other lines, and in quoted lists, Tab indents
-as it does everywhere else.
+it under. With several items selected, each moves a level in turn, so a
+numbered run stays a numbered list; that is one undo step. A selection that
+holds anything but list items, other lines, and quoted lists indent as Tab
+does everywhere else.
 
 ## Links
 
@@ -269,7 +274,13 @@ movement always work. If a key appears twice, the later line wins.
 A default key keeps its job until you give that key another one. Your keys
 apply in the text and in Find, not while the command palette, a picker, the
 file browser or a prompt has the keyboard. Ctrl+E shows every command with
-the key it has now. Lines pica cannot use are skipped and named in the
+the key it has now, and the status line names the keys that now open the
+commands and the help; the help sheet itself always lists the defaults, and
+says so once you have changed any.
+
+In Find your key wins over Find's own, so a binding on one of them changes
+what it does there too: Find uses Enter, Tab, Esc, PageUp, PageDown, Ctrl+N,
+Ctrl+P, Ctrl+R, Ctrl+F, Alt+R, Alt+A and Alt+C. Lines pica cannot use are skipped and named in the
 status line at startup; `--no-state` ignores the file. The terminal notes
 below apply to your keys too: some combinations never reach a program.
 

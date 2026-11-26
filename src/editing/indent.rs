@@ -56,24 +56,29 @@ impl Indent {
     /// Otherwise the step is the most common increase from one line to the
     /// next, which hanging and aligned continuation lines rarely outvote;
     /// a tie takes the smaller step. One-column steps are comment
-    /// continuations (` * text`) and are not counted.
+    /// continuations (` * text`) and are not counted, nor is the line after
+    /// one ending in a comma or a backslash: that is an argument or a
+    /// command carried on, aligned wherever its first half put it.
     pub fn detect(text: &str) -> Option<Self> {
         let (mut tabbed, mut spaced) = (0usize, 0usize);
         let mut steps = [0usize; 9];
         let mut previous = 0;
+        let mut carried = false;
         let text = text.strip_prefix('\u{feff}').unwrap_or(text);
         for line in text.split(['\n', '\r']).take(SCAN_LINES) {
             let content = line.trim_start_matches([' ', '\t']);
             if content.is_empty() {
                 continue;
             }
+            let continues =
+                std::mem::replace(&mut carried, content.trim_end().ends_with([',', '\\']));
             if line.starts_with('\t') {
                 tabbed += 1;
                 previous = 0;
                 continue;
             }
             let width = line.len() - line.trim_start_matches(' ').len();
-            if width > previous && (2..=8).contains(&(width - previous)) {
+            if width > previous && (2..=8).contains(&(width - previous)) && !continues {
                 steps[width - previous] += 1;
             }
             spaced += usize::from(width >= 2);
@@ -168,6 +173,14 @@ mod tests {
                 "f(a,\n  b)\nif x:\n    y\n    if z:\n        w\nwhile q:\n    r\n",
                 Some(Indent::Spaces(4)),
             ),
+            // A lone continuation line is not a level: the file's type decides.
+            ("def f(a,\n      b):\n    return a\n", None),
+            ("cc -c main.c \\\n   -o main.o\nall:\n", None),
+            // Nor does it outvote the lines that are.
+            ("call(a,\n     b)\nif x:\n    y\n", Some(Indent::Spaces(4))),
+            // A list's items end in commas at one level and still count
+            // where the list opens.
+            ("x = [\n  1,\n  2,\n]\n", Some(Indent::Spaces(2))),
             // A tie between steps takes the smaller: four can be two levels of two.
             ("a\n  b\nc\n    d\n", Some(Indent::Spaces(2))),
             // Mostly tabs, with one space-aligned line.

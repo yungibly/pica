@@ -217,7 +217,7 @@ impl Bindings {
     }
 
     /// The key to show beside `command`: the first the user bound to it,
-    /// else its default unless the user gave that key another use.
+    /// else whatever now does what its default key did.
     pub fn shortcut(&self, command: Command, default: &str) -> String {
         if let Some((key, _)) = self
             .keys
@@ -226,10 +226,26 @@ impl Bindings {
         {
             return key_name(*key);
         }
+        self.key_for(default)
+    }
+
+    /// The key that now does what `default` does by default: that key
+    /// itself unless the user gave it another use, then the first key
+    /// they pointed at it, and nothing when it has no key left.
+    pub fn key_for(&self, default: &str) -> String {
         match parse_key(default) {
-            Ok(key) if self.bound(key).is_some() => String::new(),
+            Ok(key) if self.bound(key).is_some() => self
+                .keys
+                .iter()
+                .find(|(_, bound)| *bound == Bound::Key(key.0, key.1))
+                .map(|(user, _)| key_name(*user))
+                .unwrap_or_default(),
             _ => default.to_owned(),
         }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.keys.is_empty()
     }
 }
 
@@ -432,6 +448,16 @@ mod tests {
         }
         let none = Bindings::default();
         assert_eq!(none.shortcut(Command::Save, "Ctrl+S"), "Ctrl+S");
+        assert!(none.is_empty() && !bindings.is_empty());
+        // A default key put to other use still names the key pointed at it.
+        let (swapped, _) =
+            Bindings::parse("alt+s = ctrl+s\nctrl+s = find\nalt+p = ctrl+e\nctrl+e = none\n");
+        assert_eq!(swapped.shortcut(Command::Save, "Ctrl+S"), "Alt+S");
+        assert_eq!(swapped.shortcut(Command::Find, "Ctrl+F"), "Ctrl+S");
+        assert_eq!(swapped.key_for("Ctrl+E"), "Alt+P");
+        assert_eq!(swapped.key_for("Ctrl+G"), "Ctrl+G");
+        let (gone, _) = Bindings::parse("ctrl+e = none\n");
+        assert_eq!(gone.key_for("Ctrl+E"), "");
     }
 
     #[test]

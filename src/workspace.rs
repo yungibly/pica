@@ -1508,7 +1508,14 @@ impl Workspace {
         let guides = self.guides;
         let wrap = self.wrap;
         let link_key = self.bindings.shortcut(Command::OpenLink, "Alt+L");
+        let custom_keys = (!self.bindings.is_empty()).then(|| {
+            (
+                self.bindings.key_for("Ctrl+E"),
+                self.bindings.shortcut(Command::Help, "Ctrl+G"),
+            )
+        });
         let editor = self.editor_mut();
+        editor.custom_keys = custom_keys;
         editor.header = header;
         editor.label = Some(label);
         editor.guides = guides;

@@ -9,7 +9,7 @@ pub use general::{
 };
 pub use indent::{Indent, backspace, insert_tab, set_tab_width, tab_width};
 pub(crate) use lines::rearrange as rearrange_lines;
-pub use lists::nest_item;
+pub use lists::{nest_item, nest_selected};
 
 use std::ops::Range;
 
