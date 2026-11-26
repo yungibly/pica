@@ -69,7 +69,7 @@ Theme, icon, outline, guide, indentation, and view choices are saved to `$XDG_CO
 - **Careful saves.** Saves are atomic and keep the file's permissions, group, and (on macOS) extended attributes. A file opened through a symbolic link, as dotfile managers create, is saved to the file the link pointed to when opened. pica refuses saves if that link has moved, if the file has other hard links, if it belongs to another user, or if you cannot write it; Save as stays available.
 - **Speed.** Typing stays around a millisecond or two whatever the file's size: only what is on screen is laid out and highlighted. Files over 256 KiB open in a plain source mode without Markdown rendering.
 - **Limits.** Files must be UTF-8 text without NUL bytes, up to 8 MiB. Hostile Markdown, such as deep nesting or runaway emphasis, cannot stall the editor. Control and bidirectional characters are shown as symbols, never sent to the terminal.
-- **Crash recovery.** Unsaved work is checkpointed about once a second to `$XDG_STATE_HOME/pica/recovery`. After an interrupted session, Ctrl+E → **Recover documents** reopens each copy as a new unsaved tab. Recovery never writes over your files.
+- **Crash recovery.** Unsaved work is checkpointed about once a second to `$XDG_STATE_HOME/pica/recovery`. After an interrupted session, the next launch says how many documents can be recovered, and Ctrl+E → **Recover documents** reopens each copy as a new unsaved tab. Recovery never writes over your files.
 - **Clipboard.** Ctrl+C/X/V use the system clipboard locally and an internal one over SSH or when the system clipboard fails, with a notice. Your terminal's own paste always works and is inserted literally. OSC 52 and native Wayland clipboard support are not implemented.
 
 ## Development
