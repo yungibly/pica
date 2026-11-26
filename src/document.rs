@@ -121,6 +121,94 @@ mod tests {
     }
 
     #[test]
+    fn reload_keeps_the_selection_with_the_text_it_was_in() {
+        let lines = |range: std::ops::Range<usize>| -> String {
+            range.map(|line| format!("line {line}\n")).collect()
+        };
+        let original = lines(0..10);
+        let at = original.find("line 5").unwrap();
+        let select = |doc: &mut Document| {
+            doc.set_selection(Selection {
+                anchor: at + 6,
+                head: at,
+            })
+            .unwrap();
+        };
+        // Text added after the selection leaves it where it is, even when
+        // it is added right at the caret, as at the end of a growing log.
+        let mut doc = Document::new(original.clone());
+        select(&mut doc);
+        doc.reload_saved(format!("{original}line 10\n")).unwrap();
+        assert_eq!(doc.selected_text(), "line 5");
+        assert_eq!(doc.selection().head, at);
+        doc.set_caret(doc.text().len()).unwrap();
+        let end = doc.text().len();
+        doc.reload_saved(format!("{original}line 10\nline 11\n"))
+            .unwrap();
+        assert_eq!(doc.selection(), Selection::caret(end));
+        // Text added or removed before it moves it along with its line.
+        for before in ["new first line\nand a second\n", ""] {
+            let mut doc = Document::new(format!("removable\n{original}"));
+            let shifted = at + "removable\n".len();
+            doc.set_selection(Selection {
+                anchor: shifted + 6,
+                head: shifted,
+            })
+            .unwrap();
+            doc.reload_saved(format!("{before}{original}")).unwrap();
+            assert_eq!(doc.selected_text(), "line 5", "{before:?}");
+            assert_eq!(doc.selection().head, before.len() + at);
+            // Undo brings back the old text and the old selection.
+            doc.undo();
+            assert_eq!(doc.selection().head, shifted);
+            assert_eq!(doc.selected_text(), "line 5");
+        }
+        // Inside the changed stretch it stays as near as it can, on a
+        // grapheme boundary of the new text.
+        let mut doc = Document::new("ab cdefgh ij");
+        doc.set_caret(7).unwrap();
+        doc.reload_saved("ab e\u{301}界 ij".into()).unwrap();
+        assert_eq!(doc.selection(), Selection::caret(6));
+        assert!(doc.is_grapheme_boundary(6));
+        let mut doc = Document::new("ab cdefgh ij");
+        doc.set_caret(5).unwrap();
+        doc.reload_saved("ab e\u{301}界 ij".into()).unwrap();
+        assert_eq!(doc.selection(), Selection::caret(3));
+        assert_eq!(carried("ab cdefgh ij", "ab ij", 7), 3);
+        // Edits above and below at once put the caret inside one long
+        // changed stretch; it stays with its own line all the same.
+        let before = lines(0..10);
+        let after = format!(
+            "a new first line\n{}",
+            lines(0..10).replace("line 8\n", "line eight, rewritten\n")
+        );
+        let mut doc = Document::new(before.clone());
+        select(&mut doc);
+        doc.reload_saved(after.clone()).unwrap();
+        assert_eq!(doc.selected_text(), "line 5");
+        assert_eq!(doc.selection().head, after.find("line 5").unwrap());
+        // Of a line's copies, the same one in order is the one meant; when
+        // their number changed, the nearest.
+        let repeated = "x\nsame\nA\nsame\nB\nsame\ny\n";
+        let shifted = "X\nextra\nsame\nA\nsame\nB\nsame\nY\n";
+        assert_eq!(carried(repeated, shifted, 9 + 2), 15 + 2);
+        assert_eq!(carried(repeated, shifted, 2 + 4), 8 + 4);
+        assert_eq!(carried(repeated, shifted, 16), 22);
+        let fewer = "X\nsame\nA\nB\nsame\nY\n";
+        assert_eq!(carried(repeated, fewer, 9 + 2), 11 + 2);
+        assert_eq!(carried(repeated, fewer, 2), 2);
+        // A blank line, or a line that is gone, falls back to its offset.
+        let gone = "x\n\nonly here\n\ny\n";
+        assert_eq!(carried(gone, "X\n\nrewritten\n\nY\n", 2), 2);
+        assert_eq!(carried(gone, "X\n\nrewritten\n\nY\n", 5), 5);
+        assert_eq!(carried("ab\ncd\nef", "AB\r\ncd\r\nEF", 4), 4);
+        assert_eq!(carried("ab cdefgh ij", "ab ij", 10), 3);
+        assert_eq!(carried("same", "same", 3), 3);
+        assert_eq!(carried("", "new", 0), 0);
+        assert_eq!(carried("old", "", 2), 0);
+    }
+
+    #[test]
     fn reload_rejects_unretainable_snapshot_without_advancing_baseline() {
         for limits in [
             HistoryLimits {
@@ -878,8 +966,8 @@ impl Document {
     /// Accept fresh disk content as the saved baseline. A changed source is one
     /// independent undo step, preserving the old directional selection. Undo
     /// restores old source as a local edit against the newly accepted baseline.
-    /// Selection offsets clamp downward to valid grapheme boundaries in the new
-    /// source. Reject replacements whose prior snapshot cannot be retained.
+    /// The selection stays with the text it was in: see `carried`. Reject
+    /// replacements whose prior snapshot cannot be retained.
     pub fn reload_saved(&mut self, text: String) -> Result<bool, EditError> {
         self.break_undo_group();
         let changed = text != self.state.text;
@@ -891,10 +979,11 @@ impl Document {
             {
                 return Err(EditError::HistoryUnavailable);
             }
-            let clamp = |offset: usize| floor_boundary(&text, offset);
+            let change = delta(&previous.text, &text);
+            let place = |offset| carry(change, &previous.text, &text, offset);
             let selection = Selection {
-                anchor: clamp(self.selection().anchor),
-                head: clamp(self.selection().head),
+                anchor: place(self.selection().anchor),
+                head: place(self.selection().head),
             };
             self.undo.push_back(previous);
             self.state = State { text, selection };
@@ -1636,6 +1725,80 @@ impl Document {
 }
 
 /// The changed span between two texts, as `(start, old_end, new_end)`.
+/// Where `offset` in `old` belongs in `new`, for a caret or the top of a
+/// view when a file is reloaded. The two texts are taken to differ in one
+/// stretch, from the first byte that differs to the last. A position before
+/// that stretch stays put, and one after it keeps its distance from the
+/// end. Inside it, where edits in several places leave lines between them
+/// untouched, the position stays with its line if that line is still there,
+/// and otherwise as near as the new text allows. The result is a grapheme
+/// boundary of `new`.
+pub fn carried(old: &str, new: &str, offset: usize) -> usize {
+    carry(delta(old, new), old, new, offset)
+}
+
+/// `carried`, for a change already measured by `delta`.
+fn carry(change: (usize, usize, usize), old: &str, new: &str, offset: usize) -> usize {
+    let (start, old_end, new_end) = change;
+    let moved = if offset <= start {
+        offset
+    } else if offset >= old_end {
+        offset - old_end + new_end
+    } else {
+        same_line(change, old, new, offset).unwrap_or(offset.min(new_end))
+    };
+    floor_boundary(new, moved)
+}
+
+/// For an `offset` inside the changed stretch: its place on its own line,
+/// at the same column, if that line is still in the stretch. Where the line
+/// has copies, the same copy in order when their number is unchanged, and
+/// otherwise the nearest. Blank lines say nothing about where they are, so
+/// they are never matched.
+fn same_line(
+    (start, old_end, new_end): (usize, usize, usize),
+    old: &str,
+    new: &str,
+    offset: usize,
+) -> Option<usize> {
+    let line_start = old[..offset].rfind('\n').map_or(0, |at| at + 1);
+    let line_end = old[offset..].find('\n').map_or(old.len(), |at| offset + at);
+    let line = &old[line_start..line_end];
+    if line.trim().is_empty() {
+        return None;
+    }
+    // Where `line` starts among the whole lines that `from..to` touches.
+    let copies = |text: &str, mut from: usize, mut to: usize| {
+        while !text.is_char_boundary(from) {
+            from -= 1;
+        }
+        while !text.is_char_boundary(to) {
+            to += 1;
+        }
+        let from = text[..from].rfind('\n').map_or(0, |at| at + 1);
+        let to = text[to..].find('\n').map_or(text.len(), |at| to + at);
+        let mut at = from;
+        let mut found = Vec::new();
+        for candidate in text[from..to].split('\n') {
+            if candidate == line {
+                found.push(at);
+            }
+            at += candidate.len() + 1;
+        }
+        found
+    };
+    let before = copies(old, start, old_end);
+    let after = copies(new, start, new_end);
+    let at = if before.len() == after.len() {
+        after[before.iter().position(|at| *at == line_start)?]
+    } else {
+        *after.iter().min_by_key(|at| at.abs_diff(line_start))?
+    };
+    Some(at + (offset - line_start))
+}
+
+/// The stretch in which `new` differs from `old`: where it starts in both,
+/// and where it ends in each.
 fn delta(old: &str, new: &str) -> (usize, usize, usize) {
     const BLOCK: usize = 4096;
     let (old, new) = (old.as_bytes(), new.as_bytes());
