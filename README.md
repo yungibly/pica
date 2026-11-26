@@ -71,7 +71,7 @@ Theme, icon, outline, guide, indentation, Find, and view choices are saved to `$
 - **Speed.** Typing stays around a millisecond or two whatever the file's size: only what is on screen is laid out and highlighted. Files over 256 KiB open in a plain source mode without Markdown rendering.
 - **Limits.** Files must be UTF-8 text without NUL bytes, up to 8 MiB. Hostile Markdown, such as deep nesting or runaway emphasis, cannot stall the editor. Control and bidirectional characters are shown as symbols, never sent to the terminal.
 - **Crash recovery.** Unsaved work is checkpointed about once a second to `$XDG_STATE_HOME/pica/recovery`. After an interrupted session, the next launch says how many documents can be recovered, and Ctrl+E → **Recover documents** reopens each copy as a new unsaved tab. Recovery never writes over your files.
-- **Clipboard.** Ctrl+C/X/V use the system clipboard locally and an internal one over SSH or when the system clipboard fails, with a notice. Your terminal's own paste always works and is inserted literally. OSC 52 and native Wayland clipboard support are not implemented.
+- **Clipboard.** Ctrl+C/X/V use the system clipboard: natively on macOS and X11, and through `wl-copy` and `wl-paste` (wl-clipboard) on Wayland. Over SSH, or where no system clipboard can be reached, a copy goes to your terminal by OSC 52, which puts it on the clipboard of the machine you are sitting at in terminals that allow it (inside tmux: `set -g set-clipboard on`). Ctrl+V then pastes pica's own last copy, and your terminal's own paste, which always works and is inserted literally, brings the system clipboard. pica never asks the terminal to read your clipboard. The status line says where each copy went.
 
 ## Development
 
