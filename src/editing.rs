@@ -7,7 +7,7 @@ mod lists;
 pub use general::{
     cut_lines, duplicate, indent_newline, line_column_offset, smart_home, toggle_comment,
 };
-pub use indent::{Indent, TAB_WIDTH, backspace, insert_tab};
+pub use indent::{Indent, backspace, insert_tab, set_tab_width, tab_width};
 pub(crate) use lines::rearrange as rearrange_lines;
 pub use lists::nest_item;
 

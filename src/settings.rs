@@ -187,6 +187,18 @@ impl Settings {
         };
         self.save("indent", &value)
     }
+    /// The columns a tab character spans, from one to eight; four unless
+    /// chosen.
+    pub fn tab_width(&self) -> Option<usize> {
+        self.values
+            .get("tab-width")?
+            .parse()
+            .ok()
+            .filter(|width| (1..=8).contains(width))
+    }
+    pub fn save_tab_width(&mut self, width: usize) -> io::Result<()> {
+        self.save("tab-width", &width.to_string())
+    }
     /// Whether Find matches letter case; it ignores case unless chosen.
     pub fn find_match_case(&self) -> bool {
         self.values
@@ -395,10 +407,13 @@ mod tests {
         assert_eq!(settings.indent(), None);
         assert!(!settings.find_match_case());
         settings.save_find_match_case(true).unwrap();
+        assert_eq!(settings.tab_width(), None);
+        settings.save_tab_width(8).unwrap();
         settings.save_indent(Some(Indent::Spaces(2))).unwrap();
         let loaded = Settings::load(dir.path()).unwrap();
         assert_eq!(loaded.indent(), Some(Indent::Spaces(2)));
         assert!(loaded.find_match_case());
+        assert_eq!(loaded.tab_width(), Some(8));
         assert_eq!(loaded.theme(), Some(Theme::Light));
         assert_eq!(loaded.sidebar(), Some(false));
         assert_eq!(loaded.markdown_live(), Some(false));
@@ -422,6 +437,16 @@ mod tests {
         ] {
             fs::write(&path, format!("version=1\nindent={saved}\n")).unwrap();
             assert_eq!(Settings::load(dir.path()).unwrap().indent(), expected);
+        }
+        for (saved, expected) in [
+            ("2", Some(2)),
+            ("8", Some(8)),
+            ("0", None),
+            ("9", None),
+            ("x", None),
+        ] {
+            fs::write(&path, format!("version=1\ntab-width={saved}\n")).unwrap();
+            assert_eq!(Settings::load(dir.path()).unwrap().tab_width(), expected);
         }
         let mut settings = Settings::load(dir.path()).unwrap();
         for (indent, saved) in [

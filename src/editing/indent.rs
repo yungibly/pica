@@ -5,8 +5,20 @@ use unicode_width::UnicodeWidthChar;
 use super::{general::content_start, line_range};
 use crate::Document;
 
-/// The column step of a tab character, here and in every view.
-pub const TAB_WIDTH: usize = 4;
+thread_local! {
+    static TAB_WIDTH: std::cell::Cell<usize> = const { std::cell::Cell::new(4) };
+}
+
+/// The column step of a tab character, here and in every view: four unless
+/// another width is chosen.
+pub fn tab_width() -> usize {
+    TAB_WIDTH.get()
+}
+
+/// Choose the column step of a tab character, from one to eight.
+pub fn set_tab_width(width: usize) {
+    TAB_WIDTH.set(width.clamp(1, 8));
+}
 
 /// Detection reads this many lines; a file settles its style long before.
 const SCAN_LINES: usize = 2000;
@@ -26,7 +38,7 @@ impl Indent {
     /// Columns one level spans.
     pub fn width(self) -> usize {
         match self {
-            Self::Tabs => TAB_WIDTH,
+            Self::Tabs => tab_width(),
             Self::Spaces(width) => width,
         }
     }
@@ -81,8 +93,9 @@ impl Indent {
 
 /// The display column of `offset` on the line whose text begins at `start`.
 fn column(source: &str, start: usize, offset: usize) -> usize {
+    let tab = tab_width();
     source[start..offset].chars().fold(0, |column, c| match c {
-        '\t' => column + TAB_WIDTH - column % TAB_WIDTH,
+        '\t' => column + tab - column % tab,
         c => column + c.width().unwrap_or(0),
     })
 }
@@ -202,6 +215,28 @@ mod tests {
             document.undo();
             assert_eq!(document.text(), text);
         }
+    }
+
+    #[test]
+    fn a_chosen_tab_width_moves_the_stops_tabs_reach() {
+        assert_eq!(tab_width(), 4);
+        for (width, after_tab, level) in
+            [(2, "\ta     ", 2), (8, "\ta       ", 8), (4, "\ta   ", 4)]
+        {
+            set_tab_width(width);
+            assert_eq!(Indent::Tabs.width(), level);
+            // After a tab and a letter, spaces reach the next eight-column stop.
+            let mut document = Document::new("\ta");
+            document.set_caret(2).unwrap();
+            insert_tab(&mut document, Indent::Spaces(8));
+            assert_eq!(document.text(), after_tab, "{width}");
+        }
+        // Widths outside one to eight are brought into range.
+        set_tab_width(0);
+        assert_eq!(tab_width(), 1);
+        set_tab_width(99);
+        assert_eq!(tab_width(), 8);
+        set_tab_width(4);
     }
 
     #[test]

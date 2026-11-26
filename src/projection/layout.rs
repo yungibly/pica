@@ -486,7 +486,8 @@ impl<'a> Layout<'a> {
             return (Cow::Borrowed(text), 1);
         }
         let displayed = if text == "\t" {
-            Cow::Borrowed(&"    "[..(4 - self.column % 4).min(self.limit)])
+            let tab = pica::editing::tab_width();
+            Cow::Borrowed(&"        "[..(tab - self.column % tab).min(self.limit)])
         } else {
             safe(text)
         };
