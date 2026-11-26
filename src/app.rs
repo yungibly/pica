@@ -4538,6 +4538,36 @@ mod tests {
     }
 
     #[test]
+    fn ruled_code_blocks_start_both_edges_at_the_code_column() {
+        theme::set_theme(Theme::Terminal);
+        let source = "intro\n\n```rust\nfn main() {}\n```\n\n```\nplain\n```\n";
+        let mut app = App::new(source.into(), None, true);
+        for (width, height) in [(100, 16), (60, 16), (30, 16)] {
+            let terminal = draw(&mut app, width, height);
+            let buffer = terminal.backend().buffer();
+            let row = |y: u16| -> String { (0..width).map(|x| buffer[(x, y)].symbol()).collect() };
+            // The column where a row's ink begins.
+            let ink = |y: u16| (0..width).find(|x| buffer[(*x, y)].symbol() != " ");
+            let text = app.viewport.x;
+            let top = app.viewport.y + 2;
+            assert!(row(top).contains("rust ─"), "{}", row(top));
+            assert!(row(top + 1).contains("fn main() {}"));
+            // Label, code, and closing rule share a left edge; so does an
+            // unlabelled block's pair of rules.
+            for y in [top, top + 1, top + 2, top + 4, top + 5, top + 6] {
+                assert_eq!(ink(y), Some(text), "width {width}: {:?}", row(y));
+            }
+            // Both edges also end together, at the text column's right edge.
+            let end = |y: u16| (0..width).rev().find(|x| buffer[(*x, y)].symbol() == "─");
+            assert_eq!(end(top), Some(app.viewport.right() - 1));
+            for y in [top + 2, top + 4, top + 6] {
+                assert_eq!(end(y), end(top), "width {width}: {:?}", row(y));
+            }
+        }
+        theme::set_theme(Theme::Dark);
+    }
+
+    #[test]
     fn help_scroll_reaches_every_shortcut_without_editing_the_document() {
         let mut app = App::new("Keep this source".into(), None, true);
         key(&mut app, KeyCode::F(1), KeyModifiers::NONE);

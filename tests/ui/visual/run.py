@@ -916,6 +916,21 @@ def rendering(session):
     flat = bool(beside) and all(c["bg"] != page for c in beside)
     session.check(flat or "─" in row_of(cells, tab[0]["y"]),
                   "Code surface opens with a labelled flat edge, or a rule without a surface color")
+    if not flat:
+        # Rules have no surface to pad: the label, the code, and both rules
+        # share the code's column, and the two rules end together.
+        def rule(y):
+            return [c["x"] for c in cells if c["y"] == y and c["char"] == "─" and c["x"] >= tab[0]["x"]]
+        opening = rule(tab[0]["y"])
+        closing_row = min(c["y"] for c in cells
+                          if c["y"] > tab[0]["y"] and c["char"] == "─" and c["x"] >= tab[0]["x"])
+        closing = rule(closing_row)
+        before = [c for c in cells if c["y"] == closing_row and c["x"] < tab[0]["x"] and c["char"] == "─"]
+        code = next(find_cells(cells, "fn main"))
+        session.check(min(closing) == tab[0]["x"] == code[0]["x"] and not before,
+                      "Ruled code edges and their label start at the code's column",
+                      label=tab[0]["x"], code=code[0]["x"], closing=min(closing))
+        session.check(max(closing) == max(opening), "Ruled code edges end at the same column")
     session.check(not any(c["char"] in "▄▀" for c in cells), "Code surfaces have no half-block bars")
     keyword = next(find_cells(cells, "fn"))
     name = next(find_cells(cells, "main"))
