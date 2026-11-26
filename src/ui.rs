@@ -217,15 +217,114 @@ pub fn highlights(label: &str, query: &str) -> Vec<bool> {
     marks
 }
 
-/// Whether a confirmation can show its whole prompt and every key. Input
-/// handlers use the same rule, so an unseen choice is never accepted.
+/// The smallest window any dialog is drawn in. A question needs more than
+/// this where its text or its keys wrap: see `question_fits`.
 pub fn dialog_fits(area: Rect) -> bool {
     area.width >= 44 && area.height >= 9
 }
 
-/// A centered confirmation sized to its body, with keys along the bottom.
-/// Returns whether the whole prompt is visible; otherwise a resize notice
-/// that keeps cancelling available takes its place.
+/// Where a question goes in a window and how its parts are laid out, when
+/// every row of its body and every one of its keys can be shown.
+struct Question<'a> {
+    rect: Rect,
+    body_rows: u16,
+    key_rows: Vec<&'a [(&'a str, &'a str)]>,
+}
+
+fn question<'a>(
+    area: Rect,
+    body: &[Line],
+    keys_row: &'a [(&'a str, &'a str)],
+    max_width: u16,
+) -> Option<Question<'a>> {
+    if !dialog_fits(area) {
+        return None;
+    }
+    let width = area.width.saturating_sub(4).min(max_width);
+    let inner_width = width.saturating_sub(4).max(1);
+    let body_rows = wrapped_rows(body, inner_width);
+    let key_rows = key_rows(keys_row, usize::from(inner_width))?;
+    // The frame, a blank row above the body and one above the keys.
+    let height = body_rows + key_rows.len() as u16 + 4;
+    if height > area.height.saturating_sub(2) {
+        return None;
+    }
+    Some(Question {
+        rect: Rect::new(
+            area.x + (area.width - width) / 2,
+            area.y + (area.height - height) / 3,
+            width,
+            height,
+        ),
+        body_rows,
+        key_rows,
+    })
+}
+
+/// Whether a question shows whole in `area`: every row of its body, as it
+/// wraps, and every key. `dialog` draws by the same rule, and a handler
+/// that takes an answer before the next draw asks it too, so a choice that
+/// is not on screen, or whose alternatives are not, is never accepted.
+pub fn question_fits(area: Rect, body: &[Line], keys_row: &[(&str, &str)], max_width: u16) -> bool {
+    question(area, body, keys_row, max_width).is_some()
+}
+
+/// The rows `body` takes when wrapped at words in `width` cells, found by
+/// wrapping it exactly as it is drawn.
+fn wrapped_rows(body: &[Line], width: u16) -> u16 {
+    use ratatui::widgets::Widget;
+    // No question is this long; one that is fits no window.
+    const MOST: u16 = 48;
+    let area = Rect::new(0, 0, width, MOST);
+    let mut scratch = ratatui::buffer::Buffer::empty(area);
+    ratatui::widgets::Paragraph::new(body.to_vec())
+        .wrap(ratatui::widgets::Wrap { trim: false })
+        .render(area, &mut scratch);
+    (0..MOST)
+        .rev()
+        .find(|y| (0..width).any(|x| scratch[(x, *y)].symbol() != " "))
+        .map_or(1, |y| y + 1)
+}
+
+/// The keys in as many rows of `width` cells as they need, each row as
+/// `keys` draws it. `None` when a key is too wide for a row of its own.
+fn key_rows<'a>(
+    pairs: &'a [(&'a str, &'a str)],
+    width: usize,
+) -> Option<Vec<&'a [(&'a str, &'a str)]>> {
+    let mut rows = Vec::new();
+    let (mut start, mut used) = (0, 0);
+    for (index, (key, action)) in pairs.iter().enumerate() {
+        let needed = UnicodeWidthStr::width(*key) + UnicodeWidthStr::width(*action) + 4;
+        if width.saturating_sub(used) < needed {
+            if width < needed {
+                return None;
+            }
+            rows.push(&pairs[start..index]);
+            (start, used) = (index, 0);
+        }
+        used += needed + 1;
+    }
+    rows.push(&pairs[start..]);
+    Some(rows)
+}
+
+fn resize_notice(frame: &mut Frame) {
+    let area = frame.area();
+    frame.render_widget(Clear, area);
+    frame.render_widget(
+        ratatui::widgets::Paragraph::new("Resize to confirm · Esc cancels")
+            .wrap(ratatui::widgets::Wrap { trim: true })
+            .style(surface()),
+        area,
+    );
+}
+
+/// A centered question sized to its body, with its keys below it. It is
+/// drawn whole or not at all: every row of the body and every key, with
+/// the keys on more rows where the window is narrow. Returns whether it
+/// was drawn. Otherwise a resize notice that keeps cancelling available
+/// takes its place, and the caller must not accept an answer.
 pub fn dialog(
     frame: &mut Frame,
     title: &str,
@@ -233,20 +332,25 @@ pub fn dialog(
     keys_row: &[(&str, &str)],
     max_width: u16,
 ) -> bool {
-    let rows = |width: usize| {
-        body.iter()
-            .map(|line| line.width().max(1).div_ceil(width) as u16)
-            .sum()
-    };
-    let Some(text) = dialog_frame(frame, title, rows, keys_row, max_width) else {
+    let Some(shape) = question(frame.area(), body, keys_row, max_width) else {
+        resize_notice(frame);
         return false;
     };
+    let inner = panel(frame, shape.rect, title, None);
     frame.render_widget(
         ratatui::widgets::Paragraph::new(body.to_vec())
             .wrap(ratatui::widgets::Wrap { trim: false })
             .style(surface()),
-        text,
+        Rect::new(inner.x + 1, inner.y + 1, inner.width - 2, shape.body_rows),
     );
+    let first = inner.bottom() - shape.key_rows.len() as u16;
+    for (row, pairs) in shape.key_rows.iter().enumerate() {
+        keys(
+            frame,
+            Rect::new(inner.x + 1, first + row as u16, inner.width - 2, 1),
+            pairs,
+        );
+    }
     true
 }
 
@@ -262,13 +366,7 @@ pub fn dialog_frame(
 ) -> Option<Rect> {
     let area = frame.area();
     if !dialog_fits(area) {
-        frame.render_widget(Clear, area);
-        frame.render_widget(
-            ratatui::widgets::Paragraph::new("Resize to confirm · Esc cancels")
-                .wrap(ratatui::widgets::Wrap { trim: true })
-                .style(surface()),
-            area,
-        );
+        resize_notice(frame);
         return None;
     }
     let width = area.width.saturating_sub(4).min(max_width);
@@ -408,5 +506,121 @@ mod tests {
             assert!(!matched.add_modifier.contains(Modifier::UNDERLINED));
         }
         crate::theme::set_theme(crate::theme::Theme::Terminal);
+    }
+
+    #[test]
+    fn a_question_is_drawn_whole_or_not_at_all() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let replace: &'static [(&'static str, &'static str)] = &[
+            ("Y", "Replace"),
+            ("N", "Choose another name"),
+            ("Esc", "Cancel"),
+        ];
+        type Keys = &'static [(&'static str, &'static str)];
+        let questions: [(&str, Vec<&str>, Keys, u16); 3] = [
+            (
+                "Replace file?",
+                vec![
+                    "a-rather-long-file-name.md is a link to /somewhere/else/target.md.",
+                    "Replace that file with this document? What it holds now will be lost.",
+                ],
+                replace,
+                78,
+            ),
+            (
+                "Unsaved document",
+                vec![
+                    "untitled 3",
+                    "Save changes before quitting?",
+                    "Other unsaved tabs are checked next; cancelling keeps every tab.",
+                ],
+                &[("Y", "Save"), ("N", "Discard"), ("Esc", "Cancel")],
+                72,
+            ),
+            (
+                "Reload from disk",
+                vec![
+                    "Replace local edits with disk text?",
+                    "Undo can restore your local edits.",
+                ],
+                &[("Y", "Reload"), ("N", "Keep editing")],
+                60,
+            ),
+        ];
+        for (title, lines, keys_row, max_width) in &questions {
+            let body: Vec<Line> = lines.iter().map(|line| Line::from(*line)).collect();
+            let mut smallest = None;
+            for width in [1u16, 12, 30].into_iter().chain(40..=84).chain([100]) {
+                let mut fitted = false;
+                for height in 4..=18u16 {
+                    let area = Rect::new(0, 0, width, height);
+                    let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+                    let mut shown = false;
+                    terminal
+                        .draw(|frame| shown = dialog(frame, title, &body, keys_row, *max_width))
+                        .unwrap();
+                    // What is drawn and what a handler is told always agree.
+                    assert_eq!(shown, question_fits(area, &body, keys_row, *max_width));
+                    let buffer = terminal.backend().buffer();
+                    let screen: String = (0..height)
+                        .flat_map(|y| (0..width).map(move |x| (x, y)))
+                        .map(|at| buffer[at].symbol())
+                        .collect();
+                    let squeezed: String = screen.split_whitespace().collect();
+                    let context = format!("{title} at {width}x{height}:\n{screen}");
+                    if shown {
+                        // Every word of every sentence, and every key with
+                        // what it does, is on the screen.
+                        for line in lines {
+                            for word in line.split_whitespace() {
+                                assert!(screen.contains(word), "{word:?} in {context}");
+                            }
+                        }
+                        for (key, action) in keys_row.iter() {
+                            let pair: String =
+                                format!("{key}{action}").split_whitespace().collect();
+                            assert!(squeezed.contains(&pair), "{pair:?} in {context}");
+                        }
+                        assert!(screen.contains(title), "{context}");
+                        // More rows never take a question away.
+                        fitted = true;
+                        smallest.get_or_insert((width, height));
+                    } else {
+                        assert!(!fitted, "{context}");
+                        // Nothing of the question, and no key that answers
+                        // it, is offered: only the way out.
+                        assert!(!screen.contains(title), "{context}");
+                        for (key, action) in keys_row.iter().filter(|(key, _)| *key != "Esc") {
+                            let chip = format!(" {key}  {action}");
+                            assert!(!screen.contains(&chip), "{chip:?} in {context}");
+                        }
+                    }
+                }
+            }
+            // No question fits the smallest window dialogs are drawn in
+            // unless all of it does, and each fits an ordinary one.
+            let (width, height) = smallest.expect("the question fits some window");
+            assert!(width >= 44 && height >= 9, "{title} at {width}x{height}");
+            assert!(question_fits(
+                Rect::new(0, 0, 80, 24),
+                &body,
+                keys_row,
+                *max_width
+            ));
+        }
+        // The replace question, cut short at 44 by 9 before, waits for room
+        // there and shows its keys on rows of their own once it has it.
+        let body: Vec<Line> = questions[0]
+            .1
+            .iter()
+            .map(|line| Line::from(*line))
+            .collect();
+        assert!(!question_fits(Rect::new(0, 0, 44, 9), &body, replace, 78));
+        assert!(!question_fits(Rect::new(0, 0, 44, 12), &body, replace, 78));
+        assert!(question_fits(Rect::new(0, 0, 44, 16), &body, replace, 78));
+        assert!(question_fits(Rect::new(0, 0, 80, 9), &body, replace, 78));
+        assert_eq!(key_rows(replace, 36).map(|rows| rows.len()), Some(3));
+        assert_eq!(key_rows(replace, 52).map(|rows| rows.len()), Some(1));
+        assert_eq!(key_rows(replace, 20), None);
     }
 }
