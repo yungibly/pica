@@ -44,13 +44,13 @@ The defaults follow micro's. Press **Ctrl+G** for help and **Ctrl+E** for every 
 | Ctrl+A | Select all | Home | Line text, then line start |
 | Ctrl+R | Line numbers (code) or live/source view (Markdown) | Ctrl+B / Alt+I / Alt+T | Bold / italic / toggle task (Markdown) |
 
-Enter keeps the current line's indentation and continues Markdown lists. Tab inserts a tab; with a selection it indents lines. [The full key reference](docs/keys.md) lists every key, the differences from micro, and terminal quirks. Function keys from earlier versions still work but are not shown.
+Enter keeps the current line's indentation and continues Markdown lists. Tab indents the way the file already does: a tab in a tab-indented file, otherwise spaces to the file's own width, so a Python or YAML file never gains a stray tab. Shift+Tab and Backspace take a level back out, and with a selection Tab indents the selected lines. In a Markdown list, Tab and Shift+Tab nest an item under the one above or lift it out. [The full key reference](docs/keys.md) lists every key, the differences from micro, and terminal quirks. Function keys from earlier versions still work but are not shown.
 
 ## Markdown
 
 Markdown opens in a live view. Headings carry a mark in the margin, tables become aligned grids, fenced code and front matter become labelled, highlighted surfaces, `> [!NOTE]` alerts become callouts, and task boxes can be clicked. The block holding the caret always shows its exact source, so you edit what is in the file and nothing else changes. Ctrl+R switches to the plain numbered source view. pica remembers that choice for later Markdown files.
 
-Lists continue on Enter; Enter on an empty item leaves the list. Clicking a task box, or pressing Alt+T, changes only its `[ ]` / `[x]` marker. From Ctrl+E you can open an outline sidebar of the document's headings (it stays open once chosen), jump to any heading, or switch documents by fuzzy name. Footnotes, math, raw HTML, and other unsupported constructs stay visible as source.
+Lists continue on Enter; Enter on an empty item leaves the list. Tab nests an item under the one above it and Shift+Tab lifts it back out, with its own lines and children. Clicking a task box, or pressing Alt+T, changes only its `[ ]` / `[x]` marker. From Ctrl+E you can open an outline sidebar of the document's headings (it stays open once chosen), jump to any heading, or switch documents by fuzzy name. Footnotes, math, raw HTML, and other unsupported constructs stay visible as source.
 
 Code files and plain text open as numbered source with highlighting for 41 languages, including Rust, Python, JavaScript, TypeScript, Go, C and C++, shell, SQL, HTML, CSS, JSON, YAML, TOML, and diffs. The highlighter is small and built in: it knows comments, strings, keywords, and literals, not full grammars.
 
@@ -60,7 +60,7 @@ The default **Terminal** theme uses your terminal's own background, foreground, 
 
 A lone document has no tab row: just the text and one status line naming the file, its position, kind, and size. Tabs appear when a second document opens. Indent guides for code are off until you choose them from Ctrl+E. **Nerd Font icons** are on by default in Ghostty, Kitty, and WezTerm outside tmux, and off elsewhere. Toggle them from Ctrl+E, or launch with `--icons nerd` or `--icons plain`.
 
-Theme, icon, outline, guide, and view choices are saved to `$XDG_CONFIG_HOME/pica/settings.conf` (by default `~/.config/pica/settings.conf`). `--no-state` disables preferences and recovery.
+Theme, icon, outline, guide, indentation, and view choices are saved to `$XDG_CONFIG_HOME/pica/settings.conf` (by default `~/.config/pica/settings.conf`). `--no-state` disables preferences and recovery.
 
 ## Files and safety
 

@@ -152,11 +152,50 @@ fn indentation_handles_empty_final_and_tabbed_lines() {
             head: doc.text().len()
         }
     );
+    // Indenting a selection leaves its empty lines empty.
     let mut doc = Document::new("\u{feff}  a\r\n\r\n");
     doc.select_all();
     doc.indent_lines();
-    assert_eq!(doc.text(), "\u{feff}      a\r\n    \r\n");
+    assert_eq!(doc.text(), "\u{feff}      a\r\n\r\n");
     assert_eq!(doc.selection().anchor, 0);
+    let mut doc = Document::new("a\n\n  \nb\n");
+    doc.select_all();
+    doc.indent_lines();
+    assert_eq!(doc.text(), "    a\n\n      \n    b\n");
+}
+
+#[test]
+fn indentation_uses_the_given_level() {
+    use crate::editing::Indent;
+    let original = "a\n  b\n\tc\n      d\n";
+    for (indent, indented, outdented) in [
+        (
+            Indent::Tabs,
+            "\ta\n\t  b\n\t\tc\n\t      d\n",
+            "a\nb\nc\n  d\n",
+        ),
+        (
+            Indent::Spaces(2),
+            "  a\n    b\n  \tc\n        d\n",
+            "a\nb\nc\n    d\n",
+        ),
+        (
+            Indent::Spaces(8),
+            "        a\n          b\n        \tc\n              d\n",
+            "a\nb\nc\nd\n",
+        ),
+    ] {
+        let mut doc = Document::new(original);
+        doc.select_all();
+        assert!(doc.indent_lines_by(indent));
+        assert_eq!(doc.text(), indented, "{indent:?}");
+        doc.undo();
+        assert_eq!(doc.text(), original);
+        assert!(doc.outdent_lines_by(indent));
+        assert_eq!(doc.text(), outdented, "{indent:?}");
+        doc.undo();
+        assert_eq!(doc.text(), original);
+    }
 }
 
 #[test]
