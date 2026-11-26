@@ -344,7 +344,11 @@ def workspace(session):
 
     command("New tab")
     session.check("untitled 2" in session.state()["text"], "Palette creates an independent document tab")
+    session.check(not outline_labels(session.cells()) and "No headings" not in session.state()["text"],
+                  "The chosen outline stays away from a document with no headings")
     session.key("Alt+,")
+    session.check(bool(outline_labels(session.cells())),
+                  "The outline returns with the document that has headings")
     session.key("Ctrl+Home")
     session.capture("07-document-tabs")
     for width, height in [(120, 36), (80, 24), (42, 16), (20, 10)]:
@@ -903,8 +907,17 @@ def rendering(session):
     text = session.state()["text"]
     for glyph in ["╭", "┼", "╰", "▎", "▌"]:
         session.check(any(c["char"] == glyph for c in cells), f"Rendered frame draws {glyph}")
-    for literal in ["[x]", "[!NOTE]", "```", "| :---", "**bold**"]:
+    for literal in ["[x]", "[!NOTE]", "```", "| :---", "**bold**", "`code`", "badge.svg", "![", "]("]:
         session.check(literal not in text, f"Rendered frame conceals {literal}")
+    code = next(find_cells(cells, "code"))
+    prose = next(find_cells(cells, "Plain"))[0]
+    session.check(all((c["fg"], c["bg"]) != (prose["fg"], prose["bg"]) for c in code),
+                  "Inline code stands apart from prose without its backticks")
+    badge = next(find_cells(cells, "Badge"))
+    session.check(all(c["underline"] for c in badge), "A badge shows its label as a link")
+    diagram = next(find_cells(cells, "a diagram"))
+    session.check(all(c["italic"] and not c["underline"] for c in diagram),
+                  "An image shows its alt text, not as a link")
     header = next(find_cells(cells, "Name"))
     session.check(all(c["bold"] for c in header), "Table header is bold")
     count = next(find_cells(cells, "Count"))
