@@ -101,6 +101,145 @@ fn chosen_indentation_applies_at_once_survives_restart_and_can_follow_files_agai
     crate::app::set_indent_preference(None);
 }
 
+fn screen(app: &mut Workspace, width: u16, height: u16) -> String {
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+    terminal.draw(|frame| app.draw(frame)).unwrap();
+    let buffer = terminal.backend().buffer();
+    (0..height)
+        .map(|y| {
+            (0..width)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect::<String>()
+                + "\n"
+        })
+        .collect()
+}
+
+#[test]
+fn keys_conf_binds_commands_and_keys_and_the_palette_shows_them() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("config")).unwrap();
+    let keys = dir.path().join("config/keys.conf");
+    fs::write(
+        &keys,
+        "# mine\nctrl+j = duplicate\nctrl+d = none\nalt+w = ctrl+a\nctrl+s = find\nctrl+f = save\nalt+q = quit\n",
+    )
+    .unwrap();
+    let before = fs::read(&keys).unwrap();
+    let file = dir.path().join("notes.txt");
+    fs::write(&file, "one\n").unwrap();
+    let mut app = Workspace::open(Some(file.clone())).unwrap();
+    configure(&mut app, dir.path());
+    let first = screen(&mut app, 80, 24);
+    assert!(first.contains(" notes.txt "), "{first}");
+    // A command by its name; the default key it replaced; a key by a key.
+    key(&mut app, KeyCode::Char('j'), KeyModifiers::CONTROL);
+    assert_eq!(app.editor().document.text(), "one\none\n");
+    key(&mut app, KeyCode::Char('d'), KeyModifiers::CONTROL);
+    assert_eq!(app.editor().document.text(), "one\none\n");
+    key(&mut app, KeyCode::Char('w'), KeyModifiers::ALT);
+    assert_eq!(app.editor().document.selected_text(), "one\none\n");
+    // Two keys that swap commands do not chase each other.
+    key(&mut app, KeyCode::Char('s'), KeyModifiers::CONTROL);
+    assert!(screen(&mut app, 80, 24).contains(" Find "));
+    assert_eq!(fs::read_to_string(&file).unwrap(), "one\n");
+    key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+    key(&mut app, KeyCode::Char('f'), KeyModifiers::CONTROL);
+    assert_eq!(fs::read_to_string(&file).unwrap(), "one\none\n");
+    assert!(!app.editor().document.is_dirty());
+    // The palette names the user's keys, runs every command whatever its
+    // key has become, and types bound letters into its filter.
+    key(&mut app, KeyCode::Char('e'), KeyModifiers::CONTROL);
+    let palette = screen(&mut app, 80, 30);
+    let row = |label: &str| {
+        palette
+            .lines()
+            .find(|line| line.contains(label))
+            .unwrap_or_else(|| panic!("{label} in\n{palette}"))
+            .to_owned()
+    };
+    assert!(row("Save document").contains("Ctrl+F"));
+    assert!(row("Find in document").contains("Ctrl+S"));
+    app.handle_event(Event::Paste("duplicate line or".into()));
+    let filtered = screen(&mut app, 80, 30);
+    assert!(
+        filtered.contains("Ctrl+J") && !filtered.contains("Ctrl+D"),
+        "{filtered}"
+    );
+    key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    assert_eq!(app.editor().document.text(), "one\none\none\none\n");
+    key(&mut app, KeyCode::Char('z'), KeyModifiers::CONTROL);
+    assert!(!app.should_exit);
+    key(&mut app, KeyCode::Char('q'), KeyModifiers::ALT);
+    assert!(app.should_exit);
+    assert_eq!(fs::read(&keys).unwrap(), before);
+    app.finish_state().unwrap();
+}
+
+#[test]
+fn a_keys_conf_with_mistakes_says_so_and_keeps_its_good_lines() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("config")).unwrap();
+    fs::write(
+        dir.path().join("config/keys.conf"),
+        "ctrl+j = duplicate\nctrl+y = dance\nj = save\n",
+    )
+    .unwrap();
+    let mut app = Workspace::open(None).unwrap();
+    configure(&mut app, dir.path());
+    let shown = screen(&mut app, 100, 12);
+    assert!(
+        shown.contains("keys.conf line 2: unknown command \"dance\", and 1 more"),
+        "{shown}"
+    );
+    key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+    app.editor_mut().document.insert("x");
+    key(&mut app, KeyCode::Char('j'), KeyModifiers::CONTROL);
+    assert_eq!(app.editor().document.text(), "x\nx");
+    // The line that failed leaves its key alone: Ctrl+Y still redoes.
+    key(&mut app, KeyCode::Char('z'), KeyModifiers::CONTROL);
+    key(&mut app, KeyCode::Char('y'), KeyModifiers::CONTROL);
+    assert_eq!(app.editor().document.text(), "x\nx");
+    app.finish_state().unwrap();
+
+    // A directory or an oversized file in its place is a problem, not a crash.
+    let odd = tempfile::tempdir().unwrap();
+    fs::create_dir_all(odd.path().join("config/keys.conf")).unwrap();
+    let mut app = Workspace::open(None).unwrap();
+    configure(&mut app, odd.path());
+    assert!(screen(&mut app, 100, 12).contains("Key bindings unavailable"));
+    app.finish_state().unwrap();
+}
+
+#[test]
+fn bound_keys_stay_out_of_prompts_pickers_and_the_browser() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("config")).unwrap();
+    fs::write(dir.path().join("config/keys.conf"), "ctrl+a = duplicate\n").unwrap();
+    let mut app = Workspace::open(None).unwrap();
+    configure(&mut app, dir.path());
+    app.editor_mut().document.insert("x");
+    draw(&mut app, 80, 24);
+    // In the palette's filter, Ctrl+A is still the field's select all.
+    key(&mut app, KeyCode::Char('e'), KeyModifiers::CONTROL);
+    app.handle_event(Event::Paste("zzz".into()));
+    key(&mut app, KeyCode::Char('a'), KeyModifiers::CONTROL);
+    app.handle_event(Event::Paste("undo".into()));
+    assert!(screen(&mut app, 80, 24).contains("Undo edit"));
+    assert_eq!(app.editor().document.text(), "x");
+    key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+    // In the Save As prompt it does not duplicate a line either.
+    key(&mut app, KeyCode::Char('s'), KeyModifiers::CONTROL);
+    draw(&mut app, 80, 24);
+    key(&mut app, KeyCode::Char('a'), KeyModifiers::CONTROL);
+    assert_eq!(app.editor().document.text(), "x");
+    key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+    // In the text it is the user's key.
+    key(&mut app, KeyCode::Char('a'), KeyModifiers::CONTROL);
+    assert_eq!(app.editor().document.text(), "x\nx");
+    app.finish_state().unwrap();
+}
+
 #[test]
 fn find_case_choice_is_saved_when_toggled_and_restored_on_restart() {
     let dir = tempfile::tempdir().unwrap();
