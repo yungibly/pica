@@ -717,7 +717,7 @@ impl Workspace {
                         }
                     } else {
                         self.editor_mut()
-                            .set_message("Document changed; reopen headings to choose a section.");
+                            .inform("Document changed; reopen headings to choose a section.");
                     }
                 }
             },
@@ -744,6 +744,14 @@ impl Workspace {
                 && !key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT));
         if !typing {
             self.editor_mut().document.break_undo_group();
+        }
+        // A notice lasts until the next keypress, paste or click, including
+        // the ones the workspace handles without the editor seeing them.
+        if matches!(&event, Event::Key(_))
+            || matches!(&event, Event::Paste(text) if !text.is_empty())
+            || matches!(&event, Event::Mouse(mouse) if mouse.kind == MouseEventKind::Down(MouseButton::Left))
+        {
+            self.editor_mut().clear_notice();
         }
         if let Event::Resize(width, height) = &event {
             self.area = Rect::new(0, 0, *width, *height);
