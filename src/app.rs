@@ -1414,8 +1414,8 @@ impl App {
             }
             KeyCode::Up => self.vertical(-1, shift),
             KeyCode::Down => self.vertical(1, shift),
-            KeyCode::PageUp => self.vertical(-(self.viewport.height.max(1) as isize), shift),
-            KeyCode::PageDown => self.vertical(self.viewport.height.max(1) as isize, shift),
+            KeyCode::PageUp => self.page(false, shift),
+            KeyCode::PageDown => self.page(true, shift),
             KeyCode::Home => {
                 // Smart Home works on source lines: first non-blank, then
                 // column zero, alternating.
@@ -1646,6 +1646,44 @@ impl App {
         if target_row >= self.scroll && target_row < self.scroll + self.viewport.height as usize {
             self.anchor_screen_row = Some(target_row - self.scroll);
         }
+    }
+
+    /// PageUp and PageDown move the caret a screen of rows and the view
+    /// with it, so every press shows the next page and the caret keeps its
+    /// screen row. At either end of the document the view stops and the
+    /// caret goes on to the first or last row. A caret scrolled out of view
+    /// moves a page from where it is and is brought back into view.
+    fn page(&mut self, down: bool, extend: bool) {
+        let height = self.page_height();
+        let (row, _) = self.prepare_caret();
+        let screen = row
+            .checked_sub(self.scroll)
+            .filter(|screen| *screen < height);
+        // Lay out the page being scrolled to, past the rows the caret crosses.
+        if down {
+            self.reach(0, height);
+        } else {
+            self.reach(height, 0);
+        }
+        self.vertical(
+            if down {
+                height as isize
+            } else {
+                -(height as isize)
+            },
+            extend,
+        );
+        let (Some(screen), Some((row, _))) = (screen, self.caret_cell()) else {
+            return;
+        };
+        let last = if self.projection.complete() {
+            self.projection.row_count().saturating_sub(height)
+        } else {
+            self.projection.row_count() - 1
+        };
+        self.scroll = row.saturating_sub(screen).min(last);
+        self.top = self.anchor_at(self.scroll);
+        self.anchor_screen_row = Some(row - self.scroll);
     }
 
     fn mouse(&mut self, event: MouseEvent) {
@@ -4461,6 +4499,77 @@ mod tests {
         assert_eq!(app.document.text(), "firstsecondx");
         key(&mut app, KeyCode::Char('z'), KeyModifiers::CONTROL);
         assert_eq!(app.document.text(), "firstsecond");
+    }
+
+    #[test]
+    fn page_keys_move_the_view_a_screen_and_keep_the_carets_screen_row() {
+        let text: String = (1..=200).map(|n| format!("line {n}\n")).collect();
+        let mut app = App::new(text.clone(), None, false);
+        draw(&mut app, 60, 20);
+        let height = usize::from(app.viewport.height);
+        let top = |app: &App| app.projection.row(app.scroll).line.unwrap();
+        let caret = |app: &mut App| {
+            let (row, _) = app.caret_cell().unwrap();
+            (app.projection.row(row).line.unwrap(), row - app.scroll)
+        };
+        let press = |app: &mut App, code, modifiers| {
+            key(app, code, modifiers);
+            draw(app, 60, 20);
+        };
+        // From the first line, one press already shows the next page.
+        press(&mut app, KeyCode::PageDown, KeyModifiers::NONE);
+        assert_eq!(top(&app), height + 1);
+        assert_eq!(caret(&mut app), (height + 1, 0));
+        // The caret keeps whatever screen row it is on, both ways.
+        for _ in 0..3 {
+            press(&mut app, KeyCode::Down, KeyModifiers::NONE);
+        }
+        press(&mut app, KeyCode::PageDown, KeyModifiers::NONE);
+        assert_eq!(top(&app), 2 * height + 1);
+        assert_eq!(caret(&mut app), (2 * height + 4, 3));
+        press(&mut app, KeyCode::PageUp, KeyModifiers::NONE);
+        press(&mut app, KeyCode::PageUp, KeyModifiers::NONE);
+        assert_eq!(top(&app), 1);
+        assert_eq!(caret(&mut app), (4, 3));
+        // At the top the view stays and the caret goes on to the first row.
+        press(&mut app, KeyCode::PageUp, KeyModifiers::NONE);
+        assert_eq!((top(&app), caret(&mut app)), (1, (1, 0)));
+        // At the end the last page stays full and the caret reaches the end.
+        for _ in 0..(200 / height + 2) {
+            press(&mut app, KeyCode::PageDown, KeyModifiers::NONE);
+        }
+        assert_eq!(app.document.selection().head, text.len());
+        assert_eq!(top(&app), 201 - (height - 1));
+        assert_eq!(caret(&mut app).1, height - 1);
+        // Shift extends the selection by the same page.
+        press(&mut app, KeyCode::Home, KeyModifiers::CONTROL);
+        press(&mut app, KeyCode::PageDown, KeyModifiers::SHIFT);
+        assert_eq!(app.document.selected_text().lines().count(), height);
+        assert_eq!(top(&app), height + 1);
+        assert_eq!(app.document.text(), text);
+    }
+
+    #[test]
+    fn paging_from_a_caret_scrolled_out_of_view_brings_it_back() {
+        let text: String = (1..=300).map(|n| format!("line {n}\n")).collect();
+        let mut app = App::new(text, None, false);
+        draw(&mut app, 60, 20);
+        let height = usize::from(app.viewport.height);
+        for _ in 0..10 {
+            app.handle_event(Event::Mouse(MouseEvent {
+                kind: MouseEventKind::ScrollDown,
+                column: 5,
+                row: 5,
+                modifiers: KeyModifiers::NONE,
+            }));
+            draw(&mut app, 60, 20);
+        }
+        assert_eq!(app.document.selection().head, 0);
+        key(&mut app, KeyCode::PageDown, KeyModifiers::NONE);
+        draw(&mut app, 60, 20);
+        let (row, _) = app.caret_cell().unwrap();
+        assert_eq!(app.projection.row(row).line, Some(height + 1));
+        assert!(row >= app.scroll && row < app.scroll + height);
     }
 
     #[test]
