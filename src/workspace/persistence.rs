@@ -66,6 +66,7 @@ impl Workspace {
                     crate::icons::set(icons);
                 }
                 crate::app::set_indent_preference(settings.indent());
+                pica::editing::set_tab_width(settings.tab_width().unwrap_or(4));
                 crate::search::set_match_case(settings.find_match_case());
                 if !explicit_theme && let Some(theme) = settings.theme() {
                     self.editor_mut().set_theme(theme);
@@ -194,6 +195,19 @@ impl Workspace {
         if let Some(Err(error)) = result {
             self.editor_mut().set_message(format!(
                 "Find changed for this session; could not save preferences: {error}"
+            ));
+        }
+    }
+    pub(super) fn persist_tab_width(&mut self) {
+        let width = pica::editing::tab_width();
+        let result = self
+            .persistence
+            .as_mut()
+            .and_then(|state| state.settings.as_mut())
+            .map(|settings| settings.save_tab_width(width));
+        if let Some(Err(error)) = result {
+            self.editor_mut().set_message(format!(
+                "Tab width changed for this session; could not save preferences: {error}"
             ));
         }
     }
