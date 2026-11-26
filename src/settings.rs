@@ -160,6 +160,14 @@ impl Settings {
     pub fn save_guides(&mut self, on: bool) -> io::Result<()> {
         self.save("guides", if on { "on" } else { "off" })
     }
+    /// Word wrap in code, plain text and Markdown source; on unless
+    /// switched off.
+    pub fn wrap(&self) -> bool {
+        self.values.get("wrap").is_none_or(|value| value != "off")
+    }
+    pub fn save_wrap(&mut self, on: bool) -> io::Result<()> {
+        self.save("wrap", if on { "on" } else { "off" })
+    }
     /// The indentation chosen for every file; `None` follows each file.
     pub fn indent(&self) -> Option<Indent> {
         match self.values.get("indent").map(String::as_str)? {
@@ -381,6 +389,8 @@ mod tests {
         settings.save_markdown_live(false).unwrap();
         assert!(!settings.guides());
         settings.save_guides(true).unwrap();
+        assert!(settings.wrap(), "lines wrap unless switched off");
+        settings.save_wrap(false).unwrap();
         settings.save_icons(IconSet::Nerd).unwrap();
         assert_eq!(settings.indent(), None);
         assert!(!settings.find_match_case());
@@ -392,6 +402,7 @@ mod tests {
         assert_eq!(loaded.theme(), Some(Theme::Light));
         assert_eq!(loaded.sidebar(), Some(false));
         assert_eq!(loaded.markdown_live(), Some(false));
+        assert!(!loaded.wrap());
         assert!(loaded.guides());
         assert_eq!(loaded.icons(), Some(IconSet::Nerd));
         assert!(fs::read_to_string(path).unwrap().contains("future=keep"));

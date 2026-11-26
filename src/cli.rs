@@ -24,6 +24,7 @@ Options:
   --list-themes           List built-in theme IDs and names
   --no-state              Disable preferences and crash recovery
   --source                Open Markdown with its source visible
+  --no-wrap               Keep each line on one row; the view scrolls sideways
   --snapshot              Print the real renderer without opening a terminal
   --snapshot-size WxH     Snapshot dimensions (default: 80x24; max: 400x160)
   -h, --help              Show this help
@@ -68,6 +69,8 @@ pub struct Options {
     pub position: Option<Position>,
     pub snapshot: bool,
     pub source: bool,
+    /// `--no-wrap`: word wrap off for this launch.
+    pub no_wrap: bool,
     pub theme: Option<Theme>,
     pub icons: Option<IconSet>,
     pub no_state: bool,
@@ -88,6 +91,7 @@ pub fn parse(arguments: impl IntoIterator<Item = OsString>) -> io::Result<Action
         position: None,
         snapshot: false,
         source: false,
+        no_wrap: false,
         theme: None,
         icons: None,
         no_state: false,
@@ -114,6 +118,10 @@ pub fn parse(arguments: impl IntoIterator<Item = OsString>) -> io::Result<Action
                 }
                 Some("--source") => {
                     options.source = true;
+                    continue;
+                }
+                Some("--no-wrap") => {
+                    options.no_wrap = true;
                     continue;
                 }
                 Some("--") => {
@@ -283,6 +291,7 @@ mod tests {
                 position: None,
                 snapshot: false,
                 source: false,
+                no_wrap: false,
                 theme: None,
                 icons: None,
                 no_state: false,
@@ -293,6 +302,7 @@ mod tests {
             args(&[
                 "--snapshot",
                 "--source",
+                "--no-wrap",
                 "--theme=light",
                 "--icons=nerd",
                 "--snapshot-size",
@@ -305,6 +315,7 @@ mod tests {
                 position: None,
                 snapshot: true,
                 source: true,
+                no_wrap: true,
                 theme: Some(Theme::Light),
                 icons: Some(IconSet::Nerd),
                 no_state: false,

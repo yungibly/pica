@@ -22,6 +22,7 @@ pub(super) enum Command {
     Replace,
     View,
     Ruler,
+    Wrap,
     Sidebar,
     NextTab,
     PreviousTab,
@@ -53,7 +54,7 @@ pub(super) enum Command {
     Recover,
 }
 impl Command {
-    pub const ALL: [Self; 40] = [
+    pub const ALL: [Self; 41] = [
         Self::New,
         Self::Open,
         Self::Save,
@@ -65,6 +66,7 @@ impl Command {
         Self::Replace,
         Self::View,
         Self::Ruler,
+        Self::Wrap,
         Self::Sidebar,
         Self::NextTab,
         Self::PreviousTab,
@@ -108,6 +110,7 @@ impl Command {
             Self::Replace => "Find and replace",
             Self::View => "Toggle live / source view",
             Self::Ruler => "Toggle line numbers",
+            Self::Wrap => "Toggle word wrap",
             Self::Sidebar => "Toggle outline sidebar",
             Self::NextTab => "Next tab",
             Self::PreviousTab => "Previous tab",
@@ -154,6 +157,7 @@ impl Command {
             Self::Replace => "replace",
             Self::View => "toggle-view",
             Self::Ruler => "toggle-line-numbers",
+            Self::Wrap => "toggle-word-wrap",
             Self::Sidebar => "toggle-outline",
             Self::NextTab => "next-tab",
             Self::PreviousTab => "previous-tab",
@@ -198,6 +202,7 @@ impl Command {
             Self::FindPrevious => "Ctrl+P",
             Self::View if markdown => "Ctrl+R",
             Self::Ruler if !markdown => "Ctrl+R",
+            Self::Wrap => "Alt+Z",
             Self::NextTab => "Alt+.",
             Self::PreviousTab => "Alt+,",
             Self::GoToLine => "Ctrl+L",

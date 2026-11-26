@@ -183,6 +183,19 @@ as it does everywhere else.
 | Ctrl+E | Command palette. Type to filter; a bare number such as `42` or `42:7` goes to that line. |
 | Ctrl+G | This reference; Ctrl+G or Esc closes it |
 | Ctrl+R | Line numbers on or off (micro's ruler) in code and plain text |
+| Alt+Z | Word wrap on or off |
+
+Long lines wrap between words, and only a word longer than a row is broken
+inside. With word wrap off, code, plain text and Markdown's source view keep
+every line on one row: the view scrolls sideways to follow the caret, a `›`
+at the right edge or a `‹` beside the line number marks a line that
+continues out of view, and the line numbers stay where they are. Home and
+End then go to the ends of the whole line. A sideways wheel, or Shift with
+the ordinary wheel, scrolls along the lines without moving the caret. The
+Markdown live view always wraps. The choice applies to every tab and is
+remembered; `--no-wrap` turns wrap off for one launch. A line longer than
+4,000 columns still continues on the next row, which keeps minified and
+generated files quick to edit.
 
 The palette also holds the commands without a key of their own: Save as,
 Reload, Quit pica (all tabs), the outline sidebar, Switch document, Go to
@@ -239,6 +252,7 @@ below apply to your keys too: some combinations never reach a program.
 | `replace` | Find and replace |
 | `toggle-view` | Toggle live / source view |
 | `toggle-line-numbers` | Toggle line numbers |
+| `toggle-word-wrap` | Toggle word wrap |
 | `toggle-outline` | Toggle outline sidebar |
 | `next-tab` | Next tab |
 | `previous-tab` | Previous tab |
@@ -312,6 +326,7 @@ pica src/app.rs:120:5      # line and column, when no file has that name
 pica ~/projects            # open the file browser in a folder
 git log | pica             # read piped input into an unsaved buffer
 pica -                     # read standard input explicitly
+pica --no-wrap server.log  # keep each line on one row for this launch
 ```
 
 Saving a file opened through a symbolic link (as dotfile managers create)
@@ -334,5 +349,7 @@ another user's file to you.
   and `tabsize` options.
 - Find matches literal text and ignores case until Alt+C asks for an exact
   match; micro's find takes a regular expression.
+- Long lines wrap until Alt+Z turns wrapping off; micro leaves them
+  unwrapped until its `softwrap` option is set.
 - There are no macros (Ctrl+U, Ctrl+J). Keys are rebound in `keys.conf`,
   described above, not in micro's `bindings.json`.

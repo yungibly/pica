@@ -703,3 +703,100 @@ fn markdown_view_choice_is_remembered_without_forcing_other_files() {
     restarted.finish_state().unwrap();
     fresh.finish_state().unwrap();
 }
+
+#[test]
+fn word_wrap_choice_applies_to_every_tab_and_survives_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let code = dir.path().join("long.rs");
+    let line = format!("fn main() {{ {}}}", "call(); ".repeat(30));
+    fs::write(&code, format!("{line}\nfn next() {{}}\n")).unwrap();
+    let notes = dir.path().join("notes.md");
+    fs::write(&notes, format!("# Notes\n\n{}\n", "prose ".repeat(60))).unwrap();
+    let launch = |paths: &[&PathBuf]| {
+        let items = paths
+            .iter()
+            .map(|path| Launch::Path((*path).clone(), None))
+            .collect();
+        Workspace::launch(items).unwrap()
+    };
+    let saved = || fs::read_to_string(dir.path().join("config/settings.conf")).unwrap();
+    let mut app = launch(&[&code, &notes]);
+    configure(&mut app, dir.path());
+    draw(&mut app, 100, 24);
+    assert!(app.editor().projection.row_count() > 3, "long lines wrap");
+    assert!(!dir.path().join("config/settings.conf").exists());
+
+    // Alt+Z turns wrap off: one row for each line, and the choice is saved.
+    key(&mut app, KeyCode::Char('z'), KeyModifiers::ALT);
+    assert!(status_row(&mut app).contains("Word wrap off · long lines scroll sideways"));
+    assert!(app.editor().unwrapped());
+    assert_eq!(app.editor().projection.row_count(), 3);
+    assert!(saved().contains("wrap=off\n"), "{}", saved());
+    // The notice goes with the next key, like any other.
+    key(&mut app, KeyCode::Down, KeyModifiers::NONE);
+    assert!(!status_row(&mut app).contains("Word wrap"));
+
+    // It holds for the other tab. Rendered Markdown wraps regardless, and
+    // its source view does not.
+    key(&mut app, KeyCode::Char('.'), KeyModifiers::ALT);
+    draw(&mut app, 100, 24);
+    assert!(app.editor().is_markdown() && app.editor().live_view());
+    assert!(!app.editor().unwrapped());
+    assert!(app.editor().projection.row_count() > 4);
+    key(&mut app, KeyCode::Char('r'), KeyModifiers::CONTROL);
+    draw(&mut app, 100, 24);
+    assert!(app.editor().unwrapped());
+    assert_eq!(app.editor().projection.row_count(), 4);
+    key(&mut app, KeyCode::Char('r'), KeyModifiers::CONTROL);
+    draw(&mut app, 100, 24);
+
+    // The palette lists the command with its key and runs the same toggle;
+    // in the live view the notice says where wrap applies.
+    for (on, notice) in [
+        (true, "Word wrap on"),
+        (
+            false,
+            "Word wrap off for code and source views · the live view always wraps",
+        ),
+    ] {
+        key(&mut app, KeyCode::Char('e'), KeyModifiers::CONTROL);
+        app.handle_event(Event::Paste("word wrap".into()));
+        let listed = crate::simulation::snapshot(&mut app, 100, 24).unwrap();
+        assert!(listed.contains("Toggle word wrap"), "{listed}");
+        assert!(listed.contains("Alt+Z"), "{listed}");
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert!(app.palette.is_none());
+        let status = status_row(&mut app);
+        assert!(status.contains(notice), "{status}");
+        let value = if on { "wrap=on\n" } else { "wrap=off\n" };
+        assert!(saved().contains(value), "{}", saved());
+    }
+    assert_eq!(
+        fs::read_to_string(&code).unwrap(),
+        format!("{line}\nfn next() {{}}\n")
+    );
+    app.finish_state().unwrap();
+
+    // A later session starts unwrapped.
+    let mut restarted = launch(&[&code]);
+    configure(&mut restarted, dir.path());
+    draw(&mut restarted, 100, 24);
+    assert!(restarted.editor().unwrapped());
+    assert_eq!(restarted.editor().projection.row_count(), 3);
+    // A tab opened afterwards follows it too.
+    restarted.open_path(notes.clone()).unwrap();
+    key(&mut restarted, KeyCode::Char('r'), KeyModifiers::CONTROL);
+    draw(&mut restarted, 100, 24);
+    assert!(restarted.editor().unwrapped());
+    restarted.finish_state().unwrap();
+
+    // `--no-wrap` outlasts a remembered "on" for one launch, unsaved.
+    let other = tempfile::tempdir().unwrap();
+    let mut flagged = launch(&[&code]);
+    configure(&mut flagged, other.path());
+    flagged.set_wrap(false);
+    draw(&mut flagged, 100, 24);
+    assert!(flagged.editor().unwrapped());
+    assert!(!other.path().join("config/settings.conf").exists());
+    flagged.finish_state().unwrap();
+}

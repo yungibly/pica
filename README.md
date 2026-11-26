@@ -52,7 +52,7 @@ Markdown opens in a live view. Headings carry a mark in the margin, tables becom
 
 Lists continue on Enter; Enter on an empty item leaves the list. Tab nests an item under the one above it and Shift+Tab lifts it back out, with its own lines and children. Clicking a task box, or pressing Alt+T, changes only its `[ ]` / `[x]` marker. From Ctrl+E you can turn on an outline sidebar of the document's headings, jump to any heading, or switch documents by fuzzy name. Once on, the outline shows beside every Markdown document that has headings and stays out of the way of everything else. Footnotes, math, raw HTML, and other unsupported constructs stay visible as source.
 
-Code files and plain text open as numbered source with highlighting for 41 languages, including Rust, Python, JavaScript, TypeScript, Go, C and C++, shell, SQL, HTML, CSS, JSON, YAML, TOML, and diffs. The highlighter is small and built in: it knows comments, strings, keywords, and literals, not full grammars. A line too long for the window wraps between words and continues under its own indentation; only a word longer than a row is broken inside.
+Code files and plain text open as numbered source with highlighting for 41 languages, including Rust, Python, JavaScript, TypeScript, Go, C and C++, shell, SQL, HTML, CSS, JSON, YAML, TOML, and diffs. The highlighter is small and built in: it knows comments, strings, keywords, and literals, not full grammars. A line too long for the window wraps between words and continues under its own indentation; only a word longer than a row is broken inside. **Alt+Z** turns word wrap off: code, plain text, and Markdown source then keep each line on one row, the view scrolls sideways with the caret, and a `›` marks a line that runs on past the edge. The live view always wraps.
 
 ## Looks
 
@@ -60,7 +60,7 @@ The default **Terminal** theme uses your terminal's own background, foreground, 
 
 A lone document has no tab row: just the text and one status line naming the file, its position, kind, and size. Tabs appear when a second document opens, or above the outline when it is showing. Indent guides for code are off until you choose them from Ctrl+E. **Nerd Font icons** are on by default in Ghostty, Kitty, and WezTerm outside tmux, and off elsewhere. Toggle them from Ctrl+E, or launch with `--icons nerd` or `--icons plain`.
 
-Theme, icon, outline, guide, indentation, Find, and view choices are saved to `$XDG_CONFIG_HOME/pica/settings.conf` (by default `~/.config/pica/settings.conf`). `--no-state` disables preferences and recovery.
+Theme, icon, outline, guide, indentation, Find, word wrap, and view choices are saved to `$XDG_CONFIG_HOME/pica/settings.conf` (by default `~/.config/pica/settings.conf`). `--no-state` disables preferences and recovery.
 
 ## Files and safety
 
