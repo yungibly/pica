@@ -136,6 +136,12 @@ Reload, Quit pica (all tabs), the outline sidebar, Switch document, Go to
 heading, themes, icons, indentation and document recovery. In the palette, pickers and
 the go-to-line prompt, Esc or Ctrl+Q closes them without doing anything.
 
+The outline sidebar is a preference: once turned on, it shows beside every
+Markdown document that has at least one heading, in a window at least 60
+columns wide, and nowhere else. Code, plain text and Markdown without
+headings keep the whole window. While you type, it waits for a pause before
+it appears or goes, so a heading half written does not move the text.
+
 The status line shows two kinds of message. A notice, such as "Saved" or
 the count of documents to recover at launch, goes away with the next
 keypress. A problem, such as a failed save, is highlighted and stays while
