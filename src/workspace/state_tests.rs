@@ -177,6 +177,57 @@ fn keys_conf_binds_commands_and_keys_and_the_palette_shows_them() {
 }
 
 #[test]
+fn hints_name_the_keys_that_now_open_commands_and_help() {
+    let launch = |keys: &str| {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("config")).unwrap();
+        if !keys.is_empty() {
+            fs::write(dir.path().join("config/keys.conf"), keys).unwrap();
+        }
+        let mut app = Workspace::open(None).unwrap();
+        configure(&mut app, dir.path());
+        (dir, app)
+    };
+    let status =
+        |app: &mut Workspace, width: u16| screen(app, width, 12).lines().last().unwrap().to_owned();
+    // Untouched, and with bindings that leave both keys alone.
+    let (_dir, mut app) = launch("");
+    assert!(status(&mut app, 100).contains("Ctrl+E commands · Ctrl+G help"));
+    key(&mut app, KeyCode::Char('g'), KeyModifiers::CONTROL);
+    assert!(!screen(&mut app, 100, 30).contains("default keys"));
+    app.finish_state().unwrap();
+    let (_dir, mut app) = launch("ctrl+j = duplicate\n");
+    assert!(status(&mut app, 100).contains("Ctrl+E commands · Ctrl+G help"));
+    assert!(status(&mut app, 70).contains("^E commands · ^G help"));
+    assert!(status(&mut app, 44).ends_with("^G help "));
+    // The help sheet says its keys are the defaults once some have changed.
+    key(&mut app, KeyCode::Char('g'), KeyModifiers::CONTROL);
+    assert!(screen(&mut app, 100, 30).contains("default keys"));
+    app.finish_state().unwrap();
+    // Both moved: one to a key pointed at the old one, one to a command.
+    let (_dir, mut app) = launch("alt+p = ctrl+e\nctrl+e = none\nalt+h = help\nctrl+g = none\n");
+    let shown = status(&mut app, 100);
+    assert!(shown.contains("Alt+P commands · Alt+H help"), "{shown}");
+    assert!(
+        !shown.contains("Ctrl+E") && !shown.contains("Ctrl+G"),
+        "{shown}"
+    );
+    key(&mut app, KeyCode::Char('e'), KeyModifiers::CONTROL);
+    assert!(app.palette.is_none());
+    key(&mut app, KeyCode::Char('p'), KeyModifiers::ALT);
+    assert!(app.palette.is_some());
+    app.finish_state().unwrap();
+    // A key taken away with nothing in its place is not offered.
+    let (_dir, mut app) = launch("ctrl+e = none\n");
+    let shown = status(&mut app, 100);
+    assert!(
+        shown.contains("Ctrl+G help") && !shown.contains("commands"),
+        "{shown}"
+    );
+    app.finish_state().unwrap();
+}
+
+#[test]
 fn a_keys_conf_with_mistakes_says_so_and_keeps_its_good_lines() {
     let dir = tempfile::tempdir().unwrap();
     fs::create_dir_all(dir.path().join("config")).unwrap();

@@ -148,6 +148,7 @@ selects the word first clicked.
 | Alt+C, in Find | Match case, or ignore it again; the **Aa** toggle beside the count does the same |
 | Ctrl+N / Ctrl+P | Next / previous match. With Find closed, they reuse the last query; with no query yet, they open Find. |
 | Enter / Shift+Enter | Next / previous match, in Find |
+| PageUp / PageDown, in Find | Scroll the text a screen without leaving the current match |
 | Ctrl+R, in Find | Expand Find to Replace |
 | Tab | Switch between the Find and With fields |
 | Enter, in With | Replace this match and go to the next |
@@ -266,7 +267,13 @@ movement always work. If a key appears twice, the later line wins.
 A default key keeps its job until you give that key another one. Your keys
 apply in the text and in Find, not while the command palette, a picker, the
 file browser or a prompt has the keyboard. Ctrl+E shows every command with
-the key it has now. Lines pica cannot use are skipped and named in the
+the key it has now, and the status line names the keys that now open the
+commands and the help; the help sheet itself always lists the defaults, and
+says so once you have changed any.
+
+In Find your key wins over Find's own, so a binding on one of them changes
+what it does there too: Find uses Enter, Tab, Esc, PageUp, PageDown, Ctrl+N,
+Ctrl+P, Ctrl+R, Ctrl+F, Alt+R, Alt+A and Alt+C. Lines pica cannot use are skipped and named in the
 status line at startup; `--no-state` ignores the file. The terminal notes
 below apply to your keys too: some combinations never reach a program.
 
