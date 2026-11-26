@@ -888,9 +888,9 @@ impl App {
         self.record_wraps();
     }
 
-    /// Bring the long-line row starts to this revision: starts at or before
-    /// an edit hold, unless it changed the first row, which sets the
-    /// hanging indent; a change before the line drops them.
+    /// Bring the long-line row starts to this revision: rows that end
+    /// before an edit keep their starts, and with them the hanging indent
+    /// the first row sets; a change before the line drops them all.
     fn update_wraps(&mut self) {
         let (id, revision, width) = (
             self.document.id(),
@@ -915,12 +915,12 @@ impl App {
                     return;
                 }
                 Some(at) => {
-                    let kept = if wraps.rows.get(1).is_some_and(|second| at >= *second) {
-                        wraps.rows.partition_point(|row| *row <= at)
-                    } else {
-                        1
-                    };
-                    wraps.rows.truncate(kept);
+                    // A row may begin with a word moved down whole, which
+                    // ends by the next row's start. So an edit can move the
+                    // start of its own row, and of the row before when it
+                    // touches the place where its own row begins.
+                    let before = wraps.rows.partition_point(|row| *row < at);
+                    wraps.rows.truncate(before.saturating_sub(1).max(1));
                 }
                 None => {}
             }

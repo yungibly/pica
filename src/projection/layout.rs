@@ -86,7 +86,9 @@ pub(super) fn build(
 /// Per-source-line decisions made when a line begins.
 #[derive(Default)]
 struct Context {
-    /// Column wrapping for code, raw tables, and source view.
+    /// Code, raw tables, and files that are not Markdown: every space keeps
+    /// its cell, even one that begins a row, and a long line's rows can be
+    /// resumed from a known start.
     literal: bool,
     /// A row surface starting where this line's construct begins.
     fill: Option<PendingFill>,
@@ -514,9 +516,10 @@ impl<'a> Layout<'a> {
         {
             self.context.content_column = Some(self.column);
         }
-        // Move a complete prose word to the next row when it fits there. Keep
+        // Move a complete word to the next row when it fits there, in prose
+        // and code alike: only a word longer than a row breaks inside. Keep
         // every source whitespace glyph, including trailing spaces.
-        let wrap_word = !self.context.literal && self.word_start && !whitespace && has_text && {
+        let wrap_word = self.word_start && !whitespace && has_text && {
             let word = width + self.following_word_width(end);
             let room = self.limit - self.hang_width();
             word <= room && self.column + word > self.limit
@@ -524,7 +527,16 @@ impl<'a> Layout<'a> {
         let overflow = self.column + width > self.limit && (has_text || self.column > 0);
         // Like a word processor, prose keeps a space that overflows at the end
         // of its row, invisibly, rather than starting the next row with it.
-        if overflow && whitespace && has_text && !self.context.literal {
+        // Code shows its spaces, so a run of them wraps like any text; only
+        // the one space between two words is kept this way, or the second
+        // word would begin its row a cell right of the rows around it.
+        let between_words = atom.text == " "
+            && !self.word_start
+            && self.source[end..]
+                .chars()
+                .next()
+                .is_some_and(|next| !next.is_whitespace());
+        if overflow && whitespace && has_text && (!self.context.literal || between_words) {
             (displayed, width) = (Cow::Borrowed(""), 0);
         } else if wrap_word || overflow {
             self.wrap(start);
