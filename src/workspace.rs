@@ -32,12 +32,15 @@ use ratatui::{
     text::{Line, Span},
 };
 use sidebar::{Sidebar, Target};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use std::{
     io,
     path::{Component, Path, PathBuf},
 };
 use unicode_width::UnicodeWidthStr;
+
+/// How long typing must pause before the outline may appear or disappear.
+const OUTLINE_HOLD: Duration = Duration::from_millis(700);
 
 struct Tab {
     editor: App,
@@ -112,6 +115,9 @@ pub struct Workspace {
     choice: Option<Choice>,
     persistence: Option<Persistence>,
     last_tick: Instant,
+    /// When the last key that edits text was pressed, if nothing else has
+    /// happened since.
+    last_typed: Option<Instant>,
     area: Rect,
     layout_valid: bool,
     /// Whether the last frame drew the tab row. Without it, a lone
@@ -145,6 +151,7 @@ impl Workspace {
             choice: None,
             persistence: None,
             last_tick: Instant::now(),
+            last_typed: None,
             area: Rect::new(0, 0, 80, 24),
             layout_valid: false,
             header: false,
@@ -409,12 +416,40 @@ impl Workspace {
         }
     }
 
-    /// Headings for the visible outline, from the editor's own analysis.
-    /// Large files have none unless `requested`, as by the heading picker,
-    /// which parses them once; a hidden outline is not refreshed.
+    /// Whether the outline has anything to say about the active document:
+    /// the user asked for it, the window has room, and the document is
+    /// Markdown that is analyzed (not in large-file mode).
+    fn outline_wanted(&self) -> bool {
+        self.sidebar.wanted(self.area) && self.editor().markdown_analysis()
+    }
+
+    /// Whether the user is in a run of typing, which holds the outline as
+    /// it is.
+    fn typing(&self) -> bool {
+        self.last_typed
+            .is_some_and(|at| at.elapsed() < OUTLINE_HOLD)
+    }
+
+    /// Bring the outline up to date and decide whether it is drawn: only
+    /// for a Markdown document that has a heading.
+    fn update_outline(&mut self) -> bool {
+        self.refresh_outline(false);
+        let (wanted, typing) = (self.outline_wanted(), self.typing());
+        let number = self.tabs[self.active].number;
+        let shown = self.sidebar.settle(number, wanted, typing);
+        if !shown {
+            self.sidebar.focused = false;
+        }
+        shown
+    }
+
+    /// Headings for the outline, from the editor's own analysis. Large
+    /// files have none unless `requested`, as by the heading picker, which
+    /// parses them once; an unwanted outline is not refreshed.
     fn refresh_outline(&mut self, requested: bool) {
+        let wanted = self.outline_wanted();
         let tab = &mut self.tabs[self.active];
-        if !requested && !self.sidebar.visible(self.area, tab.editor.is_markdown()) {
+        if !requested && !wanted {
             // Forget the outline rather than keep one for another revision.
             self.sidebar.headings.clear();
             self.sidebar.key = None;
@@ -464,20 +499,38 @@ impl Workspace {
         self.sidebar.invalidate();
     }
 
+    /// Turn the outline preference on or off; with `focus`, a visible
+    /// outline takes the keyboard instead. The outline only shows where it
+    /// has something to show, so a change with nothing to see says why.
     fn toggle_sidebar(&mut self, focus: bool) {
-        let visible = self.sidebar.visible(self.area, self.editor().is_markdown());
+        // An explicit choice takes effect at once, typing or not.
+        self.last_typed = None;
+        let visible = self.update_outline();
         if focus && visible && !self.sidebar.focused {
             self.editor_mut().deactivate();
             self.sidebar.focused = true;
             self.sidebar.selected = 0;
         } else {
-            self.sidebar.preference = Some(!visible);
+            let on = !self.sidebar.preference.unwrap_or(false);
+            self.sidebar.preference = Some(on);
             self.persist_sidebar();
-            self.sidebar.focused = focus && !visible;
             self.layout_valid = false;
-        }
-        if !self.sidebar.visible(self.area, self.editor().is_markdown()) {
-            self.sidebar.focused = false;
+            let shown = self.update_outline();
+            self.sidebar.focused = focus && shown;
+            let notice = if !on {
+                (!visible).then_some("Outline off")
+            } else if shown {
+                None
+            } else if !self.sidebar.wanted(self.area) {
+                Some("Outline on · this window is too small to show it")
+            } else if !self.editor().markdown_analysis() {
+                Some("Outline on · it shows beside Markdown that has headings")
+            } else {
+                Some("Outline on · this document has no headings yet")
+            };
+            if let Some(notice) = notice {
+                self.editor_mut().inform(notice);
+            }
         }
         if self.sidebar.focused {
             self.editor_mut().deactivate();
@@ -753,12 +806,37 @@ impl Workspace {
         {
             self.editor_mut().clear_notice();
         }
+        // Keys that edit the document's text hold the outline as it is.
+        if let Event::Key(key) = &event {
+            let edits = !key
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                && matches!(
+                    key.code,
+                    KeyCode::Char(_)
+                        | KeyCode::Enter
+                        | KeyCode::Backspace
+                        | KeyCode::Delete
+                        | KeyCode::Tab
+                )
+                && self.browser.is_none()
+                && self.palette.is_none()
+                && self.choice.is_none()
+                && self.pending.is_none()
+                && !self.sidebar.focused;
+            self.last_typed = edits.then(Instant::now);
+        } else if !matches!(
+            &event,
+            Event::Mouse(mouse) if mouse.kind != MouseEventKind::Down(MouseButton::Left)
+        ) {
+            self.last_typed = None;
+        }
         if let Event::Resize(width, height) = &event {
             self.area = Rect::new(0, 0, *width, *height);
             self.layout_valid = false;
             self.tab_hits.clear();
             self.sidebar.invalidate();
-            if !self.sidebar.visible(self.area, self.editor().is_markdown()) {
+            if !self.sidebar.wanted(self.area) {
                 self.sidebar.focused = false;
             }
         }
@@ -1117,11 +1195,7 @@ impl Workspace {
         let area = frame.area();
         self.area = area;
         self.layout_valid = true;
-        self.refresh_outline(false);
-        let sidebar_visible = self.sidebar.visible(area, self.editor().is_markdown());
-        if !sidebar_visible {
-            self.sidebar.focused = false;
-        }
+        let sidebar_visible = self.update_outline();
         let show_cursor = self.browser.is_none()
             && self.palette.is_none()
             && self.choice.is_none()
@@ -1138,7 +1212,8 @@ impl Workspace {
             area.width.saturating_sub(sidebar_width),
             area.height,
         );
-        // Like micro, a lone document has no tab row; the status line names it.
+        // Like micro, a lone document has no tab row; the status line names
+        // it. The outline, when drawn, brings the row its header shares.
         let header = self.tabs.len() > 1 || sidebar_visible;
         self.header = header;
         let label = self.name(self.active);
@@ -1595,9 +1670,13 @@ mod tests {
         for icons in [crate::icons::IconSet::Plain, crate::icons::IconSet::Nerd] {
             crate::icons::set(icons);
             let mut app = Workspace::open(None).unwrap();
+            // A heading gives the outline something to show; the outline
+            // brings a lone document its tab row and the button on it.
+            app.handle_event(Event::Paste("# Title\n\n".into()));
             plain(&mut app, 'a');
             plain(&mut app, 'b');
             draw(&mut app, 120, 24);
+            assert!(new_document_button(&app).is_none());
             key(&mut app, KeyCode::F(9), KeyModifiers::NONE);
             let terminal = draw(&mut app, 120, 24);
             assert!(app.sidebar.focused);
@@ -1621,7 +1700,7 @@ mod tests {
             assert!(app.editor().is_markdown());
             assert!(app.editor().path().is_none());
             assert_eq!(app.label(1).trim(), "untitled 2");
-            assert_eq!(app.tabs[0].editor.document.text(), "ab");
+            assert_eq!(app.tabs[0].editor.document.text(), "# Title\n\nab");
             assert!(app.tab_hits.is_empty());
             draw(&mut app, 120, 24);
             let rect = new_document_button(&app).unwrap();
@@ -1636,9 +1715,9 @@ mod tests {
             key(&mut app, KeyCode::F(7), KeyModifiers::NONE);
             plain(&mut app, 'c');
             ctrl(&mut app, 'z');
-            assert_eq!(app.editor().document.text(), "ab");
+            assert_eq!(app.editor().document.text(), "# Title\n\nab");
             ctrl(&mut app, 'z');
-            assert_eq!(app.editor().document.text(), "");
+            assert_eq!(app.editor().document.text(), "# Title\n\n");
         }
         crate::icons::set(old_icons);
     }
@@ -2461,6 +2540,242 @@ mod tests {
         assert_eq!(app.editor().document.text(), "valuable");
         key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
         assert!(app.pending.is_none());
+    }
+
+    /// The outline preference is on and the window has room for it.
+    fn outline_on(app: &mut Workspace) {
+        app.sidebar.preference = Some(true);
+    }
+
+    /// Long enough ago that typing no longer holds the outline.
+    fn pause(app: &mut Workspace) {
+        if app.last_typed.is_some() {
+            app.last_typed = Some(Instant::now() - OUTLINE_HOLD * 2);
+        }
+    }
+
+    #[test]
+    fn outline_shows_only_beside_markdown_that_has_headings() {
+        let dir = tempfile::tempdir().unwrap();
+        let python = dir.path().join("tool.py");
+        std::fs::write(&python, "# a comment, not a heading\nprint('hi')\n").unwrap();
+        let prose = dir.path().join("prose.md");
+        std::fs::write(&prose, "Plain prose.\n\nJust two paragraphs.\n").unwrap();
+        let outlined = dir.path().join("outlined.md");
+        std::fs::write(&outlined, "# Title\n\nBody.\n\n## Part\n").unwrap();
+        let large = dir.path().join("large.md");
+        let filler = "A line of prose in a very long document.\n";
+        let rows = crate::app::LARGE_FILE / filler.len() + 2;
+        std::fs::write(&large, format!("# Title\n\n{}", filler.repeat(rows))).unwrap();
+        for (path, shown) in [
+            (None, false),
+            (Some(python), false),
+            (Some(prose), false),
+            (Some(large), false),
+            (Some(outlined), true),
+        ] {
+            let mut app = Workspace::open(path.clone()).unwrap();
+            outline_on(&mut app);
+            let snapshot = crate::simulation::snapshot(&mut app, 120, 36).unwrap();
+            assert_eq!(app.sidebar.area.width > 0, shown, "{path:?}");
+            // Without the outline, a lone document keeps the whole window:
+            // no tab row, and text from the first row and the left margin.
+            assert_eq!(app.header, shown, "{path:?}");
+            assert_eq!(app.editor().viewport.y, u16::from(shown), "{path:?}");
+            assert_eq!(snapshot.contains("Outline"), shown, "{snapshot}");
+            assert!(!snapshot.contains("No headings"), "{snapshot}");
+            assert!(app.tab_hits.is_empty() != shown);
+            assert!(!app.sidebar.held);
+        }
+    }
+
+    #[test]
+    fn outline_follows_the_active_tab_without_waiting() {
+        let dir = tempfile::tempdir().unwrap();
+        let python = dir.path().join("tool.py");
+        std::fs::write(&python, "print('hi')\n").unwrap();
+        let outlined = dir.path().join("outlined.md");
+        std::fs::write(&outlined, "# Title\n\nBody.\n").unwrap();
+        let mut app = Workspace::open(Some(outlined)).unwrap();
+        outline_on(&mut app);
+        draw(&mut app, 120, 36);
+        assert!(app.sidebar.area.width > 0);
+        let beside = app.editor().viewport.x;
+        // Typing, then switching at once: the other tab is settled anew.
+        key(&mut app, KeyCode::End, KeyModifiers::CONTROL);
+        plain(&mut app, 'x');
+        app.open_path(python).unwrap();
+        draw(&mut app, 120, 36);
+        assert_eq!(app.sidebar.area.width, 0);
+        // Two documents keep their tab row with or without the outline.
+        assert!(app.header && !app.tab_hits.is_empty());
+        assert!(app.editor().viewport.x < beside);
+        key(&mut app, KeyCode::Char(','), KeyModifiers::ALT);
+        draw(&mut app, 120, 36);
+        assert!(app.sidebar.area.width > 0);
+        assert_eq!(app.editor().viewport.x, beside);
+    }
+
+    #[test]
+    fn typing_holds_the_outline_until_a_pause_or_another_kind_of_input() {
+        let mut app = Workspace::open(None).unwrap();
+        outline_on(&mut app);
+        draw(&mut app, 120, 36);
+        let alone = app.editor().viewport;
+        assert_eq!((app.sidebar.area.width, alone.y), (0, 0));
+        // The first heading, typed a key at a time, moves nothing.
+        for c in "# Title".chars() {
+            plain(&mut app, c);
+            draw(&mut app, 120, 36);
+            assert_eq!(app.sidebar.area.width, 0, "after {c:?}");
+            assert_eq!(app.editor().viewport, alone, "after {c:?}");
+            assert!(!app.header);
+            assert!(!app.tick(), "nothing to redraw while typing");
+        }
+        assert!(app.sidebar.held);
+        // A pause lets it in, with one redraw.
+        pause(&mut app);
+        assert!(app.tick());
+        draw(&mut app, 120, 36);
+        assert!(app.sidebar.area.width > 0 && app.header);
+        let beside = app.editor().viewport;
+        assert_eq!(beside.y, 1);
+        assert!(beside.x > alone.x);
+        assert!(!app.sidebar.held && !app.tick());
+        // Deleting the only heading and retyping it never collapses the
+        // layout: the outline says "No headings" until typing pauses.
+        for _ in 0.."# Title".len() {
+            key(&mut app, KeyCode::Backspace, KeyModifiers::NONE);
+            draw(&mut app, 120, 36);
+            assert_eq!(app.editor().viewport, beside);
+        }
+        let snapshot = crate::simulation::snapshot(&mut app, 120, 36).unwrap();
+        assert!(snapshot.contains("No headings"), "{snapshot}");
+        for c in "## Again".chars() {
+            plain(&mut app, c);
+            draw(&mut app, 120, 36);
+            assert_eq!(app.editor().viewport, beside);
+        }
+        assert!(!app.sidebar.held);
+        ctrl(&mut app, 'a');
+        key(&mut app, KeyCode::Backspace, KeyModifiers::NONE);
+        draw(&mut app, 120, 36);
+        assert!(app.sidebar.held && app.sidebar.area.width > 0);
+        pause(&mut app);
+        assert!(app.tick());
+        draw(&mut app, 120, 36);
+        assert_eq!(app.sidebar.area.width, 0);
+        assert_eq!(app.editor().viewport, alone);
+        // Any other kind of input ends the hold at once: a caret key, a
+        // paste, or a click.
+        for c in "# T".chars() {
+            plain(&mut app, c);
+        }
+        draw(&mut app, 120, 36);
+        assert_eq!(app.sidebar.area.width, 0);
+        key(&mut app, KeyCode::Left, KeyModifiers::NONE);
+        draw(&mut app, 120, 36);
+        assert!(app.sidebar.area.width > 0);
+        ctrl(&mut app, 'a');
+        app.handle_event(Event::Paste("plain".into()));
+        draw(&mut app, 120, 36);
+        assert_eq!(app.sidebar.area.width, 0);
+        app.handle_event(Event::Paste("\n# Pasted\n".into()));
+        draw(&mut app, 120, 36);
+        assert!(app.sidebar.area.width > 0);
+        assert_eq!(app.editor().document.text(), "plain\n# Pasted\n");
+    }
+
+    #[test]
+    fn the_top_row_is_text_whenever_the_outline_is_not_drawn() {
+        use MouseButton::Left;
+        use MouseEventKind::{Down, Up};
+        let mut app = Workspace::open(None).unwrap();
+        outline_on(&mut app);
+        app.handle_event(Event::Paste("alpha beta\ngamma delta\n".into()));
+        draw(&mut app, 120, 36);
+        assert!(!app.header);
+        let x = app.editor().viewport.x;
+        pointer(&mut app, Down(Left), x + 6, 0);
+        pointer(&mut app, Up(Left), x + 6, 0);
+        assert_eq!(app.editor().document.selection().head, 6);
+        // Columns the outline would cover are the document's margin here.
+        pointer(&mut app, Down(Left), 2, 1);
+        pointer(&mut app, Up(Left), 2, 1);
+        assert!(!app.sidebar.focused);
+        // With a heading, the outline and its tab row take the top row back.
+        key(&mut app, KeyCode::Home, KeyModifiers::CONTROL);
+        app.handle_event(Event::Paste("# Heading\n\n".into()));
+        draw(&mut app, 120, 36);
+        assert!(app.header && app.sidebar.area.width > 0);
+        let caret = app.editor().document.selection();
+        let x = app.editor().viewport.x;
+        pointer(&mut app, Down(Left), x + 3, 0);
+        pointer(&mut app, Up(Left), x + 3, 0);
+        assert_eq!(app.editor().document.selection(), caret);
+        assert_eq!(app.editor().viewport.y, 1);
+    }
+
+    #[test]
+    fn toggling_the_outline_says_why_when_there_is_nothing_to_see() {
+        let status = |app: &mut Workspace, width, height| {
+            let snapshot = crate::simulation::snapshot(app, width, height).unwrap();
+            snapshot
+                .lines()
+                .nth(usize::from(height) - 1)
+                .unwrap()
+                .to_owned()
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let python = dir.path().join("tool.py");
+        std::fs::write(&python, "print('hi')\n").unwrap();
+        let mut app = Workspace::open(Some(python)).unwrap();
+        draw(&mut app, 120, 36);
+        app.run_command(Command::Sidebar);
+        assert_eq!(app.sidebar.preference, Some(true));
+        let row = status(&mut app, 120, 36);
+        assert!(
+            row.starts_with(" Outline on · it shows beside Markdown that has headings"),
+            "{row}"
+        );
+        // The preference flips each time, whatever is on screen.
+        app.run_command(Command::Sidebar);
+        assert_eq!(app.sidebar.preference, Some(false));
+        assert!(status(&mut app, 120, 36).starts_with(" Outline off"));
+
+        let mut app = Workspace::open(None).unwrap();
+        draw(&mut app, 120, 36);
+        app.run_command(Command::Sidebar);
+        let row = status(&mut app, 120, 36);
+        assert!(
+            row.starts_with(" Outline on · this document has no headings yet"),
+            "{row}"
+        );
+        // Chosen from the palette right after typing, it still shows at once.
+        for c in "# Title".chars() {
+            plain(&mut app, c);
+        }
+        app.run_command(Command::Sidebar);
+        app.run_command(Command::Sidebar);
+        let row = status(&mut app, 120, 36);
+        assert!(app.sidebar.area.width > 0);
+        assert!(row.starts_with(" untitled ●"), "{row}");
+        app.run_command(Command::Sidebar);
+        let row = status(&mut app, 120, 36);
+        assert_eq!(app.sidebar.area.width, 0);
+        assert!(row.starts_with(" untitled ●"), "{row}");
+        // A window too small for it says so, and can still turn it off.
+        draw(&mut app, 50, 20);
+        app.run_command(Command::Sidebar);
+        assert_eq!(app.sidebar.preference, Some(true));
+        let row = status(&mut app, 50, 20);
+        assert!(
+            row.starts_with(" Outline on · this window is too small"),
+            "{row}"
+        );
+        key(&mut app, KeyCode::F(9), KeyModifiers::NONE);
+        assert_eq!(app.sidebar.preference, Some(false));
+        assert!(!app.sidebar.focused);
     }
 
     #[test]

@@ -213,7 +213,8 @@ impl Workspace {
 
     pub fn tick(&mut self) -> bool {
         // Work deferred from typing, such as the word count, runs in pauses.
-        let idle = self.editor_mut().idle();
+        // So does an outline change that typing held back.
+        let idle = self.editor_mut().idle() | (self.sidebar.held && !self.typing());
         if self.last_tick.elapsed() < Duration::from_secs(1) {
             return idle;
         }

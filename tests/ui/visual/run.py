@@ -344,7 +344,11 @@ def workspace(session):
 
     command("New tab")
     session.check("untitled 2" in session.state()["text"], "Palette creates an independent document tab")
+    session.check(not outline_labels(session.cells()) and "No headings" not in session.state()["text"],
+                  "The chosen outline stays away from a document with no headings")
     session.key("Alt+,")
+    session.check(bool(outline_labels(session.cells())),
+                  "The outline returns with the document that has headings")
     session.key("Ctrl+Home")
     session.capture("07-document-tabs")
     for width, height in [(120, 36), (80, 24), (42, 16), (20, 10)]:

@@ -68,13 +68,35 @@ pub(super) struct Sidebar {
     pub key: Option<(usize, u64, bool)>,
     pub selected: usize,
     scroll: usize,
+    /// Whether the outline is drawn: see `settle`.
+    shown: bool,
+    /// The document `shown` was decided for.
+    settled: Option<usize>,
+    /// Typing is holding back a change to `shown`.
+    pub held: bool,
 }
 
 impl Sidebar {
     /// The outline is opt-in, like any panel in micro; an explicit choice
-    /// holds for every document and is remembered.
-    pub fn visible(&self, area: Rect, _markdown: bool) -> bool {
+    /// is remembered. Whether it has room here is the window's to say.
+    pub fn wanted(&self, area: Rect) -> bool {
         area.width >= 60 && area.height >= 8 && self.preference.unwrap_or(false)
+    }
+
+    /// Decide whether to draw the outline for document `number`, whose
+    /// headings `headings` now holds. It is drawn only when `wanted` and
+    /// there is a heading to show. While the user is `typing`, it neither
+    /// appears nor disappears: a heading half typed or briefly deleted
+    /// would otherwise move the text sideways under the caret. The change
+    /// waits, `held`, for a pause or any other kind of input.
+    pub fn settle(&mut self, number: usize, wanted: bool, typing: bool) -> bool {
+        let useful = wanted && !self.headings.is_empty();
+        if !wanted || !typing || self.settled != Some(number) {
+            self.shown = useful;
+        }
+        self.settled = Some(number);
+        self.held = self.shown != useful;
+        self.shown
     }
 
     pub fn invalidate(&mut self) {
