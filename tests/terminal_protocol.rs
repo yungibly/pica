@@ -441,15 +441,23 @@ fn recovery_restart(legacy: bool) {
     fs::write(&crashed.fixture, "newer disk contents\n").unwrap();
     let mut restored = Session::start_with_state("another document\n", Some(state.path()));
     restored.until("recovery notice", |s| {
-        count(&s.transcript, b"recoverable") > 0
+        count(&s.transcript, b"1 document can be recovered") > 0
+    });
+    // The notice stands in for the status line only until a key is pressed.
+    assert_eq!(count(&restored.transcript, b"protocol.md"), 0);
+    restored.send(b"\x1b[C");
+    restored.until("status line after a keypress", |s| {
+        count(&s.transcript, b"protocol.md") > 0
     });
     restored.send(b"\x05recover\r");
     restored.until("recovery picker", |s| {
         count(&s.transcript, b"recover copy") > 0
     });
     restored.send(b"\r");
+    // Frames are sent as differences, so wait for text no earlier frame
+    // held in those cells: the new tab's label.
     restored.until("recovered tab", |s| {
-        count(&s.transcript, b"as an unsaved copy.") > 0
+        count(&s.transcript, b"Recovered protocol.md") > 0
     });
     let saved = state.path().join("recovered.md");
     restored.send(SAVE);

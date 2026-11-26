@@ -208,6 +208,115 @@ fn abandoned_edits_recover_as_detached_unsaved_copies_without_overwriting_disk()
     final_session.finish_state().unwrap();
 }
 
+/// The status row of a 100×24 frame.
+fn status_row(app: &mut Workspace) -> String {
+    let snapshot = crate::simulation::snapshot(app, 100, 24).unwrap();
+    snapshot.lines().nth(23).unwrap().to_owned()
+}
+
+/// Leave `count` unsaved documents behind, as an interrupted session does.
+fn abandon(dir: &Path, count: usize) {
+    let mut crashed = Workspace::open(None).unwrap();
+    configure(&mut crashed, dir);
+    for index in 0..count {
+        if index > 0 {
+            crashed.new_tab();
+        }
+        crashed.editor_mut().document.insert("unsaved");
+    }
+    checkpoint(&mut crashed);
+    // Drop intentionally does not perform clean shutdown.
+}
+
+#[test]
+fn recovery_notice_counts_in_plain_words_and_goes_with_the_next_key() {
+    for (count, notice) in [
+        (
+            1,
+            " 1 document can be recovered · Ctrl+E → Recover documents",
+        ),
+        (
+            2,
+            " 2 documents can be recovered · Ctrl+E → Recover documents",
+        ),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        abandon(dir.path(), count);
+        // A key the editor handles, one only the workspace sees, and typing.
+        for (code, modifiers) in [
+            (KeyCode::Down, KeyModifiers::NONE),
+            (KeyCode::Char('e'), KeyModifiers::CONTROL),
+            (KeyCode::Char('x'), KeyModifiers::NONE),
+        ] {
+            let mut app = Workspace::open(None).unwrap();
+            configure(&mut app, dir.path());
+            let row = status_row(&mut app);
+            assert!(row.starts_with(notice), "{row}");
+            assert!(!row.contains("(s)") && !row.contains("Esc"), "{row}");
+            // Looking is not a keypress: the notice waits to be read.
+            app.handle_event(Event::Resize(100, 24));
+            app.tick();
+            assert!(status_row(&mut app).starts_with(notice));
+            key(&mut app, code, modifiers);
+            if modifiers == KeyModifiers::CONTROL {
+                assert!(app.palette.is_some());
+                key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+            }
+            let row = status_row(&mut app);
+            assert!(row.starts_with(" untitled"), "{row}");
+            assert!(row.contains("Ln 1, Col") && !row.contains("recovered"));
+            // The copies are still there to recover.
+            app.open_recovery();
+            assert!(app.choice.is_some());
+        }
+    }
+}
+
+#[test]
+fn a_launch_problem_stays_until_dismissed_and_carries_the_recovery_notice() {
+    let dir = tempfile::tempdir().unwrap();
+    abandon(dir.path(), 1);
+    fs::create_dir_all(dir.path().join("config")).unwrap();
+    fs::write(dir.path().join("config/settings.conf"), "not a setting\n").unwrap();
+    let mut app = Workspace::open(None).unwrap();
+    configure(&mut app, dir.path());
+    let problem = status_row(&mut app);
+    assert!(
+        problem.starts_with(" 1 document can be recovered · Ctrl+E → Recover documents · Pref"),
+        "{problem}"
+    );
+    assert!(problem.trim_end().ends_with("Esc"), "{problem}");
+    for code in [KeyCode::Down, KeyCode::Char('x')] {
+        key(&mut app, code, KeyModifiers::NONE);
+        assert_eq!(status_row(&mut app), problem);
+    }
+    key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+    assert!(status_row(&mut app).starts_with(" untitled ●"));
+}
+
+#[test]
+fn recovery_answers_are_notices_and_a_recovered_tab_says_so_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = Workspace::open(None).unwrap();
+    configure(&mut app, dir.path());
+    app.open_recovery();
+    assert!(app.choice.is_none());
+    assert!(status_row(&mut app).starts_with(" No documents to recover"));
+    key(&mut app, KeyCode::Right, KeyModifiers::NONE);
+    assert!(status_row(&mut app).starts_with(" untitled"));
+    drop(app);
+    abandon(dir.path(), 1);
+    let mut app = Workspace::open(None).unwrap();
+    configure(&mut app, dir.path());
+    app.recover_document(0);
+    let row = status_row(&mut app);
+    assert!(row.starts_with(" Recovered as an unsaved copy"), "{row}");
+    assert!(!row.contains("Esc"), "{row}");
+    key(&mut app, KeyCode::Right, KeyModifiers::NONE);
+    assert!(status_row(&mut app).starts_with(" Recovered untitled ●"));
+    app.finish_state().unwrap();
+}
+
 #[test]
 fn save_clears_recovery_and_cancelled_quit_retains_all_dirty_tabs() {
     let dir = tempfile::tempdir().unwrap();

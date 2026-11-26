@@ -373,7 +373,7 @@ impl App {
             return;
         }
         if self.file.is_none() {
-            self.set_message("This buffer has no disk file. Save it first with Ctrl+S");
+            self.inform("This buffer has no disk file. Save it first with Ctrl+S");
         } else if self.document.is_dirty() {
             self.overlay = Overlay::Reload;
             self.reload_prompt_visible.set(false);
@@ -451,16 +451,28 @@ impl App {
         matches!(self.overlay, Overlay::SaveAs { .. })
     }
 
+    /// Show a problem the user must not miss. It stays through typing and
+    /// movement until Esc dismisses it or its cause goes away.
     pub(crate) fn set_message(&mut self, message: impl Into<String>) {
         self.message = message.into();
         self.message_is_error = true;
         self.message_origin = MessageOrigin::General;
     }
 
+    /// Show a notice that the next keypress, paste or click clears. It never
+    /// replaces a problem that is still showing.
     pub(crate) fn inform(&mut self, message: impl Into<String>) {
         if !self.message_is_error {
             self.message = message.into();
             self.message_origin = MessageOrigin::General;
+        }
+    }
+
+    /// Clear a notice, as any keypress does; a problem stays until dismissed.
+    /// The workspace calls this for the keys it handles without the editor.
+    pub(crate) fn clear_notice(&mut self) {
+        if !self.message_is_error {
+            self.message.clear();
         }
     }
 
@@ -3008,18 +3020,29 @@ impl App {
                 base
             };
             let text = format!(" {context}");
-            // Position yields to the whole message; errors take the full row.
+            let needed = UnicodeWidthStr::width(text.as_str());
+            let room = usize::from(footer.width);
+            // Position yields to the whole message; problems take the full
+            // row and say how to dismiss them, since nothing else clears one.
             if self.message_is_error {
                 frame.render_widget(Block::default().style(style), footer);
-            } else if UnicodeWidthStr::width(text.as_str()) + bar.cells(&location, false)
-                < usize::from(footer.width)
-            {
+                if self.overlay == Overlay::None {
+                    const LONG: &str = "Esc dismisses";
+                    const SHORT: &str = "Esc";
+                    if needed + bar.cells(LONG, false) < room {
+                        bar.push(Side::Right, LONG, style, false);
+                    } else if needed + bar.cells(SHORT, false) < room || needed > room {
+                        // A message cut short still names its way out.
+                        bar.push(Side::Right, SHORT, style, false);
+                    }
+                }
+            } else if needed + bar.cells(&location, false) < room {
                 bar.push(Side::Right, &location, base, false);
             }
             bar.draw(frame);
             let width = bar.left_edge().saturating_sub(footer.x);
             frame.render_widget(
-                Paragraph::new(text).style(style),
+                Paragraph::new(ui::clipped(&text, usize::from(width))).style(style),
                 Rect::new(footer.x, footer.y, width, 1),
             );
             return;
@@ -3978,6 +4001,44 @@ mod tests {
         assert!(status_text(&draw(&mut app, 80, 24), 23).contains("Disk file changed"));
         key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
         assert!(status_text(&draw(&mut app, 80, 24), 23).contains(" markdown"));
+    }
+
+    #[test]
+    fn problems_name_their_way_out_and_long_messages_end_in_an_ellipsis() {
+        let mut app = App::new("one two three".into(), None, true);
+        let footer = |app: &mut App| status_text(&draw(app, 80, 24), 23);
+        app.set_message("Could not save");
+        assert_eq!(
+            footer(&mut app).trim_end(),
+            format!(" Could not save{}Esc dismisses", " ".repeat(51))
+        );
+        // The hint shortens, then yields, before any of the message is lost.
+        app.set_message("x".repeat(70));
+        let row = footer(&mut app);
+        assert!(row.starts_with(&format!(" {} ", "x".repeat(70))), "{row}");
+        assert!(row.trim_end().ends_with(" Esc"), "{row}");
+        app.set_message("y".repeat(78));
+        assert_eq!(footer(&mut app), format!(" {} ", "y".repeat(78)));
+        // A message too long for the row is cut at an ellipsis, not mid-word
+        // without a sign, and still says how to dismiss it.
+        app.set_message("z".repeat(120));
+        let row = footer(&mut app);
+        assert!(row.starts_with(" zzz") && row.contains("z… "), "{row}");
+        assert!(row.trim_end().ends_with(" Esc"), "{row}");
+        // Esc closes Find before it dismisses anything, so Find shows no hint.
+        search(&mut app, "one", false);
+        app.set_message("Could not save");
+        assert!(!footer(&mut app).contains("Esc"));
+        key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert!(footer(&mut app).contains("Esc dismisses"));
+        key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert!(footer(&mut app).starts_with(" untitled "));
+        // A notice needs no way out: any key is one.
+        app.inform("n".repeat(120));
+        let row = footer(&mut app);
+        assert!(row.contains("n…") && !row.contains("Esc"), "{row}");
+        key(&mut app, KeyCode::Right, KeyModifiers::NONE);
+        assert!(footer(&mut app).starts_with(" untitled "));
     }
 
     #[test]
