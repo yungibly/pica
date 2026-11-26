@@ -224,10 +224,8 @@ impl App {
             }
             KeyCode::Char('c' | 'x') if control => {
                 if !field.selection().is_empty() {
-                    clipboard_message = Some((
-                        self.clipboard.copy(field.selected_text()),
-                        self.clipboard.uses_fallback(),
-                    ));
+                    let message = self.clipboard.copy(field.selected_text());
+                    clipboard_message = Some((message, self.clipboard.warned()));
                     if key.code == KeyCode::Char('x') {
                         field.insert("");
                     }
@@ -235,8 +233,7 @@ impl App {
             }
             KeyCode::Char('v') if control => {
                 let (text, message) = self.clipboard.paste();
-                clipboard_message =
-                    Some((message, text.is_none() || self.clipboard.uses_fallback()));
+                clipboard_message = Some((message, self.clipboard.warned()));
                 if let Some(text) = text {
                     self.save_as_insert(&text, true);
                 }
