@@ -78,12 +78,22 @@ indentation. The whole change is one undo step.
 | PageUp / PageDown | Scroll a screen. The caret moves with the view and keeps its row on screen; at either end of the file it goes on to the first or last line. |
 | Ctrl+L | Go to a line, or `line:column` |
 | Ctrl+A | Select all |
+| Click, Shift+click, drag | Place the caret, extend the selection to the pointer, select |
+| Double click | Select the word; dragging on extends word by word |
+| Triple click | Select the whole line; dragging on extends line by line |
+
+A double click keeps `can't` and `3.14` whole and stops at the dots and
+colons between names, so it selects `name` in `self.name`. On a space or a
+punctuation mark it selects that run. In the live Markdown view the first
+click may reveal a block's source and move its text; the second click still
+selects the word first clicked.
 
 ## Finding and replacing
 
 | Key | Action |
 | --- | --- |
-| Ctrl+F | Find. The selection, if any, becomes the query. |
+| Ctrl+F | Find, ignoring letter case. The selection, if any, becomes the query. |
+| Alt+C, in Find | Match case, or ignore it again; the **Aa** toggle beside the count does the same |
 | Ctrl+N / Ctrl+P | Next / previous match. With Find closed, they reuse the last query; with no query yet, they open Find. |
 | Enter / Shift+Enter | Next / previous match, in Find |
 | Ctrl+R, in Find | Expand Find to Replace |
@@ -91,6 +101,11 @@ indentation. The whole change is one undo step.
 | Enter, in With | Replace this match and go to the next |
 | Alt+R / Alt+A | Replace one / replace all |
 | Esc | Close Find |
+
+Find matches text literally and ignores letter case: `pica` finds `Pica` and
+`PICA`, and `école` finds `École`. Alt+C switches to an exact match and back.
+The choice applies to Replace as well, holds for every document, and is
+remembered. Find has no regular expressions or whole-word matching.
 
 ## Markdown
 
@@ -187,4 +202,6 @@ another user's file to you.
   the numbered one.
 - Tab follows each file's own indentation, where micro uses its `tabstospaces`
   and `tabsize` options.
+- Find matches literal text and ignores case until Alt+C asks for an exact
+  match; micro's find takes a regular expression.
 - There are no macros (Ctrl+U, Ctrl+J), and keys cannot be rebound yet.
