@@ -18,7 +18,7 @@ command with its key.
 | Ctrl+Q | Close the current tab, asking first if it has unsaved changes. Closing the last tab quits. |
 | Ctrl+E, then "Quit pica" | Quit, checking every unsaved tab |
 | Ctrl+E, then "Save as" | Save under another name or in another place; see below |
-| Ctrl+E, then "Reload" | Reload the file from disk. A file that changes while you have no unsaved edits reloads by itself. |
+| Ctrl+E, then "Reload" | Reload the file from disk. A file that changes while you have no unsaved edits, and none undone that Ctrl+Y could redo, reloads by itself. |
 
 ## Save as
 
@@ -174,7 +174,9 @@ Ctrl+B and Alt+T do nothing in other kinds of file.
 Nesting moves the item's continuation lines and children with it and lines
 it up under the text of the item above. A numbered item takes the number its
 new place needs (Markdown only lets a numbered list begin inside another item
-at 1), and numbered items it gains as children are renumbered to follow.
+at 1). Lifting an item leaves the items after it as its children: they are
+renumbered to follow, and moved under it where they would not otherwise line
+up, as after a numbered item lifted from under a bullet.
 Tab on the first item of a list does nothing, since there is nothing to nest
 it under. With a selection, on other lines, and in quoted lists, Tab indents
 as it does everywhere else.
