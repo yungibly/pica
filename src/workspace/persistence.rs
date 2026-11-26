@@ -88,15 +88,7 @@ impl Workspace {
         if !diagnostics.is_empty() {
             warnings.push(format!("Recovery: {}", diagnostics.join("; ")));
         }
-        if !candidates.is_empty() {
-            warnings.insert(
-                0,
-                format!(
-                    "{} recoverable document(s). Ctrl+E → Recover documents",
-                    candidates.len()
-                ),
-            );
-        }
+        let notice = recovery_notice(candidates.len());
         self.persistence = Some(Persistence {
             settings,
             store,
@@ -105,8 +97,16 @@ impl Workspace {
             checkpoints: HashMap::new(),
             last_error: None,
         });
-        if !warnings.is_empty() {
-            self.editor_mut().set_message(warnings.join(" · "));
+        // Documents to recover are news, not a problem: the notice goes with
+        // the next keypress. A real problem stays, and carries the news along.
+        match (notice, warnings.is_empty()) {
+            (Some(notice), true) => self.editor_mut().inform(notice),
+            (notice, _) => {
+                let messages: Vec<_> = notice.into_iter().chain(warnings).collect();
+                if !messages.is_empty() {
+                    self.editor_mut().set_message(messages.join(" · "));
+                }
+            }
         }
     }
 
@@ -279,7 +279,7 @@ impl Workspace {
     pub(super) fn open_recovery(&mut self) {
         let Some(state) = &mut self.persistence else {
             self.editor_mut()
-                .set_message("Crash recovery is disabled for this session");
+                .inform("Crash recovery is off for this session");
             return;
         };
         if state.candidates.is_empty()
@@ -294,15 +294,15 @@ impl Workspace {
             }
         }
         if state.candidates.is_empty() {
-            let message = if state.diagnostics.is_empty() {
-                "No abandoned recovery copies found".to_owned()
+            if state.diagnostics.is_empty() {
+                self.editor_mut().inform("No documents to recover");
             } else {
-                format!(
+                let message = format!(
                     "Recovery copies retained for inspection: {}",
                     state.diagnostics.join("; ")
-                )
-            };
-            self.editor_mut().set_message(message);
+                );
+                self.editor_mut().set_message(message);
+            }
             return;
         }
         state.candidates.sort_by(|a, b| {
@@ -389,11 +389,25 @@ impl Workspace {
         self.sidebar.invalidate();
         self.tab_hits.clear();
         self.layout_valid = false;
-        self.editor_mut().set_message(match result {
-            Ok(()) => "Recovered as an unsaved copy. Save As chooses a new filename.".to_owned(),
-            Err(error) => format!("Recovered in memory; old recovery copy retained: {error}"),
-        });
+        match result {
+            Ok(()) => self
+                .editor_mut()
+                .inform("Recovered as an unsaved copy. Save As chooses a new filename."),
+            Err(error) => self.editor_mut().set_message(format!(
+                "Recovered in memory; old recovery copy retained: {error}"
+            )),
+        }
         self.persistence = Some(state);
+    }
+}
+
+/// The launch notice for documents left by an interrupted session.
+fn recovery_notice(count: usize) -> Option<String> {
+    const HOW: &str = "Ctrl+E → Recover documents";
+    match count {
+        0 => None,
+        1 => Some(format!("1 document can be recovered · {HOW}")),
+        count => Some(format!("{count} documents can be recovered · {HOW}")),
     }
 }
 

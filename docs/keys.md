@@ -107,6 +107,11 @@ Reload, Quit pica (all tabs), the outline sidebar, Switch document, Go to
 heading, themes, icons and document recovery. In the palette, pickers and
 the go-to-line prompt, Esc or Ctrl+Q closes them without doing anything.
 
+The status line shows two kinds of message. A notice, such as "Saved" or
+the count of documents to recover at launch, goes away with the next
+keypress. A problem, such as a failed save, is highlighted and stays while
+you work until Esc dismisses it; the status line says so.
+
 ## Function keys
 
 Function keys from earlier versions still work but are not shown anywhere:
