@@ -464,9 +464,10 @@ impl App {
     }
 
     /// A clean buffer's file changed: load the new version where the reader
-    /// is. Nothing of the user's is replaced, and Ctrl+Z brings the previous
-    /// text back. A file still being written, or one that cannot be read as
-    /// text, is left for a later look; the second is said once.
+    /// is. Nothing of the user's is replaced, and Ctrl+Z brings back the
+    /// text from before: one step for a run of these, however long. A file
+    /// still being written, or one that cannot be read as text, is left for
+    /// a later look; the second is said once.
     fn follow_disk(&mut self) -> bool {
         // Not under a dialog or a drag in progress; the next look will do.
         if self.has_modal() || self.dragging {
@@ -482,6 +483,7 @@ impl App {
         if !file.settled(self.settle) {
             return false;
         }
+        let again = self.document.following();
         // `None`: nothing to say, the next look will do.
         let result = file
             .reload_bounded(8 * 1024 * 1024)
@@ -496,15 +498,20 @@ impl App {
                 )),
             })
             .and_then(|(text, file)| {
-                self.accept_disk(text, file)
+                self.accept_disk(text, file, true)
                     .map_err(|error| Some(error.to_string()))
             });
         match result {
             Ok(_) => {
                 // A notice, unless a problem of another kind is showing.
                 if !self.message_is_error || self.message_origin == MessageOrigin::Disk {
-                    self.message =
-                        "Changed on disk: reloaded · Ctrl+Z restores the previous text".into();
+                    // A run of these is one undo step: see `follow_saved`.
+                    self.message = if again {
+                        "Changed on disk again: reloaded · Ctrl+Z undoes these reloads"
+                    } else {
+                        "Changed on disk: reloaded · Ctrl+Z restores the previous text"
+                    }
+                    .into();
                     self.message_is_error = false;
                     self.message_origin = MessageOrigin::General;
                 }
@@ -523,12 +530,22 @@ impl App {
 
     /// Take `text` from disk as the document, one undo step, with `file` as
     /// its new baseline. The caret and the top of the view stay with the
-    /// text they were on.
-    fn accept_disk(&mut self, text: String, file: FileState) -> Result<bool, pica::EditError> {
+    /// text they were on. `followed` is for a reload nobody asked for: a
+    /// run of those shares one undo step.
+    fn accept_disk(
+        &mut self,
+        text: String,
+        file: FileState,
+        followed: bool,
+    ) -> Result<bool, pica::EditError> {
         let top = self.top.line.min(self.document.line_count() - 1);
         let top =
             pica::document::carried(self.document.text(), &text, self.document.line_start(top));
-        let changed = self.document.reload_saved(text)?;
+        let changed = if followed {
+            self.document.follow_saved(text)?
+        } else {
+            self.document.reload_saved(text)?
+        };
         self.file = Some(file);
         self.last_disk_change = None;
         self.unloadable = None;
@@ -553,7 +570,7 @@ impl App {
             .ok_or_else(|| io::Error::other("This buffer has no disk file"))
             .and_then(|file| file.reload_bounded(8 * 1024 * 1024));
         match result {
-            Ok((text, file)) => match self.accept_disk(text, file) {
+            Ok((text, file)) => match self.accept_disk(text, file, false) {
                 Ok(changed) => {
                     self.deactivate();
                     self.preferred_column = None;

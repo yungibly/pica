@@ -377,3 +377,83 @@ fn undone_edits_are_not_dropped_by_a_change_on_disk() {
     assert_eq!(app.document.text(), "one\ntwo\nthird version\n");
     assert!(app.message.contains("reloaded"));
 }
+
+const FIRST: &str = "Changed on disk: reloaded · Ctrl+Z restores the previous text";
+const AGAIN: &str = "Changed on disk again: reloaded · Ctrl+Z undoes these reloads";
+
+#[test]
+fn a_file_rewritten_over_and_over_costs_one_undo_step_and_keeps_the_users_own() {
+    let (_dir, path, mut app) = open("log.md", "start\n");
+    // The user's own work, saved: one undo step.
+    app.handle_event(Event::Paste("mine ".into()));
+    key(&mut app, KeyCode::Char('s'), KeyModifiers::CONTROL);
+    assert!(!app.document.is_dirty() && !app.message_is_error);
+    // Another program rewrites the file more often than the history has
+    // room for, while the reader moves about in it.
+    for n in 0..300 {
+        write_settled(&path, format!("mine start\nline {n}\n"));
+        assert!(app.check_external_change(), "reload {n}");
+        // The first says how to get the one text back; the rest, that
+        // Ctrl+Z undoes them together.
+        assert_eq!(app.message, if n == 0 { FIRST } else { AGAIN }, "{n}");
+        assert!(!app.message_is_error);
+        press(
+            &mut app,
+            if n % 2 == 0 {
+                KeyCode::Down
+            } else {
+                KeyCode::Up
+            },
+        );
+    }
+    assert_eq!(app.document.text(), "mine start\nline 299\n");
+    assert!(!app.document.is_dirty());
+    // One Ctrl+Z: the text from before the first of them.
+    key(&mut app, KeyCode::Char('z'), KeyModifiers::CONTROL);
+    assert_eq!(app.document.text(), "mine start\n");
+    assert!(app.document.is_dirty());
+    // The next undoes the user's own edit, which the reloads did not push
+    // out of the history.
+    key(&mut app, KeyCode::Char('z'), KeyModifiers::CONTROL);
+    assert_eq!(app.document.text(), "start\n");
+    key(&mut app, KeyCode::Char('y'), KeyModifiers::CONTROL);
+    key(&mut app, KeyCode::Char('y'), KeyModifiers::CONTROL);
+    assert_eq!(app.document.text(), "mine start\nline 299\n");
+    assert!(!app.document.is_dirty() && !app.document.can_redo());
+}
+
+#[test]
+fn a_reload_that_was_asked_for_stays_an_undo_step_of_its_own() {
+    let (_dir, path, mut app) = open("notes.md", "one\n");
+    for (text, notice) in [("two\n", FIRST), ("three\n", AGAIN)] {
+        write_settled(&path, text);
+        assert!(app.check_external_change());
+        assert_eq!(app.message, notice);
+    }
+    // Asked for with F5, before the next look at the disk.
+    write_settled(&path, "four\n");
+    key(&mut app, KeyCode::F(5), KeyModifiers::NONE);
+    assert_eq!(app.document.text(), "four\n");
+    assert_eq!(
+        app.message,
+        "Reloaded disk version · Ctrl+Z restores previous text"
+    );
+    // What follows by itself after that is a new run, and says so.
+    for (text, notice) in [("five\n", FIRST), ("six\n", AGAIN)] {
+        write_settled(&path, text);
+        assert!(app.check_external_change());
+        assert_eq!(app.message, notice);
+    }
+    // An edit of the user's ends a run as well.
+    app.handle_event(Event::Paste("my ".into()));
+    key(&mut app, KeyCode::Char('s'), KeyModifiers::CONTROL);
+    write_settled(&path, "seven\n");
+    assert!(app.check_external_change());
+    assert_eq!(app.message, FIRST);
+    let mut back = Vec::new();
+    while app.document.can_undo() {
+        key(&mut app, KeyCode::Char('z'), KeyModifiers::CONTROL);
+        back.push(app.document.text().to_owned());
+    }
+    assert_eq!(back, ["my six\n", "six\n", "four\n", "three\n", "one\n"]);
+}
