@@ -1502,10 +1502,7 @@ impl App {
                 KeyCode::Char('x') => self.copy(true),
                 KeyCode::Char('v') => {
                     let (text, message) = self.clipboard.paste();
-                    self.clipboard_feedback(
-                        message,
-                        text.is_none() || self.clipboard.uses_fallback(),
-                    );
+                    self.clipboard_feedback(message, self.clipboard.warned());
                     if let Some(text) = text {
                         self.document.insert(&text);
                     }
@@ -1751,7 +1748,7 @@ impl App {
         let mut text = chained.map(|(_, _, text)| text).unwrap_or_default();
         text.push_str(&removed);
         let message = self.clipboard.copy(&text);
-        if self.clipboard.uses_fallback() {
+        if self.clipboard.warned() {
             self.clipboard_feedback(message, true);
         } else {
             let lines = text.lines().count();
@@ -2106,7 +2103,7 @@ impl App {
     fn copy(&mut self, cut: bool) {
         if !self.document.selection().is_empty() {
             let message = self.clipboard.copy(self.document.selected_text());
-            self.clipboard_feedback(message, self.clipboard.uses_fallback());
+            self.clipboard_feedback(message, self.clipboard.warned());
             if cut {
                 self.document.insert("");
             }
@@ -2332,7 +2329,7 @@ impl App {
                 KeyCode::Char('c' | 'x') => {
                     if !input.selection().is_empty() {
                         let message = self.clipboard.copy(input.selected_text());
-                        clipboard_feedback = Some((message, self.clipboard.uses_fallback()));
+                        clipboard_feedback = Some((message, self.clipboard.warned()));
                         if key.code == KeyCode::Char('x') {
                             input.insert("");
                         }
@@ -2340,8 +2337,7 @@ impl App {
                 }
                 KeyCode::Char('v') => {
                     let (text, message) = self.clipboard.paste();
-                    clipboard_feedback =
-                        Some((message, text.is_none() || self.clipboard.uses_fallback()));
+                    clipboard_feedback = Some((message, self.clipboard.warned()));
                     if let Some(text) = text {
                         input.insert(&text);
                     }
@@ -5783,7 +5779,9 @@ mod tests {
         assert_eq!(app.document.text(), "keep this");
         assert_eq!(app.document.selection(), selection);
         assert!(!app.document.is_dirty());
-        assert!(app.message.contains("empty"));
+        // Nothing happened, and the status line says why until dismissed.
+        assert!(app.message.starts_with("Nothing copied in pica yet"));
+        assert!(app.message_is_error);
     }
 
     #[test]
@@ -6184,12 +6182,15 @@ mod tests {
         app.document.select_all();
         key(&mut app, KeyCode::Char('x'), KeyModifiers::CONTROL);
         assert_eq!(app.document.text(), "");
-        assert!(app.message.contains("internal clipboard only"));
+        assert_eq!(
+            app.message,
+            "Copied inside pica only · no system clipboard here"
+        );
         native.lock().unwrap().error = None;
         native.lock().unwrap().text = "stale system text".into();
         key(&mut app, KeyCode::Char('v'), KeyModifiers::CONTROL);
         assert_eq!(app.document.text(), "keep **source**");
-        assert!(app.message.contains("internal clipboard"));
+        assert!(app.message.starts_with("Pasted pica's own copy"));
         assert_eq!(native.lock().unwrap().reads, 0);
     }
 
@@ -6202,7 +6203,7 @@ mod tests {
         app.document.select_all();
         key(&mut app, KeyCode::Char('x'), KeyModifiers::CONTROL);
         let warning = app.message.clone();
-        assert!(warning.contains("internal clipboard only") && app.message_is_error);
+        assert!(warning.starts_with("Copied inside pica only") && app.message_is_error);
         key(&mut app, KeyCode::Right, KeyModifiers::NONE);
         key(&mut app, KeyCode::Char('a'), KeyModifiers::NONE);
         app.handle_event(Event::Paste("new text".into()));
@@ -6224,7 +6225,7 @@ mod tests {
             key(&mut app, KeyCode::Char('a'), KeyModifiers::CONTROL);
             key(&mut app, KeyCode::Char('x'), KeyModifiers::CONTROL);
             let warning = app.message.clone();
-            assert!(warning.contains("internal clipboard only") && app.message_is_error);
+            assert!(warning.starts_with("Copied inside pica only") && app.message_is_error);
             key(&mut app, KeyCode::Right, KeyModifiers::NONE);
             key(&mut app, KeyCode::Char('c'), KeyModifiers::NONE);
             app.handle_event(Event::Paste("at".into()));
@@ -6411,7 +6412,7 @@ mod tests {
         native.lock().unwrap().text = "dog".into();
         key(&mut app, KeyCode::Char('v'), KeyModifiers::CONTROL);
         assert_eq!(app.search.query.text(), "dog");
-        assert!(app.message.contains("Pasted from system clipboard"));
+        assert!(app.message.contains("Pasted from the system clipboard"));
         assert_eq!(app.document.selected_text(), "dog");
         key(&mut app, KeyCode::Char('a'), KeyModifiers::CONTROL);
         native.lock().unwrap().text.clear();
@@ -6421,10 +6422,10 @@ mod tests {
         native.lock().unwrap().error = Some(crate::clipboard::Error::Unavailable("offline".into()));
         key(&mut app, KeyCode::Char('x'), KeyModifiers::CONTROL);
         assert_eq!(app.search.query.text(), "");
-        assert!(app.message.contains("internal clipboard only"));
+        assert!(app.message.starts_with("Copied inside pica only"));
         key(&mut app, KeyCode::Char('v'), KeyModifiers::CONTROL);
         assert_eq!(app.search.query.text(), "dog");
-        assert!(app.message.contains("Pasted from internal clipboard"));
+        assert!(app.message.starts_with("Pasted pica's own copy"));
         assert_eq!(app.document.text(), "cat dog");
     }
 

@@ -373,6 +373,33 @@ fn sgr_clicks_and_drags_on_a_lone_documents_top_row_reach_the_text() {
 }
 
 #[test]
+fn copying_over_ssh_sends_the_selection_to_the_terminal_as_osc52() {
+    // Session::start marks the session as SSH, so no system clipboard is
+    // ever touched: the copy can only go to the terminal.
+    let source = "# Titre\n\n**gras** 界\n";
+    let mut session = Session::start(source);
+    // Ctrl+A, Ctrl+C: the whole source, exactly, as padded Base64.
+    session.send(b"\x1b[97;5u\x1b[99;5u");
+    let copied = b"\x1b]52;c;IyBUaXRyZQoKKipncmFzKiog55WMCg==\x1b\\";
+    session.until("the copy as OSC 52", |s| count(&s.transcript, copied) == 1);
+    assert_eq!(count(&session.transcript, b"\x1b]52;"), 1);
+    // Ctrl+X sends the same selection again and empties the document;
+    // Ctrl+V brings it back from pica's own copy.
+    session.send(b"\x1b[120;5u");
+    session.until("the cut as OSC 52", |s| count(&s.transcript, copied) == 2);
+    session.send(b"x\x1b[115;5u");
+    session.until("the emptied document saved", |s| {
+        fs::read_to_string(&s.fixture).unwrap() == "x"
+    });
+    session.send(b"\x1b[97;5u\x1b[118;5u");
+    session.save_and_expect(source);
+    // Only ever a write: pica never asks the terminal for the clipboard.
+    assert_eq!(count(&session.transcript, b"\x1b]52;"), 2);
+    assert_eq!(count(&session.transcript, b"\x1b]52;c;?"), 0);
+    session.finish();
+}
+
+#[test]
 fn save_as_completes_a_name_and_replaces_a_file_only_after_y() {
     let mut session = Session::start("mine\n");
     let taken = session.fixture.with_file_name("taken.md");

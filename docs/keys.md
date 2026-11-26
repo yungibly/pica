@@ -303,6 +303,17 @@ F2 and F5 are Alt+H and Alt+A. Nano's Ctrl+W also opens Find.
   with the enhanced keyboard protocol (kitty, Ghostty, WezTerm, foot, recent
   iTerm2). Shift+Tab always works.
 - Alt keys on macOS need the terminal's "Option as Meta" setting.
+- Over SSH, Ctrl+C and Ctrl+X send the copy to your terminal with OSC 52,
+  so it reaches the clipboard of the machine you are sitting at. Most
+  current terminals take it (kitty, Ghostty, WezTerm, iTerm2, Alacritty,
+  foot, Windows Terminal, xterm when allowed); Apple's Terminal does not.
+  Inside tmux it needs `set -g set-clipboard on`. Copies over 75,000
+  bytes stay inside pica, since terminals drop longer ones. Ctrl+V pastes
+  what pica last copied; to paste the system clipboard over SSH, use the
+  terminal's own paste. pica never asks the terminal to read the clipboard.
+- On a Wayland desktop the system clipboard needs `wl-copy` and `wl-paste`
+  from wl-clipboard. Without them pica uses X11 through XWayland where
+  that exists, and otherwise the terminal as over SSH.
 - Ctrl+Shift+S (Save as) only differs from Ctrl+S with the enhanced
   keyboard protocol; the palette's Save as works everywhere.
 
