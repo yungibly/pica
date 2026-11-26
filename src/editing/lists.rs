@@ -276,13 +276,18 @@ pub fn nest_item(
         } else if line_start < item_end {
             held
         } else {
-            adopted
-                .iter()
-                .filter(|(digits, _, range)| {
-                    line_start > line_range(source, digits.start).start && line_start < range.end
-                })
-                .map(|(digits, number, _)| grown(digits, *number))
-                .sum::<isize>()
+            // The renumbered sibling this line is inside, after its first
+            // line. Siblings follow one another, so it can only be the last
+            // that starts before the line. Asking each of them about every
+            // line took time by the square of their number.
+            let before = adopted.partition_point(|(digits, ..)| {
+                line_range(source, digits.start).start < line_start
+            });
+            before
+                .checked_sub(1)
+                .map(|index| &adopted[index])
+                .filter(|(_, _, range)| line_start < range.end)
+                .map_or(0, |(digits, number, _)| grown(digits, *number))
                 + reach
         }
     };
@@ -967,6 +972,53 @@ mod tests {
         assert_eq!(document.text(), "- a\n- bcd\n  - e\n");
         assert_eq!(document.selection(), Selection::caret(7));
         assert!(!document.can_undo());
+    }
+
+    #[test]
+    fn lifting_from_above_thousands_of_numbered_siblings_does_not_stall() {
+        // A numbered item with `count` numbered items nested under it.
+        let nested = |count: usize| {
+            let mut text = String::from("1. first\n");
+            for number in 1..=count {
+                text.push_str(&format!("   {number}. item {number}\n"));
+            }
+            text
+        };
+        // Lifting the first of them renumbers every later one, and each
+        // line after the item finds the sibling it is inside. Looking
+        // through all of them for every line took time by the square of
+        // their number: seconds here, and minutes for Shift+Tab over a few
+        // hundred selected items, which lifts each in turn.
+        let mut document = Document::new(nested(6000));
+        document.set_caret("1. first\n   1. item 1".len()).unwrap();
+        let began = std::time::Instant::now();
+        assert_eq!(nest_item(&mut document, None, true), Some(true));
+        let one = began.elapsed();
+        let text = document.text();
+        assert!(text.starts_with("1. first\n2. item 1\n   1. item 2\n   2. item 3\n"));
+        assert!(text.contains("\n   9. item 10\n   10. item 11\n"));
+        assert!(text.ends_with("\n   5998. item 5999\n   5999. item 6000\n"));
+        assert_eq!(text.lines().count(), 6001);
+
+        // A bound many times what the work takes now, for a slow machine
+        // running unoptimized code, and a fraction of what it took.
+        assert!(one < std::time::Duration::from_secs(2), "{one:?}");
+
+        // Many selected and lifted at once, each in turn: every one takes
+        // the number after the last, through markers that grow a digit.
+        let text = nested(120);
+        let mut document = Document::new(text.clone());
+        document
+            .set_selection(Selection {
+                anchor: "1. first\n".len(),
+                head: text.len(),
+            })
+            .unwrap();
+        assert_eq!(nest_selected(&mut document, true), Some(true));
+        let expected: String = std::iter::once("1. first\n".to_owned())
+            .chain((1..=120).map(|number| format!("{}. item {number}\n", number + 1)))
+            .collect();
+        assert_eq!(document.text(), expected);
     }
 
     #[test]
