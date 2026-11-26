@@ -337,6 +337,9 @@ pub struct App {
     pub(crate) label: Option<String>,
     /// Set when the user switches live/source; the workspace remembers it.
     pub(crate) view_toggled: bool,
+    /// With keys bound in `keys.conf`: the keys that now open the command
+    /// palette and the help sheet, each empty when no key does.
+    pub(crate) custom_keys: Option<(String, String)>,
     /// Find's case choice changed and has yet to be saved.
     pub(crate) case_toggled: bool,
     /// Indent guides in code and source views; the workspace sets this.
@@ -841,6 +844,7 @@ impl App {
             header: true,
             label: None,
             view_toggled: false,
+            custom_keys: None,
             case_toggled: false,
             guides: false,
             unloadable: None,
@@ -2009,6 +2013,27 @@ impl App {
         self.follow_cursor = false;
     }
 
+    /// Move the view `rows` up or down and leave the caret where it is, as
+    /// the wheel does. The view stops at the first row and at a full last
+    /// page, and stays put until the caret next moves.
+    fn scroll_rows(&mut self, up: bool, rows: usize) {
+        self.update_layout();
+        self.reach(if up { rows } else { 0 }, if up { 0 } else { rows });
+        self.scroll = if up {
+            self.scroll.saturating_sub(rows)
+        } else if self.projection.complete() {
+            (self.scroll + rows).min(
+                self.projection
+                    .row_count()
+                    .saturating_sub(self.viewport.height as usize),
+            )
+        } else {
+            (self.scroll + rows).min(self.projection.row_count() - 1)
+        };
+        self.top = self.anchor_at(self.scroll);
+        self.follow_cursor = false;
+    }
+
     fn mouse(&mut self, event: MouseEvent) {
         // A sideways wheel, or Shift with the ordinary one, scrolls an
         // unwrapped view along its lines. Where lines wrap there is nowhere
@@ -2034,22 +2059,7 @@ impl App {
             if !contains(self.editor_area, event.column, event.row) {
                 return;
             }
-            let up = event.kind == MouseEventKind::ScrollUp;
-            self.update_layout();
-            self.reach(if up { 3 } else { 0 }, if up { 0 } else { 3 });
-            self.scroll = if up {
-                self.scroll.saturating_sub(3)
-            } else if self.projection.complete() {
-                (self.scroll + 3).min(
-                    self.projection
-                        .row_count()
-                        .saturating_sub(self.viewport.height as usize),
-                )
-            } else {
-                (self.scroll + 3).min(self.projection.row_count() - 1)
-            };
-            self.top = self.anchor_at(self.scroll);
-            self.follow_cursor = false;
+            self.scroll_rows(event.kind == MouseEventKind::ScrollUp, 3);
             return;
         }
         let inside = event.column >= self.viewport.x
@@ -2410,6 +2420,13 @@ impl App {
             KeyCode::Tab | KeyCode::BackTab => {
                 self.search
                     .cycle(replace, shift || key.code == KeyCode::BackTab);
+                return;
+            }
+            // The page keys look around without leaving the current match;
+            // the next match found brings the view back to it.
+            KeyCode::PageUp | KeyCode::PageDown => {
+                let rows = self.page_height();
+                self.scroll_rows(key.code == KeyCode::PageUp, rows);
                 return;
             }
             KeyCode::Up if replace => {
@@ -3629,21 +3646,40 @@ impl App {
         let extent = self.extent();
         let full = format!("{kind} · {extent} · {encoding}");
         let sized = format!("{kind} · {extent}");
-        const LONG: &str = "Ctrl+E commands · Ctrl+G help";
-        const SHORT: &str = "^E commands · ^G help";
+        // The two keys that lead everywhere else, as the user has them: a
+        // key they took away is not offered.
+        let (commands, help) = match &self.custom_keys {
+            Some((commands, help)) => (commands.as_str(), help.as_str()),
+            None => ("Ctrl+E", "Ctrl+G"),
+        };
+        let hint = |short: bool, with_commands: bool| -> String {
+            let name = |key: &str| match key.strip_prefix("Ctrl+") {
+                Some(letter) if short && letter.chars().count() == 1 => format!("^{letter}"),
+                _ => key.to_owned(),
+            };
+            let mut parts = Vec::new();
+            if with_commands && !commands.is_empty() {
+                parts.push(format!("{} commands", name(commands)));
+            }
+            if !help.is_empty() {
+                parts.push(format!("{} help", name(help)));
+            }
+            parts.join(" · ")
+        };
+        let (long, short, least) = (hint(false, true), hint(true, true), hint(true, false));
         // Shorten the key hints before dropping what the document is; one
         // details segment shortens from its end so it keeps reading order.
         for (hint, details) in [
-            (LONG, Some(&full)),
-            (LONG, Some(&sized)),
-            (SHORT, Some(&sized)),
-            (SHORT, Some(&kind)),
-            ("^G help", Some(&kind)),
-            (SHORT, None),
-            ("^G help", None),
+            (&long, Some(&full)),
+            (&long, Some(&sized)),
+            (&short, Some(&sized)),
+            (&short, Some(&kind)),
+            (&least, Some(&kind)),
+            (&short, None),
+            (&least, None),
         ] {
             let mut trial = bar.clone();
-            if trial.push(Side::Right, hint, base, false)
+            if (hint.is_empty() || trial.push(Side::Right, hint, base, false))
                 && details.is_none_or(|details| trial.push(Side::Right, details, base, false))
             {
                 bar = trial;
@@ -3718,7 +3754,10 @@ impl App {
             width,
             height,
         );
-        let inner = ui::panel(frame, rect, "pica · Help", None);
+        // The sheet lists the keys pica ships with; say so when the user
+        // has changed some.
+        let note = self.custom_keys.is_some().then_some("default keys");
+        let inner = ui::panel(frame, rect, "pica · Help", note);
         let visible = usize::from(inner.height);
         let scroll = self.help_scroll.min(sheet.len().saturating_sub(visible));
         for (row, line) in sheet.iter().skip(scroll).take(visible).enumerate() {
@@ -6265,6 +6304,45 @@ mod tests {
         draw(&mut app, 72, 24);
         assert_eq!(app.search_geometry.panel.height, 2);
         assert_eq!(app.search_geometry.fields[0].area.width - 8, 24);
+    }
+
+    #[test]
+    fn page_keys_scroll_the_view_while_find_keeps_its_match() {
+        let text: String = (1..=200).map(|n| format!("line {n}\n")).collect();
+        let mut app = App::new(text.clone(), None, false);
+        draw(&mut app, 60, 20);
+        search(&mut app, "line 5", false);
+        draw(&mut app, 60, 20);
+        let height = usize::from(app.viewport.height);
+        let top = |app: &App| app.projection.row(app.scroll).line.unwrap();
+        let selected = app.document.selection();
+        assert_eq!(app.document.selected_text(), "line 5");
+        assert_eq!(top(&app), 1);
+        key(&mut app, KeyCode::PageDown, KeyModifiers::NONE);
+        draw(&mut app, 60, 20);
+        assert_eq!(top(&app), height + 1);
+        key(&mut app, KeyCode::PageDown, KeyModifiers::NONE);
+        draw(&mut app, 60, 20);
+        assert_eq!(top(&app), 2 * height + 1);
+        // The match, the query and the text are as they were.
+        assert_eq!(app.document.selection(), selected);
+        assert_eq!(app.search.query.text(), "line 5");
+        assert!(matches!(app.overlay, Overlay::Search { .. }));
+        key(&mut app, KeyCode::PageUp, KeyModifiers::NONE);
+        key(&mut app, KeyCode::PageUp, KeyModifiers::NONE);
+        key(&mut app, KeyCode::PageUp, KeyModifiers::NONE);
+        draw(&mut app, 60, 20);
+        assert_eq!(top(&app), 1);
+        // Finding the next match brings the view to it.
+        key(&mut app, KeyCode::PageDown, KeyModifiers::NONE);
+        key(&mut app, KeyCode::PageDown, KeyModifiers::NONE);
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        draw(&mut app, 60, 20);
+        assert_eq!(app.document.selected_text(), "line 5");
+        let (row, _) = app.caret_cell().unwrap();
+        assert_eq!(app.projection.row(row).line, Some(50));
+        assert!(row >= app.scroll && row < app.scroll + usize::from(app.viewport.height));
+        assert_eq!(app.document.text(), text);
     }
 
     #[test]
