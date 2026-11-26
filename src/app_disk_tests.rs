@@ -457,3 +457,70 @@ fn a_reload_that_was_asked_for_stays_an_undo_step_of_its_own() {
     }
     assert_eq!(back, ["my six\n", "six\n", "four\n", "three\n", "one\n"]);
 }
+
+/// Write `text` as another program did `ago`.
+fn write_aged(path: &Path, text: impl AsRef<[u8]>, ago: Duration) {
+    fs::write(path, text).unwrap();
+    let file = fs::File::options().write(true).open(path).unwrap();
+    file.set_modified(SystemTime::now() - ago).unwrap();
+}
+
+#[test]
+fn a_file_just_emptied_is_given_a_second_to_be_filled_again() {
+    let source: String = (1..=60).map(|n| format!("line {n}\n")).collect();
+    let (_dir, path, mut app) = open("notes.md", &source);
+    for _ in 0..40 {
+        press(&mut app, KeyCode::Down);
+    }
+    // Where the reader is: the caret, its row on screen, and the first row.
+    let first_row = row(&mut app, 1);
+    let place = (app.document.selection().head, caret_row(&app), app.top);
+    assert!(
+        app.top.line > 0 && first_row.contains("line "),
+        "{first_row}"
+    );
+
+    // Another program empties the file on its way to writing it again.
+    // Three tenths of a second later it would count as settled, but it is
+    // empty and the buffer is not: nothing is loaded and nothing is said.
+    let moment = Duration::from_millis(300);
+    write_aged(&path, "", moment);
+    assert!(!app.check_external_change());
+    assert_eq!(app.document.text(), source);
+    assert!(status(&mut app).starts_with(" notes.md "));
+    assert!(!app.document.can_undo());
+    // Filled: the new text arrives where the reader is, and the document
+    // was never shown empty.
+    let filled = format!("{source}line 61\n");
+    write_aged(&path, &filled, moment);
+    assert!(app.check_external_change());
+    assert_eq!(app.document.text(), filled);
+    assert_eq!(row(&mut app, 1), first_row);
+    assert_eq!(
+        (app.document.selection().head, caret_row(&app), app.top),
+        place
+    );
+
+    // A file that stays empty is what the file now holds: after a second
+    // it is loaded like any other change. Ctrl+Z undoes it together with
+    // the reload before it, as for any run of them.
+    write_aged(&path, "", moment);
+    assert!(!app.check_external_change());
+    write_aged(&path, "", Duration::from_millis(1500));
+    assert!(app.check_external_change());
+    assert_eq!(app.document.text(), "");
+    assert!(app.message.contains("reloaded"));
+    key(&mut app, KeyCode::Char('z'), KeyModifiers::CONTROL);
+    assert_eq!(app.document.text(), source);
+
+    // The wait is only for a file that lost everything: one cut down to a
+    // line, or an empty one that gains text, is taken as soon as settled.
+    let (_dir, path, mut app) = open("notes.md", &source);
+    write_aged(&path, "line 1\n", moment);
+    assert!(app.check_external_change());
+    assert_eq!(app.document.text(), "line 1\n");
+    let (_dir, path, mut app) = open("empty.md", "");
+    write_aged(&path, "first words\n", moment);
+    assert!(app.check_external_change());
+    assert_eq!(app.document.text(), "first words\n");
+}
