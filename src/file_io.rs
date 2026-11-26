@@ -26,6 +26,11 @@ pub struct Fingerprint {
 }
 
 impl Fingerprint {
+    /// Whether this version of the file holds nothing at all.
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
     fn of(metadata: &fs::Metadata) -> Self {
         Self {
             len: metadata.len(),

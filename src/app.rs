@@ -194,6 +194,12 @@ const EAGER_WORD_COUNT: usize = 8 * 1024;
 /// been left alone this long, so a file caught half written is not shown.
 const SETTLE: std::time::Duration = std::time::Duration::from_millis(100);
 
+/// A file found empty while the buffer holds text is reloaded only once it
+/// has stayed empty this long. Many programs empty a file and fill it a
+/// moment later; shown in between, the document would be empty and the
+/// reader's place lost.
+const EMPTIED: std::time::Duration = std::time::Duration::from_secs(1);
+
 /// Windows skip at least this many rows of a long line when they resume
 /// inside it; nearer rows are cheaper to lay out than to look up.
 const LONG_LINE_ROWS: usize = 32;
@@ -480,7 +486,14 @@ impl App {
         if stamp.is_some() && stamp == self.unloadable {
             return false;
         }
-        if !file.settled(self.settle) {
+        let emptied = stamp.as_ref().is_some_and(|stamp| stamp.is_empty())
+            && !self.document.text().is_empty();
+        let quiet = if emptied {
+            self.settle.max(EMPTIED)
+        } else {
+            self.settle
+        };
+        if !file.settled(quiet) {
             return false;
         }
         let again = self.document.following();
