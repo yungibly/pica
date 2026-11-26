@@ -156,7 +156,7 @@ pub fn item(frame: &mut Frame, row: Rect, label: &str, hint: &str, selected: boo
     } else {
         base
     };
-    let emphasis = base.fg(colors.accent).add_modifier(Modifier::BOLD);
+    let emphasis = match_emphasis(base);
     let mut x = row.x + 2;
     for (grapheme, marked) in label.graphemes(true).zip(marks) {
         buffer.set_string(x, row.y, grapheme, if marked { emphasis } else { text });
@@ -169,6 +169,17 @@ pub fn item(frame: &mut Frame, row: Rect, label: &str, hint: &str, selected: boo
             base.fg(colors.chrome_muted)
         };
         buffer.set_string(row.right() - 1 - hint_width as u16, row.y, hint, style);
+    }
+}
+
+/// How the letters a filter matched stand out on `base`: in the accent
+/// color, or underlined where `base` is reverse video. There an accent
+/// foreground would be drawn as a block of accent background.
+pub fn match_emphasis(base: Style) -> Style {
+    if base.add_modifier.contains(Modifier::REVERSED) {
+        base.add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+    } else {
+        base.fg(palette().accent).add_modifier(Modifier::BOLD)
     }
 }
 
@@ -364,5 +375,38 @@ mod tests {
         assert_eq!(marks("Save as…", "SAVE"), "^^^^    ");
         assert_eq!(marks("Save", "zz"), "    ");
         assert_eq!(marks("界面", "面"), " ^");
+    }
+
+    #[test]
+    fn matched_letters_stay_letters_on_a_reverse_video_row() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let draw = |theme, selected| {
+            crate::theme::set_theme(theme);
+            let mut terminal = Terminal::new(TestBackend::new(30, 1)).unwrap();
+            terminal
+                .draw(|frame| item(frame, frame.area(), "Save document", "", selected, "sa"))
+                .unwrap();
+            let buffer = terminal.backend().buffer();
+            (buffer[(2, 0)].style(), buffer[(6, 0)].style())
+        };
+        // The terminal theme selects in reverse video: an accent foreground
+        // there would paint the matched letters as accent blocks.
+        let (matched, plain) = draw(crate::theme::Theme::Terminal, true);
+        assert!(plain.add_modifier.contains(Modifier::REVERSED));
+        assert_eq!((matched.fg, matched.bg), (plain.fg, plain.bg));
+        assert!(matched.add_modifier.contains(Modifier::UNDERLINED));
+        assert!(!plain.add_modifier.contains(Modifier::UNDERLINED));
+        // Everywhere else they take the accent color.
+        let accent = Some(palette().accent);
+        let (matched, plain) = draw(crate::theme::Theme::Terminal, false);
+        assert_eq!(matched.fg, accent);
+        assert_ne!(plain.fg, accent);
+        for selected in [false, true] {
+            let (matched, plain) = draw(crate::theme::Theme::Dark, selected);
+            assert_eq!(matched.fg, Some(palette().accent));
+            assert_ne!(plain.fg, matched.fg);
+            assert!(!matched.add_modifier.contains(Modifier::UNDERLINED));
+        }
+        crate::theme::set_theme(crate::theme::Theme::Terminal);
     }
 }
