@@ -159,6 +159,25 @@ impl Language {
         }
     }
 
+    /// What Tab inserts in a file of this language that has no indentation
+    /// of its own yet: tabs where the format or its formatter requires them,
+    /// two spaces where that is the prevailing style, otherwise four.
+    pub fn indent(&self) -> pica::editing::Indent {
+        use pica::editing::Indent;
+        match self.lexer {
+            Lexer::Make => Indent::Tabs,
+            Lexer::Json | Lexer::Yaml | Lexer::Html | Lexer::Xml | Lexer::Css | Lexer::Scss => {
+                Indent::Spaces(2)
+            }
+            _ => match self.name {
+                "Go" => Indent::Tabs,
+                "JavaScript" | "TypeScript" | "Ruby" | "Lua" | "Nix" | "Dart" | "Elixir"
+                | "Haskell" | "Scala" | "HCL" | "GraphQL" | "Protobuf" | "R" => Indent::Spaces(2),
+                _ => Indent::Spaces(4),
+            },
+        }
+    }
+
     /// All registered languages, for tests and diagnostics.
     pub fn all() -> &'static [Language] {
         &languages::LANGUAGES

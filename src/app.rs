@@ -11,7 +11,7 @@ use crate::{
 use crossterm::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
-use pica::{BlockKind, Document, InlineStyle, MarkdownSnapshot, Selection};
+use pica::{BlockKind, Document, InlineStyle, MarkdownSnapshot, Selection, editing::Indent};
 use ratatui::{
     Frame,
     layout::Rect,
@@ -109,6 +109,7 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
             ("Alt+`", "Inline code"),
             ("Alt+T", "Toggle task"),
             ("Enter", "Continue a list"),
+            ("Tab / Shift+Tab", "Nest / lift a list item"),
         ],
     ),
     (
@@ -120,6 +121,28 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
         ],
     ),
 ];
+
+thread_local! {
+    /// The indentation chosen for every file, or `None` to follow each file.
+    static INDENT: Cell<Option<Indent>> = const { Cell::new(None) };
+}
+
+pub(crate) fn indent_preference() -> Option<Indent> {
+    INDENT.get()
+}
+
+pub(crate) fn set_indent_preference(indent: Option<Indent>) {
+    INDENT.set(indent);
+}
+
+/// "tabs", "1 space" or "4 spaces".
+pub(crate) fn indent_name(indent: Indent) -> String {
+    match indent {
+        Indent::Tabs => "tabs".to_owned(),
+        Indent::Spaces(1) => "1 space".to_owned(),
+        Indent::Spaces(width) => format!("{width} spaces"),
+    }
+}
 
 /// A document and one of its revisions: `(Document::id, revision)`.
 type Version = (u64, u64);
@@ -242,6 +265,8 @@ pub struct App {
     word_count: Cell<Option<(Version, usize)>>,
     /// The smallest indentation step of a revision, for indent guides.
     indent_unit: Cell<Option<(Version, Option<usize>)>>,
+    /// The indentation style a revision's own lines show, for Tab.
+    detected_indent: Cell<Option<(Version, Option<Indent>)>>,
     last_input: std::time::Instant,
     pub should_exit: bool,
     message: String,
@@ -644,6 +669,7 @@ impl App {
             last_disk_change: None,
             word_count: Cell::new(None),
             indent_unit: Cell::new(None),
+            detected_indent: Cell::new(None),
             last_input: std::time::Instant::now(),
             should_exit: false,
             message: String::new(),
@@ -1308,10 +1334,12 @@ impl App {
                 }
                 // Legacy terminals send Ctrl+] as 0x1D, which reads as Ctrl+5.
                 KeyCode::Char(']' | '5') => {
-                    self.document.indent_lines();
+                    let indent = self.indent();
+                    self.document.indent_lines_by(indent);
                 }
                 KeyCode::Char('[') => {
-                    self.document.outdent_lines();
+                    let indent = self.indent();
+                    self.document.outdent_lines_by(indent);
                 }
                 KeyCode::Home => self.move_to(0, shift),
                 KeyCode::End => self.move_to(self.document.text().len(), shift),
@@ -1416,25 +1444,26 @@ impl App {
                 self.preferred_column = None;
             }
             KeyCode::Backspace => {
-                self.document.backspace();
+                let indent = self.indent();
+                pica::editing::backspace(&mut self.document, indent);
                 self.preferred_column = None;
             }
             KeyCode::Delete => {
                 self.document.delete_forward();
                 self.preferred_column = None;
             }
-            KeyCode::Tab => {
-                if shift {
-                    self.document.outdent_lines();
+            KeyCode::Tab | KeyCode::BackTab => {
+                let outdent = shift || key.code == KeyCode::BackTab;
+                let indent = self.indent();
+                if self.nest_item(outdent) {
+                    // A Markdown list item moved a level, or has no place to.
+                } else if outdent {
+                    self.document.outdent_lines_by(indent);
                 } else if self.document.selection().is_empty() {
-                    self.document.insert("\t");
+                    pica::editing::insert_tab(&mut self.document, indent);
                 } else {
-                    self.document.indent_lines();
+                    self.document.indent_lines_by(indent);
                 }
-                self.preferred_column = None;
-            }
-            KeyCode::BackTab => {
-                self.document.outdent_lines();
                 self.preferred_column = None;
             }
             KeyCode::Char(c) if !alt => {
@@ -1443,6 +1472,16 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    /// Tab or Shift+Tab on a Markdown list item's first line nests or lifts
+    /// the item. False where ordinary indentation applies instead.
+    fn nest_item(&mut self, outward: bool) -> bool {
+        if !self.document.selection().is_empty() || !self.markdown_analysis() {
+            return false;
+        }
+        self.ensure_parsed();
+        pica::editing::nest_item(&mut self.document, Some(&self.parsed.snapshot), outward).is_some()
     }
 
     /// Markdown Enter, reusing this revision's analysis instead of parsing.
@@ -2462,6 +2501,45 @@ impl App {
         unit
     }
 
+    /// One level of indentation here: the chosen style if there is one,
+    /// else the style this text already uses, else the file type's own.
+    /// Makefiles, Go and tab-separated values default to tabs; unknown
+    /// files and Markdown to four spaces.
+    pub(crate) fn indent(&self) -> Indent {
+        indent_preference().unwrap_or_else(|| self.file_indent())
+    }
+
+    /// The indentation this file calls for, whatever style is chosen.
+    pub(crate) fn file_indent(&self) -> Indent {
+        let revision = self.version();
+        let detected = match self.detected_indent.get() {
+            Some((cached, detected)) if cached == revision => detected,
+            _ => {
+                let detected = Indent::detect(self.document.text());
+                self.detected_indent.set(Some((revision, detected)));
+                detected
+            }
+        };
+        detected.unwrap_or_else(|| self.default_indent())
+    }
+
+    fn default_indent(&self) -> Indent {
+        if let Some(language) = self.language {
+            return language.indent();
+        }
+        let tabular = self
+            .path()
+            .and_then(|path| path.extension())
+            .is_some_and(|extension| {
+                extension.eq_ignore_ascii_case("tsv") || extension.eq_ignore_ascii_case("tab")
+            });
+        if tabular {
+            Indent::Tabs
+        } else {
+            Indent::Spaces(4)
+        }
+    }
+
     fn indent_guides(&self, height: usize) -> Option<(usize, Vec<usize>)> {
         let unit = self.indent_unit()?;
         let after = if self.projection.complete() {
@@ -3095,10 +3173,12 @@ impl App {
         }
     }
 
-    /// A two-column keyboard reference when there is room, one otherwise.
+    /// A two-column keyboard reference when both columns fit whole, one
+    /// otherwise. The panel is as wide as its text, so nothing in it is cut
+    /// off while the window can hold the longest line.
     fn draw_help(&self, frame: &mut Frame) {
         let area = frame.area();
-        let width = area.width.saturating_sub(4).min(100);
+        let width = area.width.saturating_sub(4);
         let height = area.height.saturating_sub(2);
         if width < 24 || height < 5 {
             frame.render_widget(Clear, area);
@@ -3108,8 +3188,10 @@ impl App {
             );
             return;
         }
-        let columns = if width >= 80 { 2 } else { 1 };
-        let sheet = help_sheet(columns);
+        // Borders take two cells of the panel's width.
+        let layout = help_layout(usize::from(width) - 2);
+        let width = (layout.width() as u16 + 2).clamp(24, width);
+        let sheet = &layout.sheet;
         let height = (sheet.len() as u16 + 2).min(height);
         let rect = Rect::new(
             area.x + (area.width - width) / 2,
@@ -3120,15 +3202,18 @@ impl App {
         let inner = ui::panel(frame, rect, "pica · Help", None);
         let visible = usize::from(inner.height);
         let scroll = self.help_scroll.min(sheet.len().saturating_sub(visible));
-        let column_width = inner.width.saturating_sub(2) / columns as u16;
         for (row, line) in sheet.iter().skip(scroll).take(visible).enumerate() {
-            for (column, cell) in line.iter().enumerate() {
-                let x = inner.x + 1 + column as u16 * column_width;
+            let mut x = inner.x + 1;
+            for (cell, column) in line.iter().zip(&layout.columns) {
+                let room = inner.right().saturating_sub(x + 1);
+                let width = (column.width() as u16).min(room);
                 draw_help_cell(
                     frame,
-                    Rect::new(x, inner.y + row as u16, column_width, 1),
+                    Rect::new(x, inner.y + row as u16, width, 1),
                     cell,
+                    column.keys,
                 );
+                x = x.saturating_add((column.width() + HELP_GAP) as u16);
             }
         }
         let hint = if sheet.len() > visible {
@@ -3145,6 +3230,85 @@ enum HelpCell {
     Blank,
     Title(&'static str),
     Key(&'static str, &'static str),
+}
+
+/// Blank cells between two columns of the help sheet.
+const HELP_GAP: usize = 3;
+/// Blank cells between a key and its action.
+const HELP_KEY_GAP: usize = 2;
+
+/// One column of the help sheet: keys right-align in `keys` cells and
+/// actions follow in `actions`; a section title may be wider than both.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct HelpColumn {
+    keys: usize,
+    actions: usize,
+    titles: usize,
+}
+
+impl HelpColumn {
+    fn width(&self) -> usize {
+        (self.keys + HELP_KEY_GAP + self.actions).max(self.titles)
+    }
+}
+
+/// The help sheet arranged for a width, with each column's measurements.
+struct HelpLayout {
+    sheet: Vec<Vec<HelpCell>>,
+    columns: Vec<HelpColumn>,
+}
+
+impl HelpLayout {
+    /// The panel's inner width: the columns, the gaps between them, and a
+    /// blank cell at each side.
+    fn width(&self) -> usize {
+        let columns: usize = self.columns.iter().map(HelpColumn::width).sum();
+        columns + HELP_GAP * (self.columns.len() - 1) + 2
+    }
+}
+
+/// Two columns when every key and action of both fits in `available`
+/// cells, otherwise one. A single column narrower than its text gives the
+/// keys up to half the room and clips what is left.
+fn help_layout(available: usize) -> HelpLayout {
+    let measure = |sheet: &[Vec<HelpCell>], column: usize| {
+        let mut measured = HelpColumn {
+            keys: 0,
+            actions: 0,
+            titles: 0,
+        };
+        for cell in sheet.iter().filter_map(|row| row.get(column)) {
+            match cell {
+                HelpCell::Blank => {}
+                HelpCell::Title(title) => {
+                    measured.titles = measured.titles.max(UnicodeWidthStr::width(*title));
+                }
+                HelpCell::Key(key, action) => {
+                    measured.keys = measured.keys.max(UnicodeWidthStr::width(*key));
+                    measured.actions = measured.actions.max(UnicodeWidthStr::width(*action));
+                }
+            }
+        }
+        measured
+    };
+    let arrange = |count: usize| {
+        let sheet = help_sheet(count);
+        let columns = (0..count).map(|column| measure(&sheet, column)).collect();
+        HelpLayout { sheet, columns }
+    };
+    let two = arrange(2);
+    if two.width() <= available {
+        return two;
+    }
+    let mut one = arrange(1);
+    if one.width() > available {
+        let room = available.saturating_sub(2);
+        let column = &mut one.columns[0];
+        column.keys = column.keys.min(room / 2);
+        column.actions = room.saturating_sub(column.keys + HELP_KEY_GAP);
+        column.titles = column.titles.min(room);
+    }
+    one
 }
 
 /// Sections flow down the columns, balanced by height.
@@ -3189,17 +3353,18 @@ fn help_sheet(columns: usize) -> Vec<Vec<HelpCell>> {
         .collect()
 }
 
-fn draw_help_cell(frame: &mut Frame, area: Rect, cell: &HelpCell) {
+/// Draw one cell in `area`, its keys right-aligned in `keys` cells.
+fn draw_help_cell(frame: &mut Frame, area: Rect, cell: &HelpCell, keys: usize) {
     let colors = palette();
     let buffer = frame.buffer_mut();
-    let room = usize::from(area.width.saturating_sub(1));
+    let room = usize::from(area.width);
     match cell {
         HelpCell::Blank => {}
         HelpCell::Title(title) => {
             buffer.set_stringn(
                 area.x,
                 area.y,
-                title,
+                ui::clipped(title, room),
                 room,
                 ui::surface()
                     .fg(colors.heading)
@@ -3207,15 +3372,20 @@ fn draw_help_cell(frame: &mut Frame, area: Rect, cell: &HelpCell) {
             );
         }
         HelpCell::Key(key, action) => {
-            // Keys right-align in a column that yields to actions when narrow.
-            let keys = 19.min(room / 2);
+            let keys = keys.min(room);
             let key = ui::clipped(key, keys);
             let pad = keys.saturating_sub(UnicodeWidthStr::width(key.as_str()));
             let x = area.x + pad as u16;
-            buffer.set_stringn(x, area.y, &key, room, ui::surface().fg(colors.accent));
-            let start = area.x + (keys + 2).min(room) as u16;
-            let space = usize::from(area.right().saturating_sub(start + 1));
-            buffer.set_stringn(start, area.y, *action, space, ui::surface());
+            buffer.set_stringn(x, area.y, &key, keys, ui::surface().fg(colors.accent));
+            let start = (keys + HELP_KEY_GAP).min(room);
+            let space = room - start;
+            buffer.set_stringn(
+                area.x + start as u16,
+                area.y,
+                ui::clipped(action, space),
+                space,
+                ui::surface(),
+            );
         }
     }
 }
@@ -4294,10 +4464,10 @@ mod tests {
     }
 
     #[test]
-    fn tab_keeps_literal_caret_input_and_indents_selected_lines() {
+    fn tab_indents_new_text_with_spaces_and_selected_lines_by_a_level() {
         let mut app = App::new("one\r\ntwo".into(), None, true);
         key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
-        assert_eq!(app.document.text(), "\tone\r\ntwo");
+        assert_eq!(app.document.text(), "    one\r\ntwo");
         key(&mut app, KeyCode::BackTab, KeyModifiers::SHIFT);
         assert_eq!(app.document.text(), "one\r\ntwo");
         app.document.select_all();
@@ -4306,6 +4476,135 @@ mod tests {
         key(&mut app, KeyCode::Char('z'), KeyModifiers::CONTROL);
         assert_eq!(app.document.text(), "one\r\ntwo");
         assert_eq!(app.document.selected_text(), "one\r\ntwo");
+    }
+
+    fn opened(name: &str, text: &str) -> (tempfile::TempDir, App) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(name);
+        std::fs::write(&path, text).unwrap();
+        let app = App::open(Some(path)).unwrap();
+        (dir, app)
+    }
+
+    #[test]
+    fn tab_shift_tab_and_backspace_follow_the_files_own_indentation() {
+        // Four spaces: Tab reaches the next stop and Backspace returns.
+        let python = "def f():\n    x = 1\n";
+        let (_dir, mut app) = opened("tool.py", python);
+        assert_eq!(app.indent(), Indent::Spaces(4));
+        key(&mut app, KeyCode::End, KeyModifiers::CONTROL);
+        key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+        key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+        assert_eq!(app.document.text(), format!("{python}        "));
+        key(&mut app, KeyCode::Char('y'), KeyModifiers::NONE);
+        key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+        assert_eq!(app.document.text(), format!("{python}        y   "));
+        key(&mut app, KeyCode::Backspace, KeyModifiers::NONE);
+        assert_eq!(app.document.text(), format!("{python}        y  "));
+        for _ in 0..3 {
+            key(&mut app, KeyCode::Backspace, KeyModifiers::NONE);
+        }
+        assert_eq!(app.document.text(), format!("{python}        "));
+        key(&mut app, KeyCode::Backspace, KeyModifiers::NONE);
+        assert_eq!(app.document.text(), format!("{python}    "));
+        key(&mut app, KeyCode::BackTab, KeyModifiers::SHIFT);
+        assert_eq!(app.document.text(), python);
+        assert!(!app.document.text().contains('\t'));
+
+        // Two spaces, in a file type whose default is four.
+        let (_dir, mut app) = opened("deep.py", "if a:\n  if b:\n    c()\n");
+        assert_eq!(app.indent(), Indent::Spaces(2));
+        key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+        assert_eq!(app.document.text(), "  if a:\n  if b:\n    c()\n");
+        key(&mut app, KeyCode::Char('z'), KeyModifiers::CONTROL);
+        app.document.select_all();
+        key(&mut app, KeyCode::Char(']'), KeyModifiers::CONTROL);
+        assert_eq!(app.document.text(), "  if a:\n    if b:\n      c()\n");
+        key(&mut app, KeyCode::Char('['), KeyModifiers::CONTROL);
+        key(&mut app, KeyCode::Char('['), KeyModifiers::CONTROL);
+        assert_eq!(app.document.text(), "if a:\nif b:\n  c()\n");
+
+        // Tabs: Tab is a tab, alone or over selected lines.
+        let make = "all:\n\tcc main.c\n";
+        let (_dir, mut app) = opened("rules.mk", make);
+        assert_eq!(app.indent(), Indent::Tabs);
+        key(&mut app, KeyCode::End, KeyModifiers::CONTROL);
+        key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+        assert_eq!(app.document.text(), format!("{make}\t"));
+        key(&mut app, KeyCode::Backspace, KeyModifiers::NONE);
+        app.document.select_all();
+        key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+        assert_eq!(app.document.text(), "\tall:\n\t\tcc main.c\n");
+    }
+
+    #[test]
+    fn tab_nests_markdown_list_items_and_indents_everything_else() {
+        let mut app = App::new("- one\n- two\n\ntext".into(), None, true);
+        app.document.set_caret(9).unwrap();
+        key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+        assert_eq!(app.document.text(), "- one\n  - two\n\ntext");
+        key(&mut app, KeyCode::BackTab, KeyModifiers::SHIFT);
+        assert_eq!(app.document.text(), "- one\n- two\n\ntext");
+        key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+        key(&mut app, KeyCode::Tab, KeyModifiers::SHIFT);
+        assert_eq!(app.document.text(), "- one\n- two\n\ntext");
+        // The first item has nothing to nest under and takes no spaces.
+        app.document.set_caret(3).unwrap();
+        key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+        assert_eq!(app.document.text(), "- one\n- two\n\ntext");
+        // Prose indents to the next stop; a selection indents its lines.
+        key(&mut app, KeyCode::End, KeyModifiers::CONTROL);
+        key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+        assert_eq!(app.document.text(), "- one\n- two\n\ntext    ");
+        key(&mut app, KeyCode::Char('z'), KeyModifiers::CONTROL);
+        app.document.select_all();
+        key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+        assert_eq!(app.document.text(), "    - one\n    - two\n\n    text");
+        // A list in a plain-text file is only text.
+        let mut app = App::new("- one\n- two".into(), None, false);
+        key(&mut app, KeyCode::End, KeyModifiers::CONTROL);
+        key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+        assert_eq!(app.document.text(), "- one\n- two   ");
+    }
+
+    #[test]
+    fn unindented_files_take_their_types_indentation() {
+        for (name, expected) in [
+            ("Makefile", Indent::Tabs),
+            ("main.go", Indent::Tabs),
+            ("table.tsv", Indent::Tabs),
+            ("compose.yaml", Indent::Spaces(2)),
+            ("package.json", Indent::Spaces(2)),
+            ("app.ts", Indent::Spaces(2)),
+            ("tool.py", Indent::Spaces(4)),
+            ("main.rs", Indent::Spaces(4)),
+            ("notes.txt", Indent::Spaces(4)),
+            ("README.md", Indent::Spaces(4)),
+        ] {
+            let (_dir, mut app) = opened(name, "top\n");
+            assert_eq!(app.indent(), expected, "{name}");
+            key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+            assert_eq!(
+                app.document.text(),
+                format!("{}top\n", expected.unit()),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_chosen_indentation_overrides_every_files_own() {
+        let (_dir, mut app) = opened("tool.py", "def f():\n    x = 1\n");
+        set_indent_preference(Some(Indent::Tabs));
+        assert_eq!(app.indent(), Indent::Tabs);
+        assert_eq!(app.file_indent(), Indent::Spaces(4));
+        key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+        assert!(app.document.text().starts_with("\tdef"));
+        set_indent_preference(Some(Indent::Spaces(2)));
+        key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+        assert!(app.document.text().starts_with("\t  def"));
+        set_indent_preference(None);
+        assert_eq!(app.indent(), Indent::Spaces(4));
     }
 
     #[test]
@@ -4435,6 +4734,65 @@ mod tests {
         key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
         assert_eq!(app.document.text(), "Keep this source");
         assert!(!app.document.can_undo());
+    }
+
+    #[test]
+    fn help_shows_every_key_and_action_whole_from_80_columns_up() {
+        let mut app = App::new("Keep this source".into(), None, true);
+        key(&mut app, KeyCode::Char('g'), KeyModifiers::CONTROL);
+        let entries: usize = HELP.iter().map(|(_, keys)| keys.len()).sum();
+        let mut two_columns = None;
+        for width in (80..=112).chain([120, 137, 160, 200]) {
+            // Tall enough to show the whole sheet without scrolling.
+            let terminal = draw(&mut app, width, 90);
+            let buffer = terminal.backend().buffer();
+            let rows: Vec<String> = (0..90)
+                .map(|y| (0..width).map(|x| buffer[(x, y)].symbol()).collect())
+                .collect();
+            let shown = |text: &str| rows.iter().filter(|row| row.contains(text)).count();
+            for (title, keys) in HELP {
+                assert_eq!(shown(&format!(" {title} ")), 1, "{title} at {width}");
+                for (key, action) in *keys {
+                    // The whole pair, with nothing after the action but
+                    // blank cells, a column gap, or the border.
+                    let pair = format!(" {key}  {action}  ");
+                    let last = format!(" {key}  {action} │");
+                    assert_eq!(
+                        shown(&pair) + shown(&last),
+                        1,
+                        "{key:?} {action:?} at {width} columns:\n{}",
+                        rows.join("\n")
+                    );
+                }
+            }
+            // Two columns appear once both fit, and stay from then on. One
+            // column needs a row for every entry; two need fewer.
+            let sheet = rows.iter().filter(|row| row.contains('│')).count();
+            let wide = sheet < entries;
+            assert!(wide || two_columns.is_none(), "one column again at {width}");
+            if wide && two_columns.is_none() {
+                two_columns = Some(width);
+            }
+            // The panel stays inside the window with a margin.
+            let border = rows.iter().find(|row| row.contains('╭')).unwrap();
+            assert!(
+                border.starts_with("  ") && border.ends_with("  "),
+                "{border:?}"
+            );
+        }
+        // Sections sit side by side once the window has room for both.
+        assert!(
+            two_columns.is_some_and(|width| width <= 110),
+            "{two_columns:?}"
+        );
+        // Narrower windows clip with an ellipsis instead of failing.
+        for width in 1..80 {
+            draw(&mut app, width, 30);
+        }
+        let narrow = crate::simulation::snapshot(&mut app, 34, 60).unwrap();
+        assert!(narrow.contains("Ctrl+S  Save"), "{narrow}");
+        assert!(narrow.contains('…'), "{narrow}");
+        assert_eq!(app.document.text(), "Keep this source");
     }
 
     fn draw(app: &mut App, width: u16, height: u16) -> Terminal<TestBackend> {

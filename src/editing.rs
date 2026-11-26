@@ -1,11 +1,15 @@
 //! Markdown-aware edit commands. Literal insertion never passes through helpers.
 mod general;
+mod indent;
 mod lines;
+mod lists;
 
 pub use general::{
     cut_lines, duplicate, indent_newline, line_column_offset, smart_home, toggle_comment,
 };
+pub use indent::{Indent, TAB_WIDTH, backspace, insert_tab};
 pub(crate) use lines::rearrange as rearrange_lines;
+pub use lists::nest_item;
 
 use std::ops::Range;
 
@@ -25,14 +29,18 @@ pub enum InlineStyle {
     Code,
 }
 
-/// Indent/outdent physical lines. A selection ending at another line's start
-/// excludes that line. Insertion points follow their original content; removed
-/// indentation clamps to the line start. BOM and newline bytes are untouched.
-pub fn indent_lines(document: &mut Document, outdent: bool) -> bool {
+/// Indent/outdent physical lines by one level of `indent`. A selection ending
+/// at another line's start excludes that line, and indenting a selection
+/// skips its empty lines, leaving no trailing whitespace. Insertion points
+/// follow their original content; removed indentation is one leading tab or
+/// up to one level of spaces, clamped to the line start. BOM and newline
+/// bytes are untouched.
+pub fn indent_lines(document: &mut Document, outdent: bool, indent: Indent) -> bool {
     document.break_undo_group();
     let selection = document.selection();
     let range = selection.range();
     let source = document.text();
+    let unit = indent.unit();
     let mut starts = vec![0];
     starts.extend(source.grapheme_indices(true).filter_map(|(i, grapheme)| {
         matches!(grapheme, "\r" | "\n" | "\r\n").then_some(i + grapheme.len())
@@ -55,7 +63,11 @@ pub fn indent_lines(document: &mut Document, outdent: bool) -> bool {
             let removed = if prefix.starts_with('\t') {
                 1
             } else {
-                prefix.bytes().take(4).take_while(|&b| b == b' ').count()
+                prefix
+                    .bytes()
+                    .take(indent.width())
+                    .take_while(|&b| b == b' ')
+                    .count()
             };
             // A leading combining mark may form a grapheme with indentation.
             // Never delete any part of that text just to remove whitespace.
@@ -70,16 +82,27 @@ pub fn indent_lines(document: &mut Document, outdent: bool) -> bool {
             if end > position {
                 edits.push((position..end, ""));
             }
-        } else {
-            edits.push((position..position, "    "));
+        } else if selection.is_empty()
+            || !matches!(source.as_bytes().get(position), None | Some(b'\r' | b'\n'))
+        {
+            edits.push((position..position, unit.as_str()));
         }
         if selection.is_empty() {
             break;
         }
     }
+    replace_many(document, edits)
+}
+
+/// Apply ordered, non-overlapping replacements as one undo step, carrying
+/// the selection along: an end at or inside a replaced range lands after
+/// its replacement.
+fn replace_many(document: &mut Document, edits: Vec<(Range<usize>, &str)>) -> bool {
     if edits.is_empty() {
         return false;
     }
+    let selection = document.selection();
+    let source = document.text();
     let map = |offset: usize| {
         let (mut old_end, mut new_end) = (0, 0);
         for (range, replacement) in &edits {

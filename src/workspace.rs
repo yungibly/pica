@@ -23,6 +23,7 @@ use crossterm::event::{
 };
 use palette::{Action as PaletteAction, Command, Palette};
 use persistence::Persistence;
+use pica::editing::Indent;
 use picker::{Action as ChoiceAction, Picker};
 use ratatui::{
     Frame,
@@ -81,6 +82,9 @@ enum ChoiceMode {
         themes: Vec<Theme>,
     },
     Recovery,
+    Indent {
+        choices: Vec<Option<Indent>>,
+    },
     Documents {
         numbers: Vec<usize>,
     },
@@ -562,6 +566,10 @@ impl Workspace {
                 self.persist_guides();
                 return;
             }
+            Command::Indentation => {
+                self.open_indentation();
+                return;
+            }
             Command::Icons => {
                 let next = match crate::icons::current() {
                     crate::icons::IconSet::Plain => crate::icons::IconSet::Nerd,
@@ -618,6 +626,48 @@ impl Workspace {
         self.sidebar.invalidate();
     }
 
+    /// Choose what Tab inserts: each file's own indentation, or one style
+    /// everywhere.
+    fn open_indentation(&mut self) {
+        self.editor_mut().deactivate();
+        let choices = vec![
+            None,
+            Some(Indent::Tabs),
+            Some(Indent::Spaces(2)),
+            Some(Indent::Spaces(4)),
+            Some(Indent::Spaces(8)),
+        ];
+        let current = crate::app::indent_preference();
+        let here = crate::app::indent_name(self.editor().file_indent());
+        let entries = choices
+            .iter()
+            .map(|choice| match choice {
+                None => ("Follow each file".to_owned(), format!("{here} here")),
+                Some(indent) => {
+                    let name = crate::app::indent_name(*indent);
+                    let mut name: Vec<char> = name.chars().collect();
+                    name[0] = name[0].to_ascii_uppercase();
+                    (name.into_iter().collect(), "Every file".to_owned())
+                }
+            })
+            .collect();
+        let selected = choices
+            .iter()
+            .position(|choice| *choice == current)
+            .unwrap_or(0);
+        self.choice = Some(Choice {
+            picker: Picker::new(
+                "Indentation",
+                "↑↓ select · ⏎ apply · esc cancel",
+                entries,
+                selected,
+            ),
+            mode: ChoiceMode::Indent { choices },
+        });
+        self.tab_hits.clear();
+        self.sidebar.invalidate();
+    }
+
     fn handle_choice(&mut self, event: Event) {
         let mut choice = self.choice.take().expect("open picker");
         match choice.picker.handle(event) {
@@ -635,6 +685,18 @@ impl Workspace {
                     }
                 }
                 ChoiceMode::Recovery => self.recover_document(index),
+                ChoiceMode::Indent { choices } => {
+                    if let Some(choice) = choices.get(index) {
+                        crate::app::set_indent_preference(*choice);
+                        self.persist_indent();
+                        let editor = self.editor_mut();
+                        let name = crate::app::indent_name(editor.indent());
+                        editor.inform(match choice {
+                            None => format!("Tab follows each file: {name} here"),
+                            Some(_) => format!("Tab indents with {name} in every file"),
+                        });
+                    }
+                }
                 ChoiceMode::Documents { numbers } => {
                     if let Some(number) = numbers.get(index)
                         && let Some(target) = self.tabs.iter().position(|tab| tab.number == *number)

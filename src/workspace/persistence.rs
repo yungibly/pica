@@ -46,6 +46,7 @@ impl Workspace {
                 if let Some(icons) = settings.icons() {
                     crate::icons::set(icons);
                 }
+                crate::app::set_indent_preference(settings.indent());
                 if !explicit_theme && let Some(theme) = settings.theme() {
                     self.editor_mut().set_theme(theme);
                 }
@@ -145,6 +146,19 @@ impl Workspace {
         if let Some(Err(error)) = result {
             self.editor_mut().set_message(format!(
                 "View changed for this session; could not save preferences: {error}"
+            ));
+        }
+    }
+    pub(super) fn persist_indent(&mut self) {
+        let indent = crate::app::indent_preference();
+        let result = self
+            .persistence
+            .as_mut()
+            .and_then(|state| state.settings.as_mut())
+            .map(|settings| settings.save_indent(indent));
+        if let Some(Err(error)) = result {
+            self.editor_mut().set_message(format!(
+                "Indentation changed for this session; could not save preferences: {error}"
             ));
         }
     }

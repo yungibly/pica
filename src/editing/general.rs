@@ -9,7 +9,7 @@ use super::{line_range, preferred_newline};
 use crate::{Document, Selection, markdown};
 
 /// The first editable byte of the line starting at `start`; a BOM stays put.
-fn content_start(source: &str, start: usize) -> usize {
+pub(super) fn content_start(source: &str, start: usize) -> usize {
     if start == 0 {
         markdown::bom_len(source)
     } else {

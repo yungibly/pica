@@ -1,5 +1,6 @@
 //! Small, versioned preferences. Loading is read-only; explicit choices save atomically.
 use crate::{icons::IconSet, theme::Theme};
+use pica::editing::Indent;
 use std::{
     collections::BTreeMap,
     env, fs,
@@ -158,6 +159,25 @@ impl Settings {
     }
     pub fn save_guides(&mut self, on: bool) -> io::Result<()> {
         self.save("guides", if on { "on" } else { "off" })
+    }
+    /// The indentation chosen for every file; `None` follows each file.
+    pub fn indent(&self) -> Option<Indent> {
+        match self.values.get("indent").map(String::as_str)? {
+            "tabs" => Some(Indent::Tabs),
+            width => width
+                .parse()
+                .ok()
+                .filter(|width| (1..=8).contains(width))
+                .map(Indent::Spaces),
+        }
+    }
+    pub fn save_indent(&mut self, indent: Option<Indent>) -> io::Result<()> {
+        let value = match indent {
+            None => "auto".to_owned(),
+            Some(Indent::Tabs) => "tabs".to_owned(),
+            Some(Indent::Spaces(width)) => width.to_string(),
+        };
+        self.save("indent", &value)
     }
     pub fn icons(&self) -> Option<IconSet> {
         self.values
@@ -353,13 +373,43 @@ mod tests {
         assert!(!settings.guides());
         settings.save_guides(true).unwrap();
         settings.save_icons(IconSet::Nerd).unwrap();
+        assert_eq!(settings.indent(), None);
+        settings.save_indent(Some(Indent::Spaces(2))).unwrap();
         let loaded = Settings::load(dir.path()).unwrap();
+        assert_eq!(loaded.indent(), Some(Indent::Spaces(2)));
         assert_eq!(loaded.theme(), Some(Theme::Light));
         assert_eq!(loaded.sidebar(), Some(false));
         assert_eq!(loaded.markdown_live(), Some(false));
         assert!(loaded.guides());
         assert_eq!(loaded.icons(), Some(IconSet::Nerd));
         assert!(fs::read_to_string(path).unwrap().contains("future=keep"));
+    }
+    #[test]
+    fn indentation_is_tabs_a_width_or_each_files_own() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.conf");
+        for (saved, expected) in [
+            ("tabs", Some(Indent::Tabs)),
+            ("1", Some(Indent::Spaces(1))),
+            ("8", Some(Indent::Spaces(8))),
+            ("auto", None),
+            ("0", None),
+            ("9", None),
+            ("wide", None),
+        ] {
+            fs::write(&path, format!("version=1\nindent={saved}\n")).unwrap();
+            assert_eq!(Settings::load(dir.path()).unwrap().indent(), expected);
+        }
+        let mut settings = Settings::load(dir.path()).unwrap();
+        for (indent, saved) in [
+            (Some(Indent::Tabs), "indent=tabs\n"),
+            (Some(Indent::Spaces(4)), "indent=4\n"),
+            (None, "indent=auto\n"),
+        ] {
+            settings.save_indent(indent).unwrap();
+            assert!(fs::read_to_string(&path).unwrap().contains(saved));
+            assert_eq!(Settings::load(dir.path()).unwrap().indent(), indent);
+        }
     }
     #[test]
     fn read_is_lazy_and_concurrent_changes_are_preserved() {

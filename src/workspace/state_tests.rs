@@ -59,6 +59,49 @@ fn theme_preview_cancel_accept_and_restart_preserve_document() {
 }
 
 #[test]
+fn chosen_indentation_applies_at_once_survives_restart_and_can_follow_files_again() {
+    use pica::editing::Indent;
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("tool.py");
+    fs::write(&file, "def f():\n    x = 1\n").unwrap();
+    let mut app = Workspace::open(Some(file.clone())).unwrap();
+    configure(&mut app, dir.path());
+    assert_eq!(app.editor().indent(), Indent::Spaces(4));
+    // The picker opens on the current choice and names this file's own style.
+    app.run_command(Command::Indentation);
+    draw(&mut app, 80, 24);
+    key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+    assert!(!dir.path().join("config/settings.conf").exists());
+    app.run_command(Command::Indentation);
+    draw(&mut app, 80, 24);
+    key(&mut app, KeyCode::Down, KeyModifiers::NONE);
+    draw(&mut app, 80, 24);
+    key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    assert!(app.choice.is_none());
+    assert_eq!(app.editor().indent(), Indent::Tabs);
+    key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+    assert!(app.editor().document.text().starts_with("\tdef"));
+    let saved = fs::read_to_string(dir.path().join("config/settings.conf")).unwrap();
+    assert!(saved.contains("indent=tabs\n"), "{saved}");
+    app.finish_state().unwrap();
+
+    crate::app::set_indent_preference(None);
+    let mut restarted = Workspace::open(Some(file)).unwrap();
+    configure(&mut restarted, dir.path());
+    assert_eq!(restarted.editor().indent(), Indent::Tabs);
+    restarted.run_command(Command::Indentation);
+    draw(&mut restarted, 80, 24);
+    key(&mut restarted, KeyCode::Up, KeyModifiers::NONE);
+    draw(&mut restarted, 80, 24);
+    key(&mut restarted, KeyCode::Enter, KeyModifiers::NONE);
+    assert_eq!(restarted.editor().indent(), Indent::Spaces(4));
+    let saved = fs::read_to_string(dir.path().join("config/settings.conf")).unwrap();
+    assert!(saved.contains("indent=auto\n"), "{saved}");
+    restarted.finish_state().unwrap();
+    crate::app::set_indent_preference(None);
+}
+
+#[test]
 fn icon_preference_survives_restart_without_changing_source_or_selection() {
     use crate::icons::{self, IconSet};
     let original = icons::current();
