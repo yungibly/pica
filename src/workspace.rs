@@ -1110,6 +1110,9 @@ impl Workspace {
     }
 
     pub fn draw(&mut self, frame: &mut Frame) {
+        if std::mem::take(&mut self.editor_mut().case_toggled) {
+            self.persist_find_case();
+        }
         if std::mem::take(&mut self.editor_mut().view_toggled) {
             let live = self.editor().live;
             self.persist_markdown_view(live);

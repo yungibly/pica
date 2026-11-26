@@ -179,6 +179,15 @@ impl Settings {
         };
         self.save("indent", &value)
     }
+    /// Whether Find matches letter case; it ignores case unless chosen.
+    pub fn find_match_case(&self) -> bool {
+        self.values
+            .get("find-case")
+            .is_some_and(|value| value == "match")
+    }
+    pub fn save_find_match_case(&mut self, on: bool) -> io::Result<()> {
+        self.save("find-case", if on { "match" } else { "ignore" })
+    }
     pub fn icons(&self) -> Option<IconSet> {
         self.values
             .get("icons")
@@ -374,9 +383,12 @@ mod tests {
         settings.save_guides(true).unwrap();
         settings.save_icons(IconSet::Nerd).unwrap();
         assert_eq!(settings.indent(), None);
+        assert!(!settings.find_match_case());
+        settings.save_find_match_case(true).unwrap();
         settings.save_indent(Some(Indent::Spaces(2))).unwrap();
         let loaded = Settings::load(dir.path()).unwrap();
         assert_eq!(loaded.indent(), Some(Indent::Spaces(2)));
+        assert!(loaded.find_match_case());
         assert_eq!(loaded.theme(), Some(Theme::Light));
         assert_eq!(loaded.sidebar(), Some(false));
         assert_eq!(loaded.markdown_live(), Some(false));

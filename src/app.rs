@@ -97,6 +97,7 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
             ("Ctrl+N / Ctrl+P", "Next / previous match"),
             ("Ctrl+R in Find", "Replace"),
             ("Alt+R / Alt+A", "Replace one / all"),
+            ("Alt+C in Find", "Match or ignore case"),
             ("Tab", "Switch Find and With"),
         ],
     ),
@@ -302,6 +303,8 @@ pub struct App {
     pub(crate) label: Option<String>,
     /// Set when the user switches live/source; the workspace remembers it.
     pub(crate) view_toggled: bool,
+    /// Find's case choice changed and has yet to be saved.
+    pub(crate) case_toggled: bool,
     /// Indent guides in code and source views; the workspace sets this.
     pub(crate) guides: bool,
 }
@@ -703,6 +706,7 @@ impl App {
             header: true,
             label: None,
             view_toggled: false,
+            case_toggled: false,
             guides: false,
         };
         app.refresh_mode();
@@ -1990,11 +1994,28 @@ impl App {
         }
     }
 
+    /// Switch Find between ignoring and matching letter case, for every
+    /// document, keeping the selection where it is.
+    fn toggle_match_case(&mut self) {
+        let on = !crate::search::match_case();
+        crate::search::set_match_case(on);
+        self.case_toggled = true;
+        self.search.refresh(&self.document);
+        self.inform(if on {
+            "Find matches case · Alt+C ignores it"
+        } else {
+            "Find ignores case · Alt+C matches it"
+        });
+    }
+
     fn replace_all(&mut self) {
-        let identical = self.search.query.text() == self.search.replacement.text();
-        let count = self
-            .document
-            .replace_all(self.search.query.text(), self.search.replacement.text());
+        let revision = self.document.revision();
+        let count = self.document.replace_all_with(
+            self.search.query.text(),
+            self.search.replacement.text(),
+            crate::search::match_case(),
+        );
+        let identical = count > 0 && self.document.revision() == revision;
         self.search.refresh(&self.document);
         self.follow_cursor = true;
         self.inform(if count == 0 {
@@ -2049,6 +2070,7 @@ impl App {
             match key.code {
                 KeyCode::Char('r' | 'R') if replace => self.replace_current(),
                 KeyCode::Char('a' | 'A') if replace => self.replace_all(),
+                KeyCode::Char('c' | 'C') => self.toggle_match_case(),
                 _ => {}
             }
             return;
@@ -2207,6 +2229,7 @@ impl App {
                     SearchAction::Next => self.find_next(false),
                     SearchAction::Replace => self.replace_current(),
                     SearchAction::ReplaceAll => self.replace_all(),
+                    SearchAction::Case => self.toggle_match_case(),
                     SearchAction::Close => {
                         self.overlay = Overlay::None;
                         self.search_geometry = SearchGeometry::default();
@@ -2794,9 +2817,10 @@ impl App {
 
     fn search_inline(&self) -> bool {
         // Two margins, a bounded field with at least 24 input cells, a count,
-        // two gaps, and the full Previous/Next/Close labels must all fit.
+        // the case toggle, three gaps, and the full Previous/Next/Close
+        // labels must all fit.
         let count = UnicodeWidthStr::width(self.search_count().as_str()).max(10);
-        usize::from(self.terminal_width) >= 2 + 8 + 24 + count + 2 + 21
+        usize::from(self.terminal_width) >= 2 + 8 + 24 + count + 3 + usize::from(CASE_WIDTH) + 21
     }
 
     fn search_rows(&self) -> u16 {
@@ -2918,7 +2942,7 @@ impl App {
         let count_width = UnicodeWidthStr::width(counts.as_str()).max(10) as u16;
         let query_row = row(0);
         if self.search_inline() {
-            let field_width = query_row.width - count_width - 23;
+            let field_width = query_row.width - count_width - 23 - CASE_WIDTH - 1;
             self.draw_search_field(
                 frame,
                 Rect::new(query_row.x, query_row.y, field_width, 1),
@@ -2929,11 +2953,16 @@ impl App {
                 Paragraph::new(counts).style(chrome_muted()),
                 Rect::new(query_row.x + field_width + 1, query_row.y, count_width, 1),
             );
-            self.search_geometry.buttons = draw_search_buttons(
+            self.search_geometry.buttons = vec![draw_case_button(
+                frame,
+                query_row.right() - 22 - CASE_WIDTH,
+                query_row.y,
+            )];
+            self.search_geometry.buttons.extend(draw_search_buttons(
                 frame,
                 Rect::new(query_row.right() - 21, query_row.y, 21, 1),
                 &navigation,
-            );
+            ));
             if replace {
                 let with_row = row(1);
                 self.draw_search_field(
@@ -2952,7 +2981,12 @@ impl App {
             // A narrow dock puts actions on their own row. Keep at least eight
             // input cells before giving the count its own horizontal space.
             let count_fits = query_row.width >= 8 + 8 + 1 + count_width;
-            let field_width = if count_fits {
+            // The case toggle joins the count where both leave the input
+            // its eight cells; Alt+C works at any width.
+            let case_fits = query_row.width >= 8 + 8 + 1 + count_width + CASE_WIDTH + 1;
+            let field_width = if case_fits {
+                query_row.width - count_width - CASE_WIDTH - 2
+            } else if count_fits {
                 query_row.width - count_width - 1
             } else {
                 query_row.width
@@ -2963,11 +2997,20 @@ impl App {
                 Focus::Query,
                 show_cursor,
             );
+            let mut buttons = Vec::new();
             if count_fits {
+                let count_x = query_row.x + field_width + 1;
                 frame.render_widget(
                     Paragraph::new(counts.as_str()).style(chrome_muted()),
-                    Rect::new(query_row.right() - count_width, query_row.y, count_width, 1),
+                    Rect::new(count_x, query_row.y, count_width, 1),
                 );
+            }
+            if case_fits {
+                buttons.push(draw_case_button(
+                    frame,
+                    query_row.right() - CASE_WIDTH,
+                    query_row.y,
+                ));
             }
             if replace {
                 self.draw_search_field(frame, row(1), Focus::Replacement, show_cursor);
@@ -2977,8 +3020,12 @@ impl App {
                 actions.extend(replacements);
             }
             actions.push((SearchAction::Close, true));
-            self.search_geometry.buttons =
-                draw_search_buttons(frame, row(if replace { 2 } else { 1 }), &actions);
+            buttons.extend(draw_search_buttons(
+                frame,
+                row(if replace { 2 } else { 1 }),
+                &actions,
+            ));
+            self.search_geometry.buttons = buttons;
         }
     }
 
@@ -3725,12 +3772,34 @@ impl StatusBar {
     }
 }
 
+/// The width of the Find bar's case toggle.
+const CASE_WIDTH: u16 = 4;
+
+/// Find's case toggle: quiet while case is ignored, lit while it must match.
+fn draw_case_button(frame: &mut Frame, x: u16, y: u16) -> SearchButton {
+    let area = Rect::new(x, y, CASE_WIDTH, 1).intersection(frame.area());
+    let style = if crate::search::match_case() {
+        chrome_style()
+            .bg(theme::chrome_palette().tab_active.background)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        chrome_muted()
+    };
+    frame.render_widget(Paragraph::new(" Aa ").style(style), area);
+    SearchButton {
+        area,
+        action: SearchAction::Case,
+        enabled: true,
+    }
+}
+
 fn draw_search_buttons(
     frame: &mut Frame,
     area: Rect,
     actions: &[(SearchAction, bool)],
 ) -> Vec<SearchButton> {
     let label = |action, compact| match action {
+        SearchAction::Case => " Aa ",
         SearchAction::Previous if compact < 2 => " Prev ",
         SearchAction::Previous => " ‹ ",
         SearchAction::Next if compact < 2 => " Next ",
@@ -5703,11 +5772,87 @@ mod tests {
                 }
             }
         }
-        draw(&mut app, 66, 24);
+        // The case toggle and its gap moved the inline breakpoint from 67.
+        draw(&mut app, 71, 24);
         assert_eq!(app.search_geometry.panel.height, 3);
-        draw(&mut app, 67, 24);
+        draw(&mut app, 72, 24);
         assert_eq!(app.search_geometry.panel.height, 2);
         assert_eq!(app.search_geometry.fields[0].area.width - 8, 24);
+    }
+
+    #[test]
+    fn find_ignores_case_until_alt_c_or_the_aa_button_asks_for_a_match() {
+        let text = "Pica PICA pica\n";
+        let mut app = App::new(text.into(), None, false);
+        search(&mut app, "pica", true);
+        let terminal = draw(&mut app, 100, 12);
+        assert_eq!(app.search.matches.len(), 3);
+        let toggle = button(&app, SearchAction::Case);
+        let label = |terminal: &Terminal<TestBackend>, toggle: &SearchButton| -> String {
+            (toggle.area.x..toggle.area.right())
+                .map(|x| terminal.backend().buffer()[(x, toggle.area.y)].symbol())
+                .collect()
+        };
+        assert_eq!(label(&terminal, &toggle), " Aa ");
+        let quiet = terminal.backend().buffer()[(toggle.area.x + 1, toggle.area.y)].style();
+        // Alt+C asks for an exact match, says so, and lights the toggle.
+        key(&mut app, KeyCode::Char('c'), KeyModifiers::ALT);
+        assert!(crate::search::match_case() && app.case_toggled);
+        let terminal = draw(&mut app, 100, 12);
+        assert_eq!(app.search.matches, [10..14]);
+        assert!(status_text(&terminal, 11).contains("Find matches case"));
+        let lit = terminal.backend().buffer()[(toggle.area.x + 1, toggle.area.y)].style();
+        assert_ne!(quiet, lit);
+        assert_eq!(app.search.query.text(), "pica");
+        // The button switches back, once per click.
+        click_button(&mut app, SearchAction::Case);
+        assert!(!crate::search::match_case());
+        let terminal = draw(&mut app, 100, 12);
+        assert_eq!(app.search.matches.len(), 3);
+        assert!(status_text(&terminal, 11).contains("Find ignores case"));
+        // Replace all follows the same choice, as one undo step.
+        app.search.replacement.insert("em");
+        key(&mut app, KeyCode::Char('a'), KeyModifiers::ALT);
+        assert_eq!(app.document.text(), "em em em\n");
+        key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        key(&mut app, KeyCode::Char('z'), KeyModifiers::CONTROL);
+        assert_eq!(app.document.text(), text);
+        // Ctrl+N with Find closed reuses the query under the current choice.
+        crate::search::set_match_case(true);
+        key(&mut app, KeyCode::Home, KeyModifiers::CONTROL);
+        key(&mut app, KeyCode::Char('n'), KeyModifiers::CONTROL);
+        assert_eq!(app.document.selection().range(), 10..14);
+        crate::search::set_match_case(false);
+    }
+
+    #[test]
+    fn the_case_toggle_shows_wherever_the_find_bar_has_room_for_it() {
+        let mut app = App::new("Cat cat".into(), None, false);
+        search(&mut app, "cat", false);
+        for width in 11..=120 {
+            draw(&mut app, width, 12);
+            let buttons = &app.search_geometry.buttons;
+            let toggles = buttons
+                .iter()
+                .filter(|button| button.action == SearchAction::Case)
+                .count();
+            // Shown on the query row from 34 columns: two margins, an
+            // eight-cell input and its label, the count, the toggle and
+            // their gaps.
+            assert_eq!(toggles, usize::from(width >= 34), "{width}");
+            for (index, first) in buttons.iter().enumerate() {
+                assert!(first.area.right() <= width);
+                for second in &buttons[index + 1..] {
+                    assert!(first.area.intersection(second.area).is_empty(), "{width}");
+                }
+            }
+            // The key works whether or not the toggle is drawn.
+            key(&mut app, KeyCode::Char('c'), KeyModifiers::ALT);
+            assert_eq!(app.search.matches.len(), 1, "{width}");
+            key(&mut app, KeyCode::Char('C'), KeyModifiers::ALT);
+            assert_eq!(app.search.matches.len(), 2, "{width}");
+        }
+        crate::search::set_match_case(false);
     }
 
     #[test]
