@@ -139,6 +139,12 @@ fn the_command_hands_web_and_mail_links_to_the_opener_only_when_asked() {
     assert!(listed.contains("Alt+L"), "{listed}");
     key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
     assert_eq!(opened(), ["https://example.com/docs?q=1&r=2#part"]);
+    // The help sheet covers the text: nothing is followed from behind it.
+    caret(&mut app, "the site", 2);
+    key(&mut app, KeyCode::Char('g'), KeyModifiers::CONTROL);
+    follow(&mut app);
+    assert_eq!(opened(), Vec::<String>::new());
+    key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
     // Away from any link the command says so and opens nothing.
     caret(&mut app, "Plain words", 3);
     follow(&mut app);

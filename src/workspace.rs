@@ -1109,7 +1109,8 @@ impl Workspace {
                         self.toggle_wrap();
                         return;
                     }
-                    KeyCode::Char('l' | 'L') if alt && !ctrl => {
+                    // Not from behind the help sheet, which covers the link.
+                    KeyCode::Char('l' | 'L') if alt && !ctrl && !self.editor().has_modal() => {
                         self.open_link_at_caret();
                         return;
                     }
