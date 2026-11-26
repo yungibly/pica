@@ -1476,3 +1476,47 @@ fn long_literal_lines_resume_at_a_later_row() {
     // The hanging indent continues on resumed rows.
     assert_eq!(p.rows[0].glyphs[0].source, p.rows[0].start..p.rows[0].start);
 }
+
+#[test]
+fn links_know_where_they_lead_and_which_source_they_cover() {
+    let text = "intro [inline](https://a.example/x \"title\") and [ref][r] and <https://auto.example> then\n\n[![CI](https://b.example/badge.svg)](https://b.example/ci) ![pic](shot.png) [local](docs/keys.md#moving) [top](#intro)\n\nplain text, no link\n\n[r]: https://ref.example/target\n";
+    let parsed = parsed(text);
+    let at = |needle: &str, inside: usize| {
+        let offset = text.find(needle).unwrap() + inside;
+        parsed
+            .link_at(offset)
+            .map(|link| (link.destination.as_str(), &text[link.range.clone()]))
+    };
+    assert_eq!(
+        at("inline", 2),
+        Some((
+            "https://a.example/x",
+            "[inline](https://a.example/x \"title\")"
+        ))
+    );
+    // Anywhere in the link's source, and just after it.
+    assert_eq!(at("[inline]", 0).unwrap().0, "https://a.example/x");
+    assert_eq!(at("a.example", 3).unwrap().0, "https://a.example/x");
+    assert_eq!(at(" and [ref]", 0).unwrap().0, "https://a.example/x");
+    assert_eq!(at(" and [ref]", 1), None);
+    // A reference link leads where its definition says.
+    assert_eq!(
+        at("[ref]", 2),
+        Some(("https://ref.example/target", "[ref][r]"))
+    );
+    assert_eq!(
+        at("auto.example", 0),
+        Some(("https://auto.example", "<https://auto.example>"))
+    );
+    // A badge is an image in a link: the link is what a click follows.
+    assert_eq!(at("CI", 1).unwrap().0, "https://b.example/ci");
+    assert_eq!(at("badge.svg", 2).unwrap().0, "https://b.example/ci");
+    assert_eq!(at("![pic]", 3), Some(("shot.png", "![pic](shot.png)")));
+    assert_eq!(at("local", 1).unwrap().0, "docs/keys.md#moving");
+    assert_eq!(at("top", 1).unwrap().0, "#intro");
+    for (needle, inside) in [("intro", 2), ("then", 2), ("plain text", 3), ("[r]:", 1)] {
+        assert_eq!(at(needle, inside), None, "{needle}");
+    }
+    assert_eq!(parsed.link_at(text.len()), None);
+    assert_eq!(parsed.link_at(text.len() + 100), None);
+}

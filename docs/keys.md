@@ -129,6 +129,8 @@ indentation. The whole change is one undo step.
 | Click, Shift+click, drag | Place the caret, extend the selection to the pointer, select |
 | Double click | Select the word; dragging on extends word by word |
 | Triple click | Select the whole line; dragging on extends line by line |
+| Alt+L | Open the link under the caret |
+| Ctrl+click | Open the link under the pointer |
 
 A double click keeps `can't` and `3.14` whole and stops at the dots and
 colons between names, so it selects `name` in `self.name`. On a space or a
@@ -176,6 +178,28 @@ at 1), and numbered items it gains as children are renumbered to follow.
 Tab on the first item of a list does nothing, since there is nothing to nest
 it under. With a selection, on other lines, and in quoted lists, Tab indents
 as it does everywhere else.
+
+## Links
+
+Alt+L follows the link the caret is on, and Ctrl+click the link under the
+pointer: a Markdown link, image or `<address>`, or a web or mail address
+written out in any kind of file. While the caret is on a link the status
+line shows where it leads, which the live view otherwise hides.
+
+- `http`, `https` and `mailto` addresses go to your browser or mail program
+  through `xdg-open` on Linux and `open` on macOS.
+- A path opens that file in a tab, taken from the folder of the document
+  holding the link, if it is an existing text file. `notes.md#a-heading`
+  goes to that heading in it. A folder opens the file browser there.
+- `#a-heading` alone goes to that heading in the same document.
+
+Nothing opens unless you ask. Every other kind of address (`file:`,
+`javascript:`, `ftp:` and the rest), an address with spaces or control
+characters in it, a mail link that attaches a file, and anything that is not
+a regular file are refused, and the status line says why. The address is
+passed to the opener as it is written, as a single argument and never
+through a shell, and the opener runs without access to the terminal.
+Some terminals keep Ctrl+click for themselves; Alt+L always works.
 
 ## View and commands
 
@@ -255,6 +279,7 @@ below apply to your keys too: some combinations never reach a program.
 | `toggle-line-numbers` | Toggle line numbers |
 | `toggle-word-wrap` | Toggle word wrap |
 | `toggle-outline` | Toggle outline sidebar |
+| `open-link` | Open link under caret |
 | `next-tab` | Next tab |
 | `previous-tab` | Previous tab |
 | `go-to-line` | Go to line |

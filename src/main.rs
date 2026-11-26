@@ -4,6 +4,8 @@ mod cli;
 mod clipboard;
 mod file_io;
 mod icons;
+mod links;
+mod opener;
 mod paths;
 mod projection;
 mod recovery;

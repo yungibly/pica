@@ -38,6 +38,7 @@ Keys, as in micro (Ctrl+G lists them all):
   Ctrl+C  Copy              Ctrl+X  Cut               Ctrl+V  Paste
   Ctrl+K  Cut line          Ctrl+D  Duplicate         Ctrl+/  Comment
   Ctrl+T  New tab           Alt+,   Previous tab      Alt+.   Next tab
+  Alt+Z   Word wrap         Alt+L   Open link         Ctrl+click also opens
   Ctrl+R  Line numbers; in Markdown, live or source view; in Find, Replace
   Markdown: Ctrl+B bold, Alt+I italic, Alt+T task, Enter continues lists
 

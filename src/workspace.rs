@@ -2,6 +2,9 @@
 mod bindings;
 #[cfg(test)]
 mod keys_tests;
+#[cfg(test)]
+mod link_tests;
+mod links;
 pub(crate) mod matching;
 mod navigation;
 mod palette;
@@ -39,6 +42,15 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 use unicode_width::UnicodeWidthStr;
+
+/// The platform's opener for web and mail addresses.
+#[cfg(not(test))]
+const OPENER: fn(&str) -> io::Result<()> = crate::opener::open;
+/// Tests never start a browser: this stand-in refuses, and a test that
+/// follows a web link installs its own.
+#[cfg(test)]
+const OPENER: fn(&str) -> io::Result<()> =
+    |_| Err(io::Error::other("tests never start the opener"));
 
 /// How long typing must pause before the outline may appear or disappear.
 const OUTLINE_HOLD: Duration = Duration::from_millis(700);
@@ -133,6 +145,8 @@ pub struct Workspace {
     guides: bool,
     /// Word wrap, for every tab; on until switched off.
     wrap: bool,
+    /// Hands a web or mail address to the platform's opener.
+    opener: fn(&str) -> io::Result<()>,
     /// The user's own keys, from `keys.conf`.
     bindings: bindings::Bindings,
     /// A key sent by a command or a binding, which bindings leave alone.
@@ -170,6 +184,7 @@ impl Workspace {
             markdown_live: true,
             guides: false,
             wrap: true,
+            opener: OPENER,
             should_exit: false,
         })
     }
@@ -613,6 +628,7 @@ impl Workspace {
                 return;
             }
             Command::Wrap => (KeyCode::Char('z'), KeyModifiers::ALT),
+            Command::OpenLink => (KeyCode::Char('l'), KeyModifiers::ALT),
             Command::Sidebar => {
                 self.toggle_sidebar(false);
                 return;
@@ -1134,6 +1150,11 @@ impl Workspace {
                         self.toggle_wrap();
                         return;
                     }
+                    // Not from behind the help sheet, which covers the link.
+                    KeyCode::Char('l' | 'L') if alt && !ctrl && !self.editor().has_modal() => {
+                        self.open_link_at_caret();
+                        return;
+                    }
                     KeyCode::F(7) | KeyCode::PageUp if key.code == KeyCode::F(7) || ctrl => {
                         self.switch((self.active + self.tabs.len() - 1) % self.tabs.len());
                         return;
@@ -1229,6 +1250,10 @@ impl Workspace {
         self.tabs[self.active]
             .editor
             .workspace_event(event, &mut self.clipboard);
+        // Ctrl+click on a link: following it may open a tab or the browser.
+        if let Some(destination) = self.editor_mut().link_request.take() {
+            self.open_link(&destination);
+        }
         if let Some((path, identity)) = save_target
             && !self.editor().saving_as()
             && self.editor().path() == Some(path.as_path())
@@ -1329,11 +1354,13 @@ impl Workspace {
         let label = self.name(self.active);
         let guides = self.guides;
         let wrap = self.wrap;
+        let link_key = self.bindings.shortcut(Command::OpenLink, "Alt+L");
         let editor = self.editor_mut();
         editor.header = header;
         editor.label = Some(label);
         editor.guides = guides;
         editor.wrap = wrap;
+        editor.link_key = link_key;
         self.editor_mut().draw_in(frame, editor_area, show_cursor);
         self.tab_hits.clear();
         self.sidebar.invalidate();
