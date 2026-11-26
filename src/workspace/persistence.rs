@@ -47,6 +47,7 @@ impl Workspace {
                     crate::icons::set(icons);
                 }
                 crate::app::set_indent_preference(settings.indent());
+                crate::search::set_match_case(settings.find_match_case());
                 if !explicit_theme && let Some(theme) = settings.theme() {
                     self.editor_mut().set_theme(theme);
                 }
@@ -146,6 +147,19 @@ impl Workspace {
         if let Some(Err(error)) = result {
             self.editor_mut().set_message(format!(
                 "View changed for this session; could not save preferences: {error}"
+            ));
+        }
+    }
+    pub(super) fn persist_find_case(&mut self) {
+        let on = crate::search::match_case();
+        let result = self
+            .persistence
+            .as_mut()
+            .and_then(|state| state.settings.as_mut())
+            .map(|settings| settings.save_find_match_case(on));
+        if let Some(Err(error)) = result {
+            self.editor_mut().set_message(format!(
+                "Find changed for this session; could not save preferences: {error}"
             ));
         }
     }

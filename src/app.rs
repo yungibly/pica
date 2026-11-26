@@ -97,6 +97,7 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
             ("Ctrl+N / Ctrl+P", "Next / previous match"),
             ("Ctrl+R in Find", "Replace"),
             ("Alt+R / Alt+A", "Replace one / all"),
+            ("Alt+C in Find", "Match or ignore case"),
             ("Tab", "Switch Find and With"),
         ],
     ),
@@ -121,6 +122,19 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
         ],
     ),
 ];
+
+/// Presses on one cell this close together are one double or triple click.
+const MULTI_CLICK: std::time::Duration = std::time::Duration::from_millis(400);
+
+/// A left press on the text: when and where, the caret it placed, the text
+/// it saw, and its place in a run of clicks.
+struct Click {
+    at: std::time::Instant,
+    cell: (u16, u16),
+    offset: usize,
+    version: Version,
+    count: u8,
+}
 
 thread_local! {
     /// The indentation chosen for every file, or `None` to follow each file.
@@ -268,6 +282,12 @@ pub struct App {
     /// The indentation style a revision's own lines show, for Tab.
     detected_indent: Cell<Option<(Version, Option<Indent>)>>,
     last_input: std::time::Instant,
+    /// The latest left press on the text, for telling a double or triple
+    /// click from separate ones.
+    last_click: Option<Click>,
+    /// What a double or triple click selected, and whether by word or line;
+    /// a drag from it extends by the same unit.
+    click_unit: Option<(u8, std::ops::Range<usize>)>,
     pub should_exit: bool,
     message: String,
     message_is_error: bool,
@@ -283,6 +303,8 @@ pub struct App {
     pub(crate) label: Option<String>,
     /// Set when the user switches live/source; the workspace remembers it.
     pub(crate) view_toggled: bool,
+    /// Find's case choice changed and has yet to be saved.
+    pub(crate) case_toggled: bool,
     /// Indent guides in code and source views; the workspace sets this.
     pub(crate) guides: bool,
 }
@@ -671,6 +693,8 @@ impl App {
             indent_unit: Cell::new(None),
             detected_indent: Cell::new(None),
             last_input: std::time::Instant::now(),
+            last_click: None,
+            click_unit: None,
             should_exit: false,
             message: String::new(),
             message_is_error: false,
@@ -682,6 +706,7 @@ impl App {
             header: true,
             label: None,
             view_toggled: false,
+            case_toggled: false,
             guides: false,
         };
         app.refresh_mode();
@@ -1243,6 +1268,8 @@ impl App {
     }
 
     fn key(&mut self, key: KeyEvent) {
+        // A key between two presses makes them separate clicks.
+        self.last_click = None;
         if matches!(self.overlay, Overlay::Search { .. }) {
             self.search_key(key);
             return;
@@ -1739,26 +1766,115 @@ impl App {
                     self.follow_cursor = false;
                     return;
                 }
-                self.move_to(hit.offset, event.modifiers.contains(KeyModifiers::SHIFT));
-                self.affinity = hit.affinity;
+                let shift = event.modifiers.contains(KeyModifiers::SHIFT);
+                let now = std::time::Instant::now();
+                let cell = (event.column, event.row);
+                // A second or third press on the same cell selects the word
+                // or line at the caret the first press placed. The text may
+                // have reflowed under the pointer since, as a clicked block
+                // shows its source, so the pointer is not hit-tested again.
+                let repeat = self.last_click.take().filter(|click| {
+                    !shift
+                        && click.count < 3
+                        && click.cell == cell
+                        && click.version == self.version()
+                        && now.duration_since(click.at) <= MULTI_CLICK
+                });
+                let (offset, count) = match &repeat {
+                    Some(click) => (click.offset, click.count + 1),
+                    None => (hit.offset, 1),
+                };
+                if count == 1 {
+                    self.move_to(hit.offset, shift);
+                    self.affinity = hit.affinity;
+                    self.click_unit = None;
+                } else {
+                    let unit = self.click_range(count, offset);
+                    self.select_unit(count, unit.clone(), unit);
+                }
+                self.last_click = Some(Click {
+                    at: now,
+                    cell,
+                    offset: if count == 1 {
+                        self.document.selection().head
+                    } else {
+                        offset
+                    },
+                    version: self.version(),
+                    count,
+                });
                 self.dragging = true; // Keep exactly the current hit geometry until button-up.
                 self.preferred_column = None;
                 self.follow_cursor = false;
-                self.anchor_screen_row = Some(row.saturating_sub(self.scroll));
+                // A word or line selection ends away from the pointer, so
+                // only a plain press pins the caret to the pointer's row.
+                self.anchor_screen_row = (count == 1).then(|| row.saturating_sub(self.scroll));
             }
-            MouseEventKind::Drag(MouseButton::Left) if self.dragging => {
-                self.move_to(hit.offset, true);
-                self.affinity = hit.affinity;
-                self.anchor_screen_row = Some(row.saturating_sub(self.scroll));
-            }
-            MouseEventKind::Up(MouseButton::Left) if self.dragging => {
-                self.move_to(hit.offset, true);
-                self.affinity = hit.affinity;
-                self.dragging = false;
-                self.follow_cursor = true;
-                self.anchor_screen_row = Some(row.saturating_sub(self.scroll));
+            MouseEventKind::Drag(MouseButton::Left) | MouseEventKind::Up(MouseButton::Left)
+                if self.dragging =>
+            {
+                // The clicked cell itself adds nothing: the text under it
+                // may be other text since the first press reflowed its block.
+                let cell = (event.column, event.row);
+                let home = self.last_click.as_ref().is_some_and(|c| c.cell == cell);
+                match self.click_unit.clone() {
+                    // After a double or triple click, extend by words or lines.
+                    Some((count, base)) => {
+                        let unit = if home {
+                            base.clone()
+                        } else {
+                            self.click_range(count, hit.offset)
+                        };
+                        self.select_unit(count, base, unit);
+                    }
+                    None => {
+                        self.move_to(hit.offset, true);
+                        self.affinity = hit.affinity;
+                    }
+                }
+                if event.kind == MouseEventKind::Up(MouseButton::Left) {
+                    self.dragging = false;
+                    self.follow_cursor = true;
+                }
+                self.anchor_screen_row = self
+                    .click_unit
+                    .is_none()
+                    .then(|| row.saturating_sub(self.scroll));
             }
             _ => {}
+        }
+    }
+
+    /// The word (a double click) or whole line (a triple click) at `offset`.
+    fn click_range(&self, count: u8, offset: usize) -> std::ops::Range<usize> {
+        if count == 2 {
+            self.document.word_at(offset)
+        } else {
+            self.document.line_with_ending(offset)
+        }
+    }
+
+    /// Select from the clicked unit `base` through `unit`, the one under the
+    /// pointer, with the head on the pointer's side.
+    fn select_unit(
+        &mut self,
+        count: u8,
+        base: std::ops::Range<usize>,
+        unit: std::ops::Range<usize>,
+    ) {
+        let (anchor, head) = if unit.start < base.start {
+            (base.end, unit.start)
+        } else {
+            (base.start, unit.end.max(base.end))
+        };
+        self.click_unit = Some((count, base));
+        self.affinity = Affinity::Downstream;
+        let selection = Selection {
+            anchor: self.document.floor_grapheme_boundary(anchor),
+            head: self.document.floor_grapheme_boundary(head),
+        };
+        if let Err(error) = self.document.set_selection(selection) {
+            self.set_message(error.to_string());
         }
     }
 
@@ -1878,11 +1994,28 @@ impl App {
         }
     }
 
+    /// Switch Find between ignoring and matching letter case, for every
+    /// document, keeping the selection where it is.
+    fn toggle_match_case(&mut self) {
+        let on = !crate::search::match_case();
+        crate::search::set_match_case(on);
+        self.case_toggled = true;
+        self.search.refresh(&self.document);
+        self.inform(if on {
+            "Find matches case · Alt+C ignores it"
+        } else {
+            "Find ignores case · Alt+C matches it"
+        });
+    }
+
     fn replace_all(&mut self) {
-        let identical = self.search.query.text() == self.search.replacement.text();
-        let count = self
-            .document
-            .replace_all(self.search.query.text(), self.search.replacement.text());
+        let revision = self.document.revision();
+        let count = self.document.replace_all_with(
+            self.search.query.text(),
+            self.search.replacement.text(),
+            crate::search::match_case(),
+        );
+        let identical = count > 0 && self.document.revision() == revision;
         self.search.refresh(&self.document);
         self.follow_cursor = true;
         self.inform(if count == 0 {
@@ -1937,6 +2070,7 @@ impl App {
             match key.code {
                 KeyCode::Char('r' | 'R') if replace => self.replace_current(),
                 KeyCode::Char('a' | 'A') if replace => self.replace_all(),
+                KeyCode::Char('c' | 'C') => self.toggle_match_case(),
                 _ => {}
             }
             return;
@@ -2095,6 +2229,7 @@ impl App {
                     SearchAction::Next => self.find_next(false),
                     SearchAction::Replace => self.replace_current(),
                     SearchAction::ReplaceAll => self.replace_all(),
+                    SearchAction::Case => self.toggle_match_case(),
                     SearchAction::Close => {
                         self.overlay = Overlay::None;
                         self.search_geometry = SearchGeometry::default();
@@ -2682,9 +2817,10 @@ impl App {
 
     fn search_inline(&self) -> bool {
         // Two margins, a bounded field with at least 24 input cells, a count,
-        // two gaps, and the full Previous/Next/Close labels must all fit.
+        // the case toggle, three gaps, and the full Previous/Next/Close
+        // labels must all fit.
         let count = UnicodeWidthStr::width(self.search_count().as_str()).max(10);
-        usize::from(self.terminal_width) >= 2 + 8 + 24 + count + 2 + 21
+        usize::from(self.terminal_width) >= 2 + 8 + 24 + count + 3 + usize::from(CASE_WIDTH) + 21
     }
 
     fn search_rows(&self) -> u16 {
@@ -2806,7 +2942,7 @@ impl App {
         let count_width = UnicodeWidthStr::width(counts.as_str()).max(10) as u16;
         let query_row = row(0);
         if self.search_inline() {
-            let field_width = query_row.width - count_width - 23;
+            let field_width = query_row.width - count_width - 23 - CASE_WIDTH - 1;
             self.draw_search_field(
                 frame,
                 Rect::new(query_row.x, query_row.y, field_width, 1),
@@ -2817,11 +2953,16 @@ impl App {
                 Paragraph::new(counts).style(chrome_muted()),
                 Rect::new(query_row.x + field_width + 1, query_row.y, count_width, 1),
             );
-            self.search_geometry.buttons = draw_search_buttons(
+            self.search_geometry.buttons = vec![draw_case_button(
+                frame,
+                query_row.right() - 22 - CASE_WIDTH,
+                query_row.y,
+            )];
+            self.search_geometry.buttons.extend(draw_search_buttons(
                 frame,
                 Rect::new(query_row.right() - 21, query_row.y, 21, 1),
                 &navigation,
-            );
+            ));
             if replace {
                 let with_row = row(1);
                 self.draw_search_field(
@@ -2840,7 +2981,12 @@ impl App {
             // A narrow dock puts actions on their own row. Keep at least eight
             // input cells before giving the count its own horizontal space.
             let count_fits = query_row.width >= 8 + 8 + 1 + count_width;
-            let field_width = if count_fits {
+            // The case toggle joins the count where both leave the input
+            // its eight cells; Alt+C works at any width.
+            let case_fits = query_row.width >= 8 + 8 + 2 + count_width + CASE_WIDTH;
+            let field_width = if case_fits {
+                query_row.width - count_width - CASE_WIDTH - 2
+            } else if count_fits {
                 query_row.width - count_width - 1
             } else {
                 query_row.width
@@ -2851,11 +2997,20 @@ impl App {
                 Focus::Query,
                 show_cursor,
             );
+            let mut buttons = Vec::new();
             if count_fits {
+                let count_x = query_row.x + field_width + 1;
                 frame.render_widget(
                     Paragraph::new(counts.as_str()).style(chrome_muted()),
-                    Rect::new(query_row.right() - count_width, query_row.y, count_width, 1),
+                    Rect::new(count_x, query_row.y, count_width, 1),
                 );
+            }
+            if case_fits {
+                buttons.push(draw_case_button(
+                    frame,
+                    query_row.right() - CASE_WIDTH,
+                    query_row.y,
+                ));
             }
             if replace {
                 self.draw_search_field(frame, row(1), Focus::Replacement, show_cursor);
@@ -2865,8 +3020,12 @@ impl App {
                 actions.extend(replacements);
             }
             actions.push((SearchAction::Close, true));
-            self.search_geometry.buttons =
-                draw_search_buttons(frame, row(if replace { 2 } else { 1 }), &actions);
+            buttons.extend(draw_search_buttons(
+                frame,
+                row(if replace { 2 } else { 1 }),
+                &actions,
+            ));
+            self.search_geometry.buttons = buttons;
         }
     }
 
@@ -3613,12 +3772,34 @@ impl StatusBar {
     }
 }
 
+/// The width of the Find bar's case toggle.
+const CASE_WIDTH: u16 = 4;
+
+/// Find's case toggle: quiet while case is ignored, lit while it must match.
+fn draw_case_button(frame: &mut Frame, x: u16, y: u16) -> SearchButton {
+    let area = Rect::new(x, y, CASE_WIDTH, 1).intersection(frame.area());
+    let style = if crate::search::match_case() {
+        chrome_style()
+            .bg(theme::chrome_palette().tab_active.background)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        chrome_muted()
+    };
+    frame.render_widget(Paragraph::new(" Aa ").style(style), area);
+    SearchButton {
+        area,
+        action: SearchAction::Case,
+        enabled: true,
+    }
+}
+
 fn draw_search_buttons(
     frame: &mut Frame,
     area: Rect,
     actions: &[(SearchAction, bool)],
 ) -> Vec<SearchButton> {
     let label = |action, compact| match action {
+        SearchAction::Case => " Aa ",
         SearchAction::Previous if compact < 2 => " Prev ",
         SearchAction::Previous => " ‹ ",
         SearchAction::Next if compact < 2 => " Next ",
@@ -4499,6 +4680,146 @@ mod tests {
         assert_eq!(app.document.text(), "firstsecondx");
         key(&mut app, KeyCode::Char('z'), KeyModifiers::CONTROL);
         assert_eq!(app.document.text(), "firstsecond");
+    }
+
+    fn press_at(app: &mut App, kind: MouseEventKind, source: usize) {
+        let (row, col) = app.projection.cursor(source);
+        app.handle_event(Event::Mouse(MouseEvent {
+            kind,
+            column: app.viewport.x + col as u16,
+            row: app.viewport.y + (row - app.scroll) as u16,
+            modifiers: KeyModifiers::NONE,
+        }));
+    }
+
+    #[test]
+    fn double_click_selects_a_word_and_triple_click_its_line() {
+        let text = "alpha beta.gamma delta\nsecond line here\nthird\n";
+        let mut app = App::new(text.into(), None, false);
+        draw(&mut app, 60, 12);
+        let beta = text.find("beta").unwrap() + 2;
+        click(&mut app, beta, true);
+        assert!(app.document.selection().is_empty());
+        click(&mut app, beta, true);
+        assert_eq!(app.document.selected_text(), "beta");
+        draw(&mut app, 60, 12);
+        click(&mut app, beta, true);
+        assert_eq!(app.document.selected_text(), "alpha beta.gamma delta\n");
+        // A fourth press starts over with a caret.
+        click(&mut app, beta, true);
+        assert!(app.document.selection().is_empty());
+        assert_eq!(app.document.selection().head, beta);
+        assert_eq!(app.document.text(), text);
+        // Clicks apart in time, on different cells, or separated by a key
+        // stay single.
+        click(&mut app, beta, true);
+        app.last_click.as_mut().unwrap().at -= MULTI_CLICK * 2;
+        click(&mut app, beta, true);
+        assert!(app.document.selection().is_empty());
+        click(&mut app, beta + 1, true);
+        assert!(app.document.selection().is_empty());
+        key(&mut app, KeyCode::Left, KeyModifiers::NONE);
+        click(&mut app, beta + 1, true);
+        assert!(app.document.selection().is_empty());
+        // Shift+click extends instead of counting as a second click.
+        click(&mut app, beta, true);
+        let event = |app: &App, kind| {
+            let (row, col) = app.projection.cursor(beta);
+            Event::Mouse(MouseEvent {
+                kind,
+                column: app.viewport.x + col as u16 + 9,
+                row: app.viewport.y + (row - app.scroll) as u16,
+                modifiers: KeyModifiers::SHIFT,
+            })
+        };
+        let down = event(&app, MouseEventKind::Down(MouseButton::Left));
+        app.handle_event(down);
+        let up = event(&app, MouseEventKind::Up(MouseButton::Left));
+        app.handle_event(up);
+        assert_eq!(app.document.selected_text(), "ta.gamma ");
+    }
+
+    #[test]
+    fn dragging_after_a_double_or_triple_click_extends_by_words_or_lines() {
+        let text = "alpha beta gamma delta\nsecond line here\nthird\n";
+        let mut app = App::new(text.into(), None, false);
+        draw(&mut app, 60, 12);
+        let at = |needle: &str| text.find(needle).unwrap() + 1;
+        let left = MouseButton::Left;
+        // Double click "gamma", drag right into "delta", then back to "alpha".
+        click(&mut app, at("gamma"), true);
+        click(&mut app, at("gamma"), false);
+        press_at(&mut app, MouseEventKind::Drag(left), at("delta"));
+        assert_eq!(app.document.selected_text(), "gamma delta");
+        assert!(app.document.selection().anchor < app.document.selection().head);
+        press_at(&mut app, MouseEventKind::Drag(left), at("alpha"));
+        assert_eq!(app.document.selected_text(), "alpha beta gamma");
+        assert!(app.document.selection().anchor > app.document.selection().head);
+        press_at(&mut app, MouseEventKind::Drag(left), at("gamma"));
+        assert_eq!(app.document.selected_text(), "gamma");
+        press_at(&mut app, MouseEventKind::Up(left), at("beta"));
+        assert_eq!(app.document.selected_text(), "beta gamma");
+        // Triple click the second line and drag onto the third.
+        draw(&mut app, 60, 12);
+        key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        for release in [true, true, false] {
+            click(&mut app, at("second"), release);
+        }
+        assert_eq!(app.document.selected_text(), "second line here\n");
+        press_at(&mut app, MouseEventKind::Drag(left), at("third"));
+        assert_eq!(app.document.selected_text(), "second line here\nthird\n");
+        press_at(&mut app, MouseEventKind::Up(left), at("alpha"));
+        assert_eq!(
+            app.document.selected_text(),
+            "alpha beta gamma delta\nsecond line here\n"
+        );
+        assert_eq!(app.document.text(), text);
+    }
+
+    #[test]
+    fn double_click_in_rendered_markdown_selects_the_word_first_clicked() {
+        // The first press reveals the paragraph's source, which moves the
+        // text under the pointer; the second press must not hit-test again.
+        let text = "# Title\n\nSome **bold** and `code` then plain words.\n";
+        let mut app = App::new(text.into(), None, true);
+        draw(&mut app, 60, 12);
+        let plain = text.find("plain").unwrap() + 2;
+        let (row, col) = app.projection.cursor(plain);
+        let (column, screen) = (app.viewport.x + col as u16, app.viewport.y + row as u16);
+        let left = MouseButton::Left;
+        for kind in [
+            MouseEventKind::Down(left),
+            MouseEventKind::Up(left),
+            MouseEventKind::Down(left),
+            MouseEventKind::Up(left),
+        ] {
+            app.handle_event(Event::Mouse(MouseEvent {
+                kind,
+                column,
+                row: screen,
+                modifiers: KeyModifiers::NONE,
+            }));
+            draw(&mut app, 60, 12);
+        }
+        assert_eq!(app.document.selected_text(), "plain");
+        // Where the pointer now is, the revealed source shows other text.
+        assert_ne!(app.projection.hit(row, col).offset, plain);
+        // A third press selects the line; its end on the next line must not
+        // be taken for the pointer's row and scroll the view.
+        for kind in [MouseEventKind::Down(left), MouseEventKind::Up(left)] {
+            app.handle_event(Event::Mouse(MouseEvent {
+                kind,
+                column,
+                row: screen,
+                modifiers: KeyModifiers::NONE,
+            }));
+            draw(&mut app, 60, 12);
+        }
+        assert_eq!(
+            app.document.selected_text(),
+            "Some **bold** and `code` then plain words.\n"
+        );
+        assert_eq!(app.scroll, 0);
     }
 
     #[test]
@@ -5451,11 +5772,88 @@ mod tests {
                 }
             }
         }
-        draw(&mut app, 66, 24);
+        // The case toggle and its gap moved the inline breakpoint from 67.
+        draw(&mut app, 71, 24);
         assert_eq!(app.search_geometry.panel.height, 3);
-        draw(&mut app, 67, 24);
+        draw(&mut app, 72, 24);
         assert_eq!(app.search_geometry.panel.height, 2);
         assert_eq!(app.search_geometry.fields[0].area.width - 8, 24);
+    }
+
+    #[test]
+    fn find_ignores_case_until_alt_c_or_the_aa_button_asks_for_a_match() {
+        let text = "Pica PICA pica\n";
+        let mut app = App::new(text.into(), None, false);
+        search(&mut app, "pica", true);
+        let terminal = draw(&mut app, 100, 12);
+        assert_eq!(app.search.matches.len(), 3);
+        let toggle = button(&app, SearchAction::Case);
+        let label = |terminal: &Terminal<TestBackend>, toggle: &SearchButton| -> String {
+            (toggle.area.x..toggle.area.right())
+                .map(|x| terminal.backend().buffer()[(x, toggle.area.y)].symbol())
+                .collect()
+        };
+        assert_eq!(label(&terminal, &toggle), " Aa ");
+        let quiet = terminal.backend().buffer()[(toggle.area.x + 1, toggle.area.y)].style();
+        // Alt+C asks for an exact match, says so, and lights the toggle.
+        key(&mut app, KeyCode::Char('c'), KeyModifiers::ALT);
+        assert!(crate::search::match_case() && app.case_toggled);
+        let terminal = draw(&mut app, 100, 12);
+        assert_eq!(app.search.matches.len(), 1);
+        assert_eq!(app.search.matches[0], 10..14);
+        assert!(status_text(&terminal, 11).contains("Find matches case"));
+        let lit = terminal.backend().buffer()[(toggle.area.x + 1, toggle.area.y)].style();
+        assert_ne!(quiet, lit);
+        assert_eq!(app.search.query.text(), "pica");
+        // The button switches back, once per click.
+        click_button(&mut app, SearchAction::Case);
+        assert!(!crate::search::match_case());
+        let terminal = draw(&mut app, 100, 12);
+        assert_eq!(app.search.matches.len(), 3);
+        assert!(status_text(&terminal, 11).contains("Find ignores case"));
+        // Replace all follows the same choice, as one undo step.
+        app.search.replacement.insert("em");
+        key(&mut app, KeyCode::Char('a'), KeyModifiers::ALT);
+        assert_eq!(app.document.text(), "em em em\n");
+        key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        key(&mut app, KeyCode::Char('z'), KeyModifiers::CONTROL);
+        assert_eq!(app.document.text(), text);
+        // Ctrl+N with Find closed reuses the query under the current choice.
+        crate::search::set_match_case(true);
+        key(&mut app, KeyCode::Home, KeyModifiers::CONTROL);
+        key(&mut app, KeyCode::Char('n'), KeyModifiers::CONTROL);
+        assert_eq!(app.document.selection().range(), 10..14);
+        crate::search::set_match_case(false);
+    }
+
+    #[test]
+    fn the_case_toggle_shows_wherever_the_find_bar_has_room_for_it() {
+        let mut app = App::new("Cat cat".into(), None, false);
+        search(&mut app, "cat", false);
+        for width in 11..=120 {
+            draw(&mut app, width, 12);
+            let buttons = &app.search_geometry.buttons;
+            let toggles = buttons
+                .iter()
+                .filter(|button| button.action == SearchAction::Case)
+                .count();
+            // Shown on the query row from 34 columns: two margins, an
+            // eight-cell input and its label, the count, the toggle and
+            // their gaps.
+            assert_eq!(toggles, usize::from(width >= 34), "{width}");
+            for (index, first) in buttons.iter().enumerate() {
+                assert!(first.area.right() <= width);
+                for second in &buttons[index + 1..] {
+                    assert!(first.area.intersection(second.area).is_empty(), "{width}");
+                }
+            }
+            // The key works whether or not the toggle is drawn.
+            key(&mut app, KeyCode::Char('c'), KeyModifiers::ALT);
+            assert_eq!(app.search.matches.len(), 1, "{width}");
+            key(&mut app, KeyCode::Char('C'), KeyModifiers::ALT);
+            assert_eq!(app.search.matches.len(), 2, "{width}");
+        }
+        crate::search::set_match_case(false);
     }
 
     #[test]

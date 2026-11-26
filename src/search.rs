@@ -17,6 +17,21 @@ pub enum Action {
     Replace,
     ReplaceAll,
     Close,
+    /// Switch between ignoring and matching letter case.
+    Case,
+}
+
+thread_local! {
+    /// Whether Find matches letter case, in every document; off unless chosen.
+    static MATCH_CASE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+pub fn match_case() -> bool {
+    MATCH_CASE.get()
+}
+
+pub fn set_match_case(on: bool) {
+    MATCH_CASE.set(on);
 }
 
 #[derive(Clone, Debug)]
@@ -87,7 +102,7 @@ pub struct Search {
     pub matches: Vec<Range<usize>>,
     pub wrapped: bool,
     pub origin: usize,
-    key: Option<(u64, String)>,
+    key: Option<(u64, String, bool)>,
 }
 
 impl Default for Search {
@@ -106,9 +121,10 @@ impl Default for Search {
 
 impl Search {
     pub fn refresh(&mut self, document: &Document) {
-        let key = (document.revision(), self.query.text().to_string());
+        let case = match_case();
+        let key = (document.revision(), self.query.text().to_string(), case);
         if self.key.as_ref() != Some(&key) {
-            self.matches = document.find_matches(self.query.text());
+            self.matches = document.find_matches_with(self.query.text(), case);
             self.key = Some(key);
             self.wrapped = false;
         }

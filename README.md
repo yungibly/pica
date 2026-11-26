@@ -35,7 +35,7 @@ The defaults follow micro's. Press **Ctrl+G** for help and **Ctrl+E** for every 
 | Key | Action | Key | Action |
 | --- | --- | --- | --- |
 | Ctrl+S | Save | Ctrl+F | Find (Ctrl+N / Ctrl+P: next / previous) |
-| Ctrl+O | Open a file; type to filter | Ctrl+R in Find | Replace |
+| Ctrl+O | Open a file; type to filter | Ctrl+R / Alt+C in Find | Replace / match case |
 | Ctrl+T | New tab | Ctrl+L | Go to line |
 | Alt+, / Alt+. | Previous / next tab | Ctrl+K | Cut line; repeat to collect more |
 | Ctrl+Q | Close tab; the last one quits | Ctrl+D | Duplicate line or selection |
@@ -44,7 +44,7 @@ The defaults follow micro's. Press **Ctrl+G** for help and **Ctrl+E** for every 
 | Ctrl+A | Select all | Home | Line text, then line start |
 | Ctrl+R | Line numbers (code) or live/source view (Markdown) | Ctrl+B / Alt+I / Alt+T | Bold / italic / toggle task (Markdown) |
 
-Enter keeps the current line's indentation and continues Markdown lists. Tab indents the way the file already does: a tab in a tab-indented file, otherwise spaces to the file's own width, so a Python or YAML file never gains a stray tab. Shift+Tab and Backspace take a level back out, and with a selection Tab indents the selected lines. In a Markdown list, Tab and Shift+Tab nest an item under the one above or lift it out. [The full key reference](docs/keys.md) lists every key, the differences from micro, and terminal quirks. Function keys from earlier versions still work but are not shown.
+Enter keeps the current line's indentation and continues Markdown lists. Tab indents the way the file already does: a tab in a tab-indented file, otherwise spaces to the file's own width, so a Python or YAML file never gains a stray tab. Shift+Tab and Backspace take a level back out, and with a selection Tab indents the selected lines. In a Markdown list, Tab and Shift+Tab nest an item under the one above or lift it out. [The full key reference](docs/keys.md) lists every key, the differences from micro, and terminal quirks. The mouse places the caret and drags select; a double click selects a word and a triple click a line. Function keys from earlier versions still work but are not shown.
 
 ## Markdown
 
@@ -60,7 +60,7 @@ The default **Terminal** theme uses your terminal's own background, foreground, 
 
 A lone document has no tab row: just the text and one status line naming the file, its position, kind, and size. Tabs appear when a second document opens, or above the outline when it is showing. Indent guides for code are off until you choose them from Ctrl+E. **Nerd Font icons** are on by default in Ghostty, Kitty, and WezTerm outside tmux, and off elsewhere. Toggle them from Ctrl+E, or launch with `--icons nerd` or `--icons plain`.
 
-Theme, icon, outline, guide, indentation, and view choices are saved to `$XDG_CONFIG_HOME/pica/settings.conf` (by default `~/.config/pica/settings.conf`). `--no-state` disables preferences and recovery.
+Theme, icon, outline, guide, indentation, Find, and view choices are saved to `$XDG_CONFIG_HOME/pica/settings.conf` (by default `~/.config/pica/settings.conf`). `--no-state` disables preferences and recovery.
 
 ## Files and safety
 

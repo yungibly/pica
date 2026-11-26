@@ -885,3 +885,98 @@ fn line_operations_keep_unicode_boundaries_and_round_trip_every_selection() {
         }
     }
 }
+
+#[test]
+fn double_click_words_and_triple_click_lines() {
+    let text =
+        "Can't stop: self.name = 3.14, v0.3.1;  x\r\n\u{754c}\u{9650} naïve_id e\u{301}t\n\nlast";
+    let doc = Document::new(text);
+    let word = |needle: &str, within: usize| {
+        let at = text.find(needle).unwrap() + within;
+        &text[doc.word_at(at)]
+    };
+    for (needle, within, expected) in [
+        ("Can't", 0, "Can't"),
+        ("Can't", 4, "Can't"),
+        ("stop", 2, "stop"),
+        // Punctuation and whitespace are their own selections.
+        (": self", 0, ":"),
+        (" stop", 0, " "),
+        (";  x", 1, "  "),
+        // A dot between names splits them; between digits it does not.
+        ("self.name", 1, "self"),
+        ("self.name", 4, "."),
+        ("self.name", 5, "name"),
+        ("3.14", 0, "3.14"),
+        ("3.14", 2, "3.14"),
+        ("v0.3.1", 3, "v0.3.1"),
+        ("naïve_id", 3, "naïve_id"),
+        ("e\u{301}t", 0, "e\u{301}t"),
+        ("last", 3, "last"),
+    ] {
+        assert_eq!(word(needle, within), expected, "{needle:?} at {within}");
+    }
+    // Past the last character of a line: its last segment. An empty line: nothing.
+    assert_eq!(&text[doc.word_at(text.find("\r\n").unwrap())], "x");
+    assert_eq!(&text[doc.word_at(text.len())], "last");
+    let empty = text.find("\n\n").unwrap() + 1;
+    assert_eq!(doc.word_at(empty), empty..empty);
+    assert_eq!(Document::new("").word_at(0), 0..0);
+
+    let line = |needle: &str| &text[doc.line_with_ending(text.find(needle).unwrap())];
+    assert_eq!(line("stop"), "Can't stop: self.name = 3.14, v0.3.1;  x\r\n");
+    assert_eq!(line("naïve"), "\u{754c}\u{9650} naïve_id e\u{301}t\n");
+    assert_eq!(&text[doc.line_with_ending(empty)], "\n");
+    assert_eq!(line("last"), "last");
+    assert_eq!(&text[doc.line_with_ending(text.len() + 10)], "last");
+}
+
+#[test]
+fn matching_can_ignore_letter_case_and_keeps_whole_graphemes() {
+    let text = "Pica PICA pica pIcA\nÉcole école ÉCOLE Straße STRASSE\nκόσμος ΚΌΣΜΟΣ e\u{301}x E\u{301}X ex";
+    let doc = Document::new(text);
+    let found = |query: &str, match_case: bool| -> Vec<&str> {
+        doc.find_matches_with(query, match_case)
+            .into_iter()
+            .map(|range| &text[range])
+            .collect()
+    };
+    assert_eq!(found("pica", true), ["pica"]);
+    assert_eq!(found("pica", false), ["Pica", "PICA", "pica", "pIcA"]);
+    assert_eq!(found("PICA", false), ["Pica", "PICA", "pica", "pIcA"]);
+    assert_eq!(found("école", false), ["École", "école", "ÉCOLE"]);
+    assert_eq!(found("ÉCOLE", true), ["ÉCOLE"]);
+    // Lowercase mapping is one character to one: ß is not SS.
+    assert_eq!(found("straße", false), ["Straße"]);
+    // Final sigma lowercases by itself as σ, so capitals find capitals.
+    assert_eq!(found("ΚΌΣΜΟΣ", false), ["ΚΌΣΜΟΣ"]);
+    // A match never ends inside a grapheme: `e` + accent is not `e`.
+    assert_eq!(found("ex", false), ["ex"]);
+    assert_eq!(found("e\u{301}x", false), ["e\u{301}x", "E\u{301}X"]);
+    assert_eq!(found("", false), Vec::<&str>::new());
+    assert_eq!(found("absent", false), Vec::<&str>::new());
+    // Matches do not overlap, and a query longer than the rest is no match.
+    let doc = Document::new("aAaAa");
+    assert_eq!(doc.find_matches_with("aa", false), [0..2, 2..4]);
+    assert_eq!(doc.find_matches_with("AAAAAA", false), []);
+    // Case-sensitive matching is unchanged.
+    assert_eq!(doc.find_matches_with("aA", true), doc.find_matches("aA"));
+}
+
+#[test]
+fn replacing_all_can_ignore_case_in_one_undo_step() {
+    let mut doc = Document::new("Pica and PICA and pica");
+    assert_eq!(doc.replace_all_with("pica", "pica", false), 3);
+    assert_eq!(doc.text(), "pica and pica and pica");
+    assert!(doc.undo());
+    assert_eq!(doc.text(), "Pica and PICA and pica");
+    assert!(!doc.can_undo());
+    assert_eq!(doc.replace_all_with("PICA", "em", true), 1);
+    assert_eq!(doc.text(), "Pica and em and pica");
+    // Matches that already read as the replacement change nothing.
+    let mut same = Document::new("pica pica");
+    assert_eq!(same.replace_all_with("PICA", "pica", false), 2);
+    assert!(!same.is_dirty() && !same.can_undo());
+    assert_eq!(same.replace_all("pica", "pica"), 2);
+    assert!(!same.is_dirty() && !same.can_undo());
+}
