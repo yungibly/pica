@@ -671,6 +671,8 @@ fn probe_frame_costs() {
     use std::time::Instant;
     let path = std::env::var("PROBE").unwrap();
     let mut app = crate::workspace::Workspace::open(Some(path.clone().into())).unwrap();
+    // NOWRAP=1 measures the unwrapped view.
+    app.set_wrap(std::env::var("NOWRAP").is_err());
     let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
     terminal.draw(|frame| app.draw(frame)).unwrap();
     let lines = app.editor().document.line_count();

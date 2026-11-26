@@ -79,6 +79,9 @@ fn run() -> io::Result<()> {
     if options.source {
         app.show_source();
     }
+    if options.no_wrap {
+        app.set_wrap(false);
+    }
     if options.snapshot {
         print!(
             "{}",
@@ -100,6 +103,10 @@ fn run() -> io::Result<()> {
                 app.enable_state(&config, &state, options.theme.is_some());
                 if let Some(icons) = options.icons {
                     icons::set(icons);
+                }
+                // The flag outlasts the remembered choice, for this launch.
+                if options.no_wrap {
+                    app.set_wrap(false);
                 }
             }
             Err(error) => app.editor_mut().set_message(error.to_string()),

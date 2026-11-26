@@ -438,10 +438,7 @@ impl<'a> Layout<'a> {
                 space: false,
             };
         }
-        let grapheme = self.source[offset..]
-            .graphemes(true)
-            .next()
-            .expect("offset is inside the source");
+        let grapheme = grapheme_at(self.source, offset);
         Atom {
             text: grapheme,
             source: offset..offset + grapheme.len(),
@@ -484,6 +481,10 @@ impl<'a> Layout<'a> {
 
     /// Display text and width, with tabs and invisible text made safe.
     fn display(&self, text: &'a str) -> (Cow<'a, str>, usize) {
+        // Printable ASCII, most of any text, is one safe cell.
+        if let [b' '..=b'~'] = text.as_bytes() {
+            return (Cow::Borrowed(text), 1);
+        }
         let displayed = if text == "\t" {
             Cow::Borrowed(&"    "[..(4 - self.column % 4).min(self.limit)])
         } else {
@@ -585,7 +586,7 @@ impl<'a> Layout<'a> {
                 index += 1;
                 (decoration.replacement.as_str(), false)
             } else {
-                let grapheme = self.source[offset..].graphemes(true).next().unwrap();
+                let grapheme = grapheme_at(self.source, offset);
                 offset += grapheme.len();
                 (grapheme, grapheme.chars().all(char::is_whitespace))
             };
@@ -595,8 +596,13 @@ impl<'a> Layout<'a> {
             if space {
                 break;
             }
-            // Control characters display as one-cell symbols.
-            width += UnicodeWidthStr::width(text).max(1);
+            // Control characters display as one-cell symbols, and so does
+            // every other ASCII character.
+            width += if text.len() == 1 {
+                1
+            } else {
+                UnicodeWidthStr::width(text).max(1)
+            };
         }
         width
     }
@@ -1285,6 +1291,21 @@ fn wrap_cell(atoms: Vec<CellAtom>, width: usize) -> Vec<Vec<CellAtom>> {
     lines
 }
 
+/// The grapheme at `offset`. An ASCII character followed by another is a
+/// grapheme of its own, unless a carriage return takes its line feed, which
+/// spares most text the full segmentation.
+fn grapheme_at(source: &str, offset: usize) -> &str {
+    let bytes = source.as_bytes();
+    let first = bytes[offset];
+    if first < 0x80 && first != b'\r' && bytes.get(offset + 1).is_none_or(|next| *next < 0x80) {
+        return &source[offset..offset + 1];
+    }
+    source[offset..]
+        .graphemes(true)
+        .next()
+        .expect("offset is inside the source")
+}
+
 /// `safe_text` without allocating for the common, already-safe case.
 fn safe(text: &str) -> Cow<'_, str> {
     if text.chars().any(unsafe_char) {
@@ -1316,6 +1337,55 @@ mod tests {
         assert_eq!(leading_markers("plain"), 0);
         assert_eq!(leading_markers("-not a list"), 0);
         assert_eq!(leading_markers("1234567890. no"), 0);
+    }
+
+    #[test]
+    fn the_ascii_shortcut_finds_the_same_graphemes_as_full_segmentation() {
+        // ASCII beside combining marks, joiners, variation selectors, wide
+        // text, controls, and every kind of line ending.
+        let pieces = [
+            "a",
+            "Z",
+            " ",
+            "\t",
+            "~",
+            "#",
+            "\r",
+            "\n",
+            "\r\n",
+            "\x00",
+            "\x1b",
+            "\x7f",
+            "\u{301}",
+            "\u{200d}",
+            "\u{fe0f}",
+            "\u{20e3}",
+            "é",
+            "界",
+            "👩‍💻",
+            "🇯🇵",
+            "ก",
+            "ำ",
+            "\u{feff}",
+        ];
+        let mut seed = 0x9e37_79b9_7f4a_7c15_u64;
+        let mut next = |bound: usize| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % bound as u64) as usize
+        };
+        for _ in 0..4_000 {
+            let text: String = (0..next(12) + 1)
+                .map(|_| pieces[next(pieces.len())])
+                .collect();
+            let mut offset = 0;
+            for expected in text.graphemes(true) {
+                assert_eq!(grapheme_at(&text, offset), expected, "{text:?} at {offset}");
+                offset += expected.len();
+            }
+            assert_eq!(offset, text.len());
+        }
     }
 
     #[test]

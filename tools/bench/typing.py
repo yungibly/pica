@@ -240,6 +240,7 @@ def main():
     parser.add_argument("--positions", default="start,middle,end")
     parser.add_argument("--ops", default="type,backspace,enter,undo")
     parser.add_argument("--source", action="store_true", help="open with --source")
+    parser.add_argument("--no-wrap", action="store_true", help="open with --no-wrap")
     parser.add_argument("--rss", action="store_true", help="report resident memory")
     parser.add_argument("--detail", action="store_true", help="one row per operation")
     parser.add_argument("files", nargs="+")
@@ -272,6 +273,8 @@ def main():
                 path = os.path.join(scratch, label)
                 shutil.copyfile(name, path)
             args = ["--source"] if options.source else []
+            if options.no_wrap:
+                args.append("--no-wrap")
             results, memory = measure(
                 binary,
                 path,
