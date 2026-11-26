@@ -75,7 +75,7 @@ indentation. The whole change is one undo step.
 | Shift+Home | Extend the selection the same way |
 | End | End of the row |
 | Ctrl+Home / Ctrl+End | Start / end of the file |
-| PageUp / PageDown | Move a screen |
+| PageUp / PageDown | Scroll a screen. The caret moves with the view and keeps its row on screen; at either end of the file it goes on to the first or last line. |
 | Ctrl+L | Go to a line, or `line:column` |
 | Ctrl+A | Select all |
 
