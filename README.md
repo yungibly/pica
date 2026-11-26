@@ -48,7 +48,7 @@ Enter keeps the current line's indentation and continues Markdown lists. Tab ind
 
 ## Markdown
 
-Markdown opens in a live view. Headings carry a mark in the margin, tables become aligned grids, fenced code and front matter become labelled, highlighted surfaces, `> [!NOTE]` alerts become callouts, and task boxes can be clicked. The block holding the caret always shows its exact source, so you edit what is in the file and nothing else changes. Ctrl+R switches to the plain numbered source view. pica remembers that choice for later Markdown files.
+Markdown opens in a live view. Headings carry a mark in the margin, tables become aligned grids, fenced code and front matter become labelled, highlighted surfaces, `> [!NOTE]` alerts become callouts, and task boxes can be clicked. Bold, italic, inline code, links, and images show their text without their markers, so a badge reads as its label. The block holding the caret always shows its exact source, so you edit what is in the file and nothing else changes. Ctrl+R switches to the plain numbered source view. pica remembers that choice for later Markdown files.
 
 Lists continue on Enter; Enter on an empty item leaves the list. Tab nests an item under the one above it and Shift+Tab lifts it back out, with its own lines and children. Clicking a task box, or pressing Alt+T, changes only its `[ ]` / `[x]` marker. From Ctrl+E you can open an outline sidebar of the document's headings (it stays open once chosen), jump to any heading, or switch documents by fuzzy name. Footnotes, math, raw HTML, and other unsupported constructs stay visible as source.
 
